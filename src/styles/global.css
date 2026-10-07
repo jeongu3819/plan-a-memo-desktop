@@ -1,0 +1,95 @@
+/* PLAN-A Memo 전역 스타일.
+ * 아래 "저장 서식 계약" 블록은 plan-a-work frontend/src/index.css 에서 그대로 가져왔다(편집기·읽기 화면·내보내기가 같은 값을 쓴다). */
+@import '@fontsource-variable/inter';
+
+/* Shared stored-content contract, including viewers and native editing output. */
+[data-text-size="small"], [contenteditable="true"] font[size="1"] { font-size: 0.75rem; }
+[data-text-size="normal"], [contenteditable="true"] font[size="2"] { font-size: 0.9rem; }
+[data-text-size="large"], [contenteditable="true"] font[size="3"] { font-size: 1rem; }
+[data-text-size="xlarge"], [contenteditable="true"] font[size="4"] { font-size: 1.25rem; }
+/* 숫자 크기(px, 정수 12~24) — richTextFormatting TEXT_SIZE_MIN_PX~MAX_PX · 백엔드 TEXT_SIZE_VALUES 와 같은 범위.
+   붙여넣기는 원본 크기를 이 범위로 맞춰 그대로 쓰고, 우클릭 메뉴는 그중 일부를 보여 준다. */
+[data-text-size="12"] { font-size: 12px; }
+[data-text-size="13"] { font-size: 13px; }
+[data-text-size="14"] { font-size: 14px; }
+[data-text-size="15"] { font-size: 15px; }
+[data-text-size="16"] { font-size: 16px; }
+[data-text-size="17"] { font-size: 17px; }
+[data-text-size="18"] { font-size: 18px; }
+[data-text-size="19"] { font-size: 19px; }
+[data-text-size="20"] { font-size: 20px; }
+[data-text-size="21"] { font-size: 21px; }
+[data-text-size="22"] { font-size: 22px; }
+[data-text-size="23"] { font-size: 23px; }
+[data-text-size="24"] { font-size: 24px; }
+/* 편집 중 글자 크기 표식(메모 우클릭 → 네이티브 fontName, 기본 실행 취소 한 단계). 저장 시
+   span[data-text-size] 로 바뀐다(richTextFormatting canonicalizeRichSizes) — 규칙도 그와 같다. */
+[contenteditable="true"] font[face^="rich-size-"] { font-family: inherit; }
+[contenteditable="true"] font[face="rich-size-12"] { font-size: 12px; }
+[contenteditable="true"] font[face="rich-size-13"] { font-size: 13px; }
+[contenteditable="true"] font[face="rich-size-14"] { font-size: 14px; }
+[contenteditable="true"] font[face="rich-size-15"] { font-size: 15px; }
+[contenteditable="true"] font[face="rich-size-16"] { font-size: 16px; }
+[contenteditable="true"] font[face="rich-size-17"] { font-size: 17px; }
+[contenteditable="true"] font[face="rich-size-18"] { font-size: 18px; }
+[contenteditable="true"] font[face="rich-size-19"] { font-size: 19px; }
+[contenteditable="true"] font[face="rich-size-20"] { font-size: 20px; }
+[contenteditable="true"] font[face="rich-size-21"] { font-size: 21px; }
+[contenteditable="true"] font[face="rich-size-22"] { font-size: 22px; }
+[contenteditable="true"] font[face="rich-size-23"] { font-size: 23px; }
+[contenteditable="true"] font[face="rich-size-24"] { font-size: 24px; }
+[contenteditable="true"] font[face="rich-size-small"] { font-size: 0.75rem; }
+[contenteditable="true"] font[face="rich-size-normal"] { font-size: 0.9rem; }
+[contenteditable="true"] font[face="rich-size-large"] { font-size: 1rem; }
+[contenteditable="true"] font[face="rich-size-xlarge"] { font-size: 1.25rem; }
+[contenteditable="true"] font[face="rich-size-base"] { font-size: var(--rich-base-font-size, 0.9rem); }
+/* 나중에 바깥에 덮은 크기가 그 안의 예전 크기(span)를 이긴다. */
+[contenteditable="true"] font[face^="rich-size-"] span[data-text-size],
+[contenteditable="true"] font[size] span[data-text-size] { font-size: inherit; }
+td[data-align="left"], th[data-align="left"] { text-align: left !important; }
+td[data-align="center"], th[data-align="center"] { text-align: center !important; }
+td[data-align="right"], th[data-align="right"] { text-align: right !important; }
+[data-mention-user-id] { font-size: 0.9rem !important; font-weight: 500 !important; }
+/* 문단 정렬 · 들여쓰기(붙여넣은 Word/웹 문서). 속성을 두 번 적어 편집기 기본 문단 여백보다 우선한다. */
+:is(p, div, h1, h2, h3, h4, h5, h6, li, blockquote)[data-align="left"][data-align] { text-align: left; }
+:is(p, div, h1, h2, h3, h4, h5, h6, li, blockquote)[data-align="center"][data-align] { text-align: center; }
+:is(p, div, h1, h2, h3, h4, h5, h6, li, blockquote)[data-align="right"][data-align] { text-align: right; }
+:is(p, div)[data-indent="1"][data-indent] { margin-left: 40px; }
+:is(p, div)[data-indent="2"][data-indent] { margin-left: 80px; }
+:is(p, div)[data-indent="3"][data-indent] { margin-left: 120px; }
+:is(p, div)[data-indent="4"][data-indent] { margin-left: 160px; }
+:is(p, div)[data-indent="5"][data-indent] { margin-left: 200px; }
+:is(p, div)[data-indent="6"][data-indent] { margin-left: 240px; }
+/* 표 자체의 위치(Word 가운데 정렬 표). 셀 안 글자 정렬(td/th data-align)과는 별개다. */
+table[data-align="center"][data-align] { margin-left: auto !important; margin-right: auto !important; }
+table[data-align="right"][data-align] { margin-left: auto !important; margin-right: 0 !important; }
+
+/* ── Desktop 앱 기본 ─────────────────────────────────────────── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  background: #FAF9F6;
+}
+
+body {
+  font-family: "Inter Variable", "Inter", "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  color: #1a1d29;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+::selection {
+  background: #e8edff;
+  color: #2955ff;
+}

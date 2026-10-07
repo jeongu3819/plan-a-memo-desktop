@@ -1,0 +1,25 @@
+# Node / Vite
+node_modules/
+dist/
+*.log
+npm-debug.log*
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+
+# 환경 값(주소·키) — .env.example 만 커밋한다
+.env
+.env.*
+!.env.example
+
+# OS / 편집기
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+release/
+
+# E2E 스크린샷
+e2e/output/

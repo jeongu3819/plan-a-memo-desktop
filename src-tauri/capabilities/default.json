@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "PLAN-A Memo 메인 창 권한 — 파일 접근은 Rust 명령으로만(fs 플러그인 없음).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
+    "opener:allow-open-url",
+    "opener:allow-default-urls",
+    "window-state:default",
+    "deep-link:default",
+    "log:default"
+  ]
+}

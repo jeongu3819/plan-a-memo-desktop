@@ -1,0 +1,57 @@
+[package]
+name = "plan-a-memo"
+version = "0.2.0"
+description = "PLAN-A Memo — Windows local-first memo app"
+authors = ["PLAN-A"]
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+name = "plan_a_memo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-log = "2"
+tauri-plugin-deep-link = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# rusqlite: 단일 사용자 로컬 앱 — 동기 API + 번들 SQLite(배포 PC 의 sqlite 버전에 의존하지 않음).
+rusqlite = { version = "0.37", features = ["bundled"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+thiserror = "2"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dirs = "6"
+log = "0.4"
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt", "net", "io-util"] }
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

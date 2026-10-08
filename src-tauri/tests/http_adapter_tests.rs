@@ -75,6 +75,8 @@ async fn stub(responses: Vec<(u16, String)>) -> (String, Arc<Mutex<Vec<Recorded>
     (origin, log)
 }
 
+const IMAGE: &[u8] = b"stub-does-not-inspect-bytes";
+
 fn ctx() -> SyncContext {
     SyncContext { access_token: "pms_test-token".into(), account_key: "local:x|1".into(), server_device_id: "dev".into() }
 }
@@ -286,4 +288,70 @@ fn contract_example_in_plan_a_work_docs_matches_desktop_dto() {
     for needle in ["127.0.0.1:<ephemeral-port>/memo-sync/callback", "/api/personal-memos/images/{name}/download", "base_version=0"] {
         assert!(contract.contains(needle), "Contract 문구가 바뀌었다: {needle}");
     }
+}
+
+/// `docs/upstream-plan-a-work/source/memo_sync_api.py` 의 HTTPException 모양 그대로(문자열 detail · {code} detail ·
+/// Pydantic 422 목록) — 각 경로에서 Desktop 이 같은 뜻으로 읽는가.
+#[tokio::test]
+async fn backend_error_shapes_from_memo_sync_api_py() {
+    let (origin, _) = stub(vec![
+        // native/lists — 같은 id 다른 제목: HTTPException(409, 'List ID already in use')
+        (409, json!({"detail":"List ID already in use"}).to_string()),
+        // native/attachments — UploadValidationError → 413(str(error))
+        (413, json!({"detail":"File too large"}).to_string()),
+        // 같은 upload request_id 다른 바이트 → 409 'Request ID reused'
+        (409, json!({"detail":"Request ID reused"}).to_string()),
+        // native/links device_id 불일치 → 403
+        (403, json!({"detail":"Device mismatch"}).to_string()),
+        // 이미 해결된 conflict → 404 'Conflict not found'
+        (404, json!({"detail":"Conflict not found"}).to_string()),
+        // Pydantic Strict(extra='forbid') → 422 목록
+        (
+            422,
+            json!({"detail":[{"type":"extra_forbidden","loc":["body","items",0,"favorite"],"msg":"Extra inputs are not permitted"}]})
+                .to_string(),
+        ),
+        // rate limit(reserve_many) → 429
+        (429, json!({"detail":{"code":"MEMO_SYNC_RATE_LIMITED"}}).to_string()),
+        // 설정 안 됨 → 503
+        (503, json!({"detail":"Memo sync is not configured"}).to_string()),
+        // 서버 Push conflict 는 HTTP 200 + status=conflict
+        (200, json!({"status":"conflict","conflict_id":"c1","version":7}).to_string()),
+    ])
+    .await;
+    let t = PlanAWorkSyncTransport::new(HttpClient::new(&origin).unwrap());
+    let c = ctx();
+    let list = NativeListCreate { id: "0f8fad5b-d9cb-469f-a165-70867728950e".into(), title: "앱".into() };
+    assert!(t.create_list(&c, &list).await.unwrap_err().is_conflict("List ID already in use"));
+    assert!(matches!(
+        t.upload(&c, "0f8fad5b-d9cb-469f-a165-70867728950e", "a.png", "image/png", IMAGE.to_vec()).await.unwrap_err(),
+        TransportError::Rejected { status: 413, .. }
+    ));
+    assert!(t
+        .upload(&c, "0f8fad5b-d9cb-469f-a165-70867728950e", "a.png", "image/png", IMAGE.to_vec())
+        .await
+        .unwrap_err()
+        .is_conflict("Request ID reused"));
+    assert_eq!(
+        t.link(&c, &LinkRequest { unit_type: UnitType::Day, key: "2026-10-07".into() }).await.unwrap_err(),
+        TransportError::Forbidden
+    );
+    assert_eq!(
+        t.resolve(&c, "d", "c", &ResolveRequest { base_version: 1, side: Side::Desktop }).await.unwrap_err(),
+        TransportError::NotFound
+    );
+    let push = PushRequest {
+        base_version: 0,
+        local_version: 1,
+        request_id: "abcdefgh".into(),
+        link_id: "l".into(),
+        deleted: false,
+        items: vec![],
+    };
+    assert!(
+        matches!(t.push(&c, "d", &push).await.unwrap_err(), TransportError::Rejected { status: 422, ref message } if message.contains("Extra inputs"))
+    );
+    assert_eq!(t.changes(&c, None).await.unwrap_err(), TransportError::RateLimited);
+    assert_eq!(t.changes(&c, None).await.unwrap_err(), TransportError::Unavailable);
+    assert_eq!(t.push(&c, "d", &push).await.unwrap(), PushResponse::Conflict { conflict_id: "c1".into(), version: 7 });
 }

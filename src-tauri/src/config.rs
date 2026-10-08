@@ -65,7 +65,14 @@ pub struct EnvConfig {
     pub deep_link_scheme: &'static str,
 }
 
+/// 운영 PLAN-A Work 호스트(`AppEnv::Production.default_origin`).
+fn is_production_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    matches!(host.as_str(), "planawork.com" | "www.planawork.com")
+}
+
 /// origin 검사 — https(개발 빌드는 127.0.0.1/localhost 의 http 허용), 경로·query·계정 정보 없음.
+/// 운영 주소는 운영 빌드에서만 허용한다.
 pub fn validate_origin(value: &str, env: AppEnv) -> Option<String> {
     let url = url::Url::parse(value.trim()).ok()?;
     let host = url.host_str()?.to_string();
@@ -74,6 +81,10 @@ pub fn validate_origin(value: &str, env: AppEnv) -> Option<String> {
     let clean =
         url.path() == "/" && url.query().is_none() && url.fragment().is_none() && url.username().is_empty() && url.password().is_none();
     if !scheme_ok || !clean || (local && env != AppEnv::Development) {
+        return None;
+    }
+    // 운영 주소는 운영 빌드에서만 — 개발·staging 빌드가 운영 서버에 시험 요청을 보내지 않게.
+    if env != AppEnv::Production && is_production_host(&host) {
         return None;
     }
     Some(url.as_str().trim_end_matches('/').to_string())
@@ -157,6 +168,10 @@ mod tests {
         assert!(validate_origin("https://planawork.com/api", AppEnv::Production).is_none());
         assert!(validate_origin("https://user:pw@planawork.com", AppEnv::Production).is_none());
         assert!(validate_origin("https://planawork.com/?x=1", AppEnv::Production).is_none());
+        // 개발·staging 빌드에 운영 주소를 넣을 수 없다(시험 데이터가 운영 서버로 가지 않게)
+        assert!(validate_origin("https://planawork.com", AppEnv::Development).is_none());
+        assert!(validate_origin("https://WWW.planawork.com", AppEnv::Staging).is_none());
+        assert_eq!(validate_origin("https://staging.planawork.com", AppEnv::Development).as_deref(), Some("https://staging.planawork.com"));
         assert_eq!(AppEnv::Development.default_origin(), None, "개발 빌드의 기본은 Mock");
         assert_eq!(AppEnv::Production.default_origin(), Some("https://planawork.com"));
     }

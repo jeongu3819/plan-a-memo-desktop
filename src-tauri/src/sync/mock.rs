@@ -526,6 +526,10 @@ impl MockServerState {
 pub struct MockSyncTransport {
     state: Mutex<MockServerState>,
     persist_path: Mutex<Option<PathBuf>>,
+    /// 테스트용 장애 주입 — (경로 이름, 돌려줄 오류). 요청이 서버에 닿기 전에 실패한다(서버 상태 그대로).
+    faults: Mutex<Vec<(String, TransportError)>>,
+    /// 받은 push 요청(경로의 문서 id, 본문) — 테스트가 '문서 전체를 보냈는가' 를 확인한다.
+    pushes: Mutex<Vec<(String, PushRequest)>>,
 }
 
 impl Default for MockSyncTransport {
@@ -536,7 +540,34 @@ impl Default for MockSyncTransport {
 
 impl MockSyncTransport {
     pub fn new() -> Self {
-        MockSyncTransport { state: Mutex::new(MockServerState::default()), persist_path: Mutex::new(None) }
+        MockSyncTransport {
+            state: Mutex::new(MockServerState::default()),
+            persist_path: Mutex::new(None),
+            faults: Mutex::new(Vec::new()),
+            pushes: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// 다음 `op` 요청 하나를 `error` 로 실패시킨다(op: create_list·link·unlink·changes·document·push·ack·conflicts·
+    /// resolve·upload·download). 여러 번 부르면 차례로 쓴다. 413·422·429·503·409·오프라인 등 HTTP 결과 흉내.
+    pub fn inject(&self, op: &str, error: TransportError) {
+        self.faults.lock().unwrap().push((op.to_string(), error));
+    }
+
+    fn fault(&self, op: &str) -> TResult<()> {
+        let mut faults = self.faults.lock().unwrap();
+        match faults.iter().position(|(name, _)| name == op) {
+            Some(index) => {
+                self.state.lock().unwrap().request_count += 1;
+                Err(faults.remove(index).1)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// 지금까지 받은 push 본문(오래된 것부터).
+    pub fn pushes(&self) -> Vec<(String, PushRequest)> {
+        self.pushes.lock().unwrap().clone()
     }
 
     /// 저장 폴더가 열리면 그 안의 Mock 상태를 읽는다(바뀌면 그 파일에 쓴다).
@@ -686,6 +717,27 @@ impl MockSyncTransport {
 
     pub fn web_delete(&self, memo_id: i64) -> bool {
         self.web_edit(memo_id, |m| m.deleted = true)
+    }
+
+    /// 서버 문서를 삭제(tombstone: deleted=true, 항목 없음) — 다른 기기가 List 를 지운 것처럼.
+    pub fn web_tombstone(&self, owner: i64, unit: &Unit) {
+        self.web(|s| {
+            let doc_id = match s.doc_for_unit(owner, unit) {
+                Some(id) => id,
+                None => {
+                    let id = uid();
+                    s.documents.insert(id.clone(), MockDoc { owner, unit: unit.clone(), version: 1, deleted: false });
+                    s.publish(&id, false);
+                    id
+                }
+            };
+            for memo in s.memos.values_mut().filter(|m| m.owner == owner && &m.unit == unit && !m.deleted) {
+                memo.deleted = true;
+                memo.version += 1;
+            }
+            s.documents.get_mut(&doc_id).unwrap().deleted = true;
+            s.publish(&doc_id, true);
+        })
     }
 
     /// Web 에서 다른 날짜/List 로 이동(같은 서버 id 유지). 연결된 문서 양쪽이 같이 바뀐다.
@@ -895,6 +947,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn create_list(&self, ctx: &SyncContext, body: &NativeListCreate) -> TResult<NativeList> {
+        self.fault("create_list")?;
         self.call(|s| {
             let (_, device) = s.device_for(ctx)?;
             if uuid::Uuid::parse_str(&body.id).is_err()
@@ -916,6 +969,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn link(&self, ctx: &SyncContext, body: &LinkRequest) -> TResult<LinkResponse> {
+        self.fault("link")?;
         self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             Self::create_link(s, device.owner, &device_id, &Unit { unit_type: body.unit_type, key: body.key.clone() })
@@ -923,6 +977,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn unlink(&self, ctx: &SyncContext, link_id: &str) -> TResult<()> {
+        self.fault("unlink")?;
         self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             let link = s.links.get(link_id).filter(|l| l.device_id == device_id).cloned().ok_or(TransportError::NotFound)?;
@@ -936,6 +991,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn changes(&self, ctx: &SyncContext, cursor: Option<&str>) -> TResult<ChangesResponse> {
+        self.fault("changes")?;
         self.call(|s| {
             let (device_id, _) = s.device_for(ctx)?;
             let prefix = format!("{}:", &hashed(&format!("{MOCK_NAMESPACE}:{device_id}"))[..32]);
@@ -964,6 +1020,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn document(&self, ctx: &SyncContext, document_id: &str) -> TResult<PulledDocument> {
+        self.fault("document")?;
         self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             let doc = s.doc_owned(device.owner, document_id)?;
@@ -975,6 +1032,8 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn push(&self, ctx: &SyncContext, document_id: &str, body: &PushRequest) -> TResult<PushResponse> {
+        self.pushes.lock().unwrap().push((document_id.to_string(), body.clone()));
+        self.fault("push")?;
         let result = self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             let doc = s.doc_owned(device.owner, document_id)?;
@@ -1032,6 +1091,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn ack(&self, ctx: &SyncContext, document_id: &str, body: &AckRequest) -> TResult<AckResponse> {
+        self.fault("ack")?;
         self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             let doc = s.doc_owned(device.owner, document_id)?;
@@ -1053,6 +1113,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn conflicts(&self, ctx: &SyncContext, document_id: &str) -> TResult<ConflictsResponse> {
+        self.fault("conflicts")?;
         self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             s.doc_owned(device.owner, document_id)?;
@@ -1076,6 +1137,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn resolve(&self, ctx: &SyncContext, document_id: &str, conflict_id: &str, body: &ResolveRequest) -> TResult<WireDocument> {
+        self.fault("resolve")?;
         self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             let doc = s.doc_owned(device.owner, document_id)?;
@@ -1103,6 +1165,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn upload(&self, ctx: &SyncContext, request_id: &str, file_name: &str, mime: &str, bytes: Vec<u8>) -> TResult<UploadResponse> {
+        self.fault("upload")?;
         // 서버 오류 흉내 — 실패해도 카운터는 줄어든다(요청 롤백과 별개).
         let fail = self.web(|s| {
             s.online && s.fail_next_uploads > 0 && {
@@ -1151,6 +1214,7 @@ impl SyncTransport for MockSyncTransport {
     }
 
     async fn download(&self, ctx: &SyncContext, name: &str) -> TResult<Vec<u8>> {
+        self.fault("download")?;
         self.call(|s| {
             let (device_id, device) = s.device_for(ctx)?;
             let image = s.images.get(name).filter(|i| i.owner == device.owner).cloned().ok_or(TransportError::NotFound)?;

@@ -18,6 +18,8 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 | login-link | (Mock) 계정 연결: 127.0.0.1 loopback callback + PKCE 교환 → 날짜 연결 → 첫 Sync |
 | conflict | (Mock) Web·Desktop 양쪽 수정 → 비교 화면 → Desktop 선택 → 선택하지 않은 쪽 History |
 | offline-restart-outbox | (Mock) 오프라인 편집 → 강제 종료 → 재실행 후 Outbox 유지 → 온라인 전송 |
+| first-link-compare | (Mock) 같은 날짜에 이 PC·Web 모두 내용 → 연결해도 덮지 않고 첫 연결 비교(base_version=0), [나중에 선택] 후에도 양쪽 그대로 |
+| linked-list-rename-notice | (Mock) 연결된 List 이름 변경 → 이 PC 에만(서버 API 없음, 보낼 것 없음) |
 | storage-move | 저장 위치 변경 후 같은 메모 |
 | deep-link | `plana-memo://open` → 두 번째 창 없이 기존 창(single instance) |
 | logout | (Mock) 로그아웃 → 연결은 '이 PC 에만', 메모 유지 |
@@ -34,7 +36,10 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 PLANA_SERVER_ORIGIN=http://127.0.0.1:8000 npm run e2e
 ```
 
-같은 harness 가 실제 Adapter(PlanAWorkSyncTransport)를 쓴다. Mock 전용 단계(login-link·conflict·offline·logout)는
-건너뛴다 — 실제 로그인은 브라우저에서 사람이 PLAN-A Work 로그인·[확인]을 해야 하기 때문이다.
+같은 harness 가 실제 Adapter(PlanAWorkSyncTransport)를 쓴다. **개발 빌드는 운영 주소(planawork.com)와 production
+namespace 를 거부한다** — 로컬 Backend 나 staging 에만 연결된다(운영 서버에 시험 데이터를 올리지 않게).
+서버 준비 조건·실제 시나리오 표: [docs/PLAN_A_WORK_SYNC_HANDOFF.md §4](../docs/PLAN_A_WORK_SYNC_HANDOFF.md). Mock 전용 단계(login-link·conflict·offline·logout)는
+건너뛴다 — 실제 로그인은 브라우저에서 사람이 PLAN-A Work 로그인·[확인]을 해야 하기 때문이다. 실제 서버 결과는 Mock 결과와
+따로 기록한다.
 plan-a-work 쪽 준비(DB migration 적용, `MEMO_SYNC_ENABLED`·namespace 설정, Web feature flag)가 끝난 뒤
 `login-link` 이후 단계를 실제 서버용으로 확장한다(브라우저 동의 대기 → loopback 완료를 `auth_status` 로 확인).

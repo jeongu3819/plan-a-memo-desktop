@@ -65,7 +65,8 @@ src/                  React UI (features · editor · services · tauri · domai
 src-tauri/src/        Rust (commands · memo · storage · attachments · sync · auth)
 src-tauri/tests/      Rust 통합 테스트
 migrations/           SQLite migration(앱에 포함)
-docs/                 architecture · local-storage · sync-adapter · vendored-code
+docs/                 architecture · local-storage · sync-adapter · vendored-code · Contract 검증 · PLAN-A Work 인계
+docs/upstream-plan-a-work/  PLAN-A Work 에서 복사한 memo-sync-v1 참고 자료(읽기 전용 — SQL 실행 금지)
 ```
 
 ## 문서
@@ -73,4 +74,6 @@ docs/                 architecture · local-storage · sync-adapter · vendored-
 * [Architecture](docs/architecture.md)
 * [Local Storage](docs/local-storage.md) — 저장 위치·Schema·Backup·위치 변경
 * [Sync Adapter](docs/sync-adapter.md) — SyncTransport·Mock·Conflict·Auth·실제 Adapter 교체 목록
+* [Contract 검증 보고](docs/sync-contract-verification.md) — memo-sync-v1 4개 참고 파일과 Desktop 구현 대조, 미검증 항목
+* [PLAN-A Work 수정 요청](docs/PLAN_A_WORK_SYNC_HANDOFF.md) — https 링크 오탐 정규식, List 이름 API, 통합 테스트 준비
 * [가져온 Web 코드](docs/vendored-code.md)

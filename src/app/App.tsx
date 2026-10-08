@@ -57,7 +57,8 @@ function Shell({ info, onStorageChanged }: { info: AppInfo; onStorageChanged: ()
         const report = event.payload;
         if (report.conflicts > 0) {
           notify({
-            message: '⚠ 메모 내용이 서로 다릅니다. Desktop과 PLAN-A Work에서 각각 수정되었습니다.',
+            // 출처(desktop/web·첫 연결)는 비교 화면이 알려 준다 — 여기서는 어느 쪽이라고 단정하지 않는다.
+            message: '⚠ 메모 내용이 서로 다릅니다. 어느 쪽도 지우지 않았습니다 — 비교해서 최신으로 쓸 내용을 골라주세요.',
             variant: 'error',
             actionLabel: '비교하기',
             onAction: () => setConflicts({}),

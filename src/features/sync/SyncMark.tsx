@@ -25,7 +25,7 @@ type Problem = { label: string; color: 'warning' | 'error' | 'default'; tip: str
 export function syncProblem(document: DocumentInfo | null): Problem | null {
   if (!document?.syncEnabled) return null;
   if (document.hasConflict || document.syncStatus === 'conflict') {
-    return { label: '내용 확인 필요', color: 'error', tip: 'Desktop 과 PLAN-A Work 에서 각각 수정되었습니다. 눌러서 비교하세요.', conflict: true };
+    return { label: '내용 확인 필요', color: 'error', tip: '이 PC 와 PLAN-A Work 의 내용이 서로 다릅니다. 눌러서 비교하세요.', conflict: true };
   }
   switch (document.syncStatus) {
     case 'pending':

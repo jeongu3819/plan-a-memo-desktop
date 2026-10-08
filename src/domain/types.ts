@@ -292,6 +292,8 @@ export interface ConflictView {
   remoteVersion: number;
   /** desktop: 이 PC 가 보낸 내용과 비교 / web: 오래된 Web 편집기가 늦게 저장한 내용과 비교 */
   source: 'desktop' | 'web' | null;
+  /** 처음 연결하는 날짜/List 에 양쪽 모두 내용이 있어 생긴 비교(어느 쪽도 지우지 않음) */
+  firstLink: boolean;
   createdAt: string;
   updatedAt: string;
 }

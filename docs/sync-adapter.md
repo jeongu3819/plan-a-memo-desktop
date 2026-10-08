@@ -1,7 +1,9 @@
 # Sync Adapter — PLAN-A Work memo-sync-v1
 
-> **기준:** `plan-a-work/docs/contracts/memo-sync-v1.md` + `docs/MEMO_SYNC_IMPLEMENTATION.md` + Backend 코드
-> (`backend/app/services/memo_sync_api.py`, `memo_sync.py`, commit `ccb4998`). 읽기만 했다.
+> **기준:** 저장소 안 스냅샷 `docs/upstream-plan-a-work/`(memo-sync-v1.md · MEMO_SYNC_IMPLEMENTATION.md ·
+> source/memo_sync_api.py · memo-sync-v1.mysql.sql — 읽기 전용). 2차 작업은 plan-a-work commit `ccb4998` 을 직접 읽었고,
+> 3차부터는 스냅샷만 본다. Contract 대조 결과: [sync-contract-verification.md](sync-contract-verification.md),
+> PLAN-A Work 수정 요청: [PLAN_A_WORK_SYNC_HANDOFF.md](PLAN_A_WORK_SYNC_HANDOFF.md).
 > **실제 PLAN-A Work 서버와의 통합 검증은 아직 하지 않았다** — 서버 DB migration·feature flag 가 아직 적용 전이다.
 > 검증 상태는 이 문서 끝의 표.
 
@@ -23,6 +25,8 @@ React UI ─ typed commands ─▶ memo (Local DB + Outbox, 한 transaction)
 
 * 환경별 선택(`state.rs`): production → https://planawork.com, staging → https://staging.planawork.com,
   development(주소 없음) → Mock. 운영·staging 빌드에는 Mock 과 개발용 도구가 없다.
+* 환경 분리: 운영 주소는 운영 빌드에서만. 서버 namespace 도 빌드와 맞아야 credential 을 저장한다 —
+  production 빌드 ← `production:*`, staging ← `staging:*`, development ← `local:*`·`staging:*`(운영 서버 시험 금지).
 * Rust 에서만 HTTP 를 부른다 — credential 이 WebView(JS)로 나오지 않는다. Cookie 를 다루지 않는다.
 
 ## Endpoint (모두 `/api/memo-sync/native` 아래, Desktop Bearer)
@@ -63,6 +67,7 @@ cursor_namespace_mismatch, 413/422 → 거절(문서만 오류 표시), 429 → 
 | kind · completed · 순서 | `kind` · `completed`(text 는 false) · `sort_order`(구역 안 0부터) |
 | `<img src="attachment://<local id>">` | `<img src="/api/personal-memos/images/<name>/download">` (`sync_attachment_map`) |
 | favorite | 보내지 않는다(Contract 에 없음) — 받아도 로컬 즐겨찾기 유지 |
+| List 이름 변경 | 보내지 않는다(이미 있는 List 의 이름을 바꾸는 API 가 없음) — 화면이 '이 PC 에만' 이라고 알린다 |
 | `documents.local_revision` | `local_version`(진단용) |
 | `documents.server_version` | `base_version` |
 | List 삭제 | `deleted=true`, `items=[]`(tombstone) 후 연결 해제 |
@@ -79,7 +84,8 @@ cursor_namespace_mismatch, 413/422 → 거절(문서만 오류 표시), 429 → 
 2. **계정 보호**: Sync 상태는 `account_key = <namespace>|<user_id>` 로 묶인다. 다른 계정·환경의 Link·Outbox·cursor 는
    보내지도 지우지도 않고 '다른 계정으로 연결된 메모' 로 멈춘다(user_id 로 권한 판단하지 않는다 — 권한은 서버가 credential 로).
 3. Outbox: UNLINK → LINK → PUSH.
-   * LINK: (List 면 `POST lists`) → `POST links` → `GET document` → 비교. 서버 빈 문서 + 로컬 내용 → 그 version 위에 push.
+   * LINK: (List 면 `POST lists`) → `POST links` → `GET document` → 비교. 서버 빈 문서 + 로컬 내용 → 그 version 위에 push
+     (서버에서 삭제된 tombstone 은 '빈 문서' 가 아니다 → base 0 비교, 몰래 되살리지 않음).
      로컬 빈 문서 → 서버 내용 받기. 둘 다 내용이 있고 다르면 **base_version=0** 으로 push → 서버가 비교를 만든다.
      같으면 id 만 맞춘다. 비교하는 사이 로컬이 또 바뀌면 다음 실행에서 다시 비교.
    * PUSH: 이미지 먼저 업로드(request id = 로컬 첨부 id — 재전송해도 한 장) → 본문 → **요청 전체를 Outbox 에 저장한 뒤** 보낸다.
@@ -89,6 +95,7 @@ cursor_namespace_mismatch, 413/422 → 거절(문서만 오류 표시), 429 → 
 4. Changes: cursor 이후 이벤트로 '받아야 할 문서' 표시만 하고 cursor 와 **같은 transaction** 에 저장
    (계정·기기별 키). `unlinked` → 로컬 연결 종료(내용 유지), `linked`(모르는 문서) → Web 이 연결한 문서로 받기.
 5. 표시된 문서: `GET document` → 이미지 내려받기(SHA-256 확인) → 로컬 transaction(History `remote_apply`) → ACK.
+   받지 못하면(이미지 저장 실패 등) 그 문서를 '오류 — 변경을 아직 받지 못했습니다' 로 표시하고 다음 실행에서 다시 받는다.
    보내지 않은 로컬 편집이 있으면 덮어쓰지 않고 원래 base 로 push → 서버가 비교를 만든다. 한 문서 실패가 다른 문서를 막지 않는다.
 6. ACK: 로컬 DB 반영 + 본문이 참조하는 이미지 파일이 실제로 있을 때만, 정확한 version + 이미지 이름 전체로.
    `ack_version_stale`·`attachments_incomplete` → 다시 받기.
@@ -134,3 +141,7 @@ Desktop 은 기본 버튼 [Desktop에서만 이동] 이 이 의미이고, [○�
 | 브라우저 로그인 · loopback · PKCE · 재연결 · 로그아웃 | 완료 | 완료(Mock 동의 + 실제 loopback) | 아직 |
 | 계정 바꾸기 보호 | 완료 | 완료 | 아직 |
 | HTTP 요청 모양(Method·Path·Header·Body·multipart) | 완료 | stub HTTP 서버로 확인 | 아직 |
+| https 링크가 있는 메모 | 완료(본문 보존·재시도) | 완료 | **차단** — 서버 정규식 수정 필요(인계 §1) |
+| 연결된 List 이름 변경 | 이 PC 에만(안내) | 완료 | 서버 API 없음(인계 §2) |
+
+3차 Contract 대조의 항목별 표·테스트 목록: [sync-contract-verification.md](sync-contract-verification.md).

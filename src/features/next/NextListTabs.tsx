@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import {
+  Alert,
   Box,
   Button,
   ButtonBase,
@@ -36,11 +37,15 @@ import { dayTone, MEMO_CARD, MEMO_CARD_BORDER, MEMO_MUTED, NEXT_LABEL } from '..
 import { usePersonalMemo } from '../memo/MemoProvider';
 import SyncMark from '../sync/SyncMark';
 
+const LINKED_RENAME_NOTICE =
+  '이 List 는 PLAN-A Work 와 연결되어 있습니다. 이름은 이 PC 에만 바뀌고 PLAN-A Work 의 List 이름은 바뀌지 않습니다(PLAN-A Work 에 이름 변경 기능이 아직 없음). 메모 내용은 계속 동기화됩니다.';
+
 export function ListNameDialog({
   open,
   title,
   initial = '',
   submitLabel,
+  notice,
   onClose,
   onSubmit,
 }: {
@@ -48,6 +53,8 @@ export function ListNameDialog({
   title: string;
   initial?: string;
   submitLabel: string;
+  /** 입력란 위 안내(예: 연결된 List 이름은 이 PC 에만 바뀜) */
+  notice?: string;
   onClose: () => void;
   onSubmit: (name: string) => Promise<void>;
 }) {
@@ -76,6 +83,11 @@ export function ListNameDialog({
     <Dialog open={open} onClose={onClose} data-personal-memo-overlay="true" data-testid="memo-list-name-dialog" fullWidth maxWidth="xs">
       <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>{title}</DialogTitle>
       <DialogContent>
+        {notice && (
+          <Alert severity="info" sx={{ mb: 1.5, fontSize: '0.8rem' }} data-testid="memo-list-name-notice">
+            {notice}
+          </Alert>
+        )}
         <TextField
           autoFocus
           fullWidth
@@ -154,6 +166,8 @@ export default function NextListTabs({ activeListId, onSelect }: { activeListId:
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<NextListInfo | null>(null);
+  // 연결된 List — memo-sync-v1 에 이미 있는 List 의 이름을 바꾸는 API 가 없다(이름은 이 PC 에만 바뀐다).
+  const renamingLinked = !!renaming?.document?.syncEnabled;
   const [deleting, setDeleting] = useState<NextListInfo | null>(null);
   const activeCard = cards.find(c => !c.isDefault && c.id === activeListId) ?? null;
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -237,11 +251,13 @@ export default function NextListTabs({ activeListId, onSelect }: { activeListId:
         title="List 이름 바꾸기"
         initial={renaming?.name ?? ''}
         submitLabel="바꾸기"
+        notice={renamingLinked ? LINKED_RENAME_NOTICE : undefined}
         onClose={() => setRenaming(null)}
         onSubmit={async name => {
           await nextListService.rename(renaming!.id, name);
           refreshMemo(queryClient);
           setRenaming(null);
+          if (renamingLinked) notify({ message: '이 PC 의 List 이름을 바꿨습니다. PLAN-A Work 의 List 이름은 그대로입니다.' });
         }}
       />
       <Dialog open={!!deleting} onClose={() => setDeleting(null)} data-personal-memo-overlay="true" data-testid="memo-list-delete-confirm">

@@ -248,13 +248,14 @@ pub struct DesktopAuth {
     pending: Mutex<Option<PendingLogin>>,
 }
 
-/// 서버 namespace(`<환경>:<server id>`)가 이 빌드의 환경과 맞는가 — 운영 앱이 개발 서버 credential 을 받지 않게.
+/// 서버 namespace(`<환경>:<server id>`)가 이 빌드의 환경과 맞는가 — 운영 앱이 개발 서버 credential 을 받지 않고,
+/// 개발 빌드(시험·E2E)가 운영 서버에 연결해 시험 데이터를 올리지 않게.
 pub fn namespace_allowed(env: AppEnv, namespace: &str) -> bool {
     let server_env = namespace.split(':').next().unwrap_or_default();
     match env {
         AppEnv::Production => server_env == "production",
         AppEnv::Staging => server_env == "staging",
-        AppEnv::Development => matches!(server_env, "local" | "staging" | "production"),
+        AppEnv::Development => matches!(server_env, "local" | "staging"),
     }
 }
 

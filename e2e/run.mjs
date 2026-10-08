@@ -181,6 +181,59 @@ step(
   { mockOnly: true },
 );
 
+step(
+  'first-link-compare',
+  async () => {
+    // 같은 날짜에 이 PC 와 'Web' 모두 내용이 있다 → 연결해도 어느 쪽도 덮어쓰지 않고 첫 연결 비교(base_version=0)
+    const next = new Date(`${today}T00:00:00`);
+    next.setDate(next.getDate() + 1);
+    const date = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`;
+    const location = { kind: 'day', date };
+    await app.invoke('item_create', {
+      input: { id: crypto.randomUUID(), location, section: 'main', kind: 'checklist', contentHtml: 'AWS 확인(Desktop)' },
+    });
+    await app.invoke('mock_remote_edit', { location, text: 'RDS 확인(Web)' });
+    await app.invoke('sync_link', { location });
+    const report = await app.invoke('sync_now');
+    assert.equal(report.conflicts, 1, '첫 연결 비교');
+    const conflict = (await app.invoke('conflicts_list')).find(c => c.location.date === date);
+    assert.equal(conflict.firstLink, true);
+    assert.deepEqual(
+      conflict.local.items.map(i => i.contentHtml),
+      ['AWS 확인(Desktop)'],
+      '이 PC 내용은 그대로',
+    );
+    assert.deepEqual(
+      conflict.remote.items.map(i => i.contentHtml),
+      ['RDS 확인(Web)'],
+      'Web 내용도 그대로',
+    );
+    await app.page.click('[data-testid="header-sync-problem"]').catch(() => undefined);
+    await app.page.waitForSelector('[data-testid="conflict-dialog"]', { timeout: 10000 });
+    await app.page.waitForSelector('text=처음 연결하는데', { timeout: 5000 });
+    await app.shot('07b-first-link-compare');
+    await app.page.locator('[data-testid="conflict-dialog"] button:has-text("나중에 선택")').click();
+    const items = (await app.invoke('memo_day', { date })).items.map(i => i.contentHtml);
+    assert.deepEqual(items, ['AWS 확인(Desktop)'], '고르기 전에는 이 PC 내용을 바꾸지 않는다');
+  },
+  { mockOnly: true },
+);
+
+step(
+  'linked-list-rename-notice',
+  async () => {
+    const list = await app.invoke('list_create', { id: crypto.randomUUID(), name: '앱 개발' });
+    await app.invoke('sync_link', { location: { kind: 'next', listId: list.id } });
+    await app.invoke('sync_now');
+    const before = (await app.invoke('sync_overview')).outbox; // 앞 단계의 '나중에 선택' 비교 1건은 그대로 대기
+    const renamed = await app.invoke('list_rename', { id: list.id, name: '앱 개발 2' });
+    assert.equal(renamed.name, '앱 개발 2');
+    assert.equal(renamed.document.syncStatus, 'synced', '이름 변경으로 보낼 것이 생기지 않는다(서버 API 없음)');
+    assert.equal((await app.invoke('sync_overview')).outbox, before);
+  },
+  { mockOnly: true },
+);
+
 step('storage-move', async () => {
   const target = path.join(app.workDir, 'moved', 'My Notes');
   const report = await app.invoke('storage_relocate', { path: target });

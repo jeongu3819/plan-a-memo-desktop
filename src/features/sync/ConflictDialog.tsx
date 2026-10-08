@@ -21,6 +21,7 @@ import { refreshMemo, useConflicts } from '../../services/queries';
 import { AppError, errorMessage, syncService } from '../../tauri/api';
 import { MEMO_CARD, MEMO_CARD_BORDER, MEMO_RADIUS } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import SnapshotView from '../history/SnapshotView';
+import { conflictReason, remoteTitle } from './conflictText';
 
 function Side({ title, children, onUse, busy }: { title: string; children: React.ReactNode; onUse: () => void; busy: boolean }) {
   return (
@@ -86,9 +87,7 @@ export default function ConflictDialog({ open, documentId, onClose }: { open: bo
           <>
             <Typography sx={{ fontSize: '0.88rem', mb: 0.5 }}>
               <b>{locationLabel(current.location, current.listName)}</b> —{' '}
-              {current.source === 'web'
-                ? 'PLAN-A Work 에서 오래 열어 둔 편집 내용이 늦게 저장되어, 이 PC 가 보낸 내용과 다릅니다.'
-                : 'Desktop과 PLAN-A Work에서 각각 수정되었습니다.'}
+              {conflictReason(current)}
             </Typography>
             <Typography sx={{ fontSize: '0.84rem', color: 'text.secondary', mb: 2 }}>
               최신으로 사용할 내용을 선택해주세요. 선택하지 않은 내용은 History 에 보관됩니다.
@@ -100,7 +99,7 @@ export default function ConflictDialog({ open, documentId, onClose }: { open: bo
               <Side title="Desktop Version" onUse={() => void resolve('local')} busy={busy}>
                 <SnapshotView snapshot={current.local} />
               </Side>
-              <Side title={current.source === 'web' ? 'PLAN-A Work Version (Web 에서 늦게 저장)' : 'PLAN-A Work Version'}onUse={() => void resolve('remote')} busy={busy}>
+              <Side title={remoteTitle(current)} onUse={() => void resolve('remote')} busy={busy}>
                 <SnapshotView snapshot={current.remote} />
               </Side>
             </Box>

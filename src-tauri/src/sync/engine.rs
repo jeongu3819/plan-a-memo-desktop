@@ -165,8 +165,10 @@ fn link_of(conn: &Connection, doc_id: &str) -> AppResult<Option<LinkRow>> {
 /// 서버 오류 → 사용자에게 보일 문장.
 fn rejected_message(status: u16, message: &str) -> String {
     if message.contains("Local paths are not allowed") {
-        return "PLAN-A Work 가 이 메모의 링크(https://…) 또는 'file:' 같은 글자를 PC 경로로 보고 거절했습니다. \
-                (PLAN-A Work 서버 규칙 수정 대기 — 해당 글자를 빼면 보낼 수 있습니다.)"
+        // 서버의 경로 검사가 https:// 링크도 PC 경로로 오인한다(docs/PLAN_A_WORK_SYNC_HANDOFF.md §1).
+        // 본문은 바꾸지 않는다 — 서버가 고쳐지면 같은 내용 그대로 다시 보낸다.
+        return "PLAN-A Work 가 이 날짜/List 의 링크(https://…) 등을 PC 파일 경로로 잘못 판단해 받지 않았습니다. \
+                이 PC 의 내용은 그대로 보관되며, PLAN-A Work 서버가 수정되면 자동으로 다시 보냅니다. 다른 날짜/List 는 계속 동기화됩니다."
             .into();
     }
     if status == 413 {
@@ -458,7 +460,16 @@ impl SyncEngine {
 
     /// 서버 문서가 참조하는 이미지를 내려받아 저장 폴더에 넣는다(SHA-256 확인).
     async fn download_attachments(&self, storage: &Storage, ctx: &SyncContext, manifest: &[WireAttachment]) -> Step<()> {
-        let missing = storage.with_conn(|c| mapper::attachments_to_download(c, &storage.paths, &ctx.account_key, manifest))?;
+        // 같은 이름이 여러 번 오면 한 번만(SHA-256 이 있는 항목 우선).
+        let mut unique: Vec<WireAttachment> = Vec::new();
+        for entry in manifest {
+            match unique.iter_mut().find(|u| u.name == entry.name) {
+                Some(existing) if existing.sha256.is_none() => *existing = entry.clone(),
+                Some(_) => {}
+                None => unique.push(entry.clone()),
+            }
+        }
+        let missing = storage.with_conn(|c| mapper::attachments_to_download(c, &storage.paths, &ctx.account_key, &unique))?;
         for entry in missing {
             let bytes = self.transport.download(ctx, &entry.name).await?;
             let hash = crate::util::sha256_hex(&bytes);
@@ -555,8 +566,10 @@ impl SyncEngine {
             let local_items = repo::items_of(&tx, doc_id)?;
             let server_items: Vec<&WireItem> = server.items.iter().collect();
             let local_empty = local_items.is_empty();
-            let server_empty = server_items.is_empty();
-            let in_sync = if server_empty && local_empty {
+            // 서버에서 삭제(tombstone)된 문서는 '비어 있음' 으로 보지 않는다 — 이 PC 내용으로 몰래 되살리지 않고 비교한다
+            // (Contract: delete/edit 는 일반 문서 비교, 자동 부활 없음).
+            let server_empty = server_items.is_empty() && !server.deleted;
+            let in_sync = if server_items.is_empty() && local_empty {
                 true
             } else if local_empty {
                 let form = mapper::to_local(&tx, &doc, &ctx.account_key, server.deleted, &server.items)?;
@@ -878,6 +891,11 @@ impl SyncEngine {
                 }
             }
         }
+        // 받지 못한 문서는 '동기화됨' 으로 두지 않는다(이미지 저장 실패 등) — 다음 실행에서 다시 받는다.
+        let refresh_failed = |storage: &Storage, doc_id: &str, message: &str| {
+            storage
+                .with_conn(|c| set_error(c, doc_id, &format!("PLAN-A Work 변경을 아직 받지 못했습니다 — {message} 잠시 뒤 다시 받습니다.")))
+        };
 
         let pending: Vec<(String, String)> = storage.with_conn(|c| {
             Ok(c.prepare(
@@ -900,11 +918,15 @@ impl SyncEngine {
                         // 이 문서만 다음에 다시(remote_pending 유지) — 다른 문서는 계속.
                         report.failed += 1;
                         log::warn!("sync refresh failed: {error}");
+                        refresh_failed(storage, &doc_id, &error.to_string())?;
+                        report.touched(&doc_id);
                     }
                 }
                 Err(StepError::App(error)) => {
                     report.failed += 1;
                     log::warn!("sync apply failed: {}", error.code());
+                    refresh_failed(storage, &doc_id, &error.to_string())?;
+                    report.touched(&doc_id);
                 }
             }
         }
@@ -1296,6 +1318,8 @@ pub struct ConflictView {
     pub remote_version: i64,
     /// 서버 제안의 출처 — desktop(이 PC 가 보낸 내용이 비교 대상) | web(오래된 Web 편집기가 늦게 저장)
     pub source: Option<String>,
+    /// 처음 연결하는 문서에 양쪽 모두 내용이 있어 생긴 비교(base_version=0 제안)
+    pub first_link: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1327,6 +1351,8 @@ pub fn get_conflict(conn: &Connection, id: &str) -> AppResult<ConflictView> {
         local: repo::build_snapshot(conn, &doc, true)?,
         remote: serde_json::from_str(&row.2)?,
         remote_version: row.3,
+        // 첫 연결 비교는 서버 version 을 아직 받아들이지 않은 상태(0)에서 생긴다.
+        first_link: doc.server_version == Some(0),
         source: row.4,
         created_at: row.5,
         updated_at: row.6,
@@ -1407,7 +1433,14 @@ impl SyncEngine {
         };
         // 서버 확정 — 이제 로컬을 맞춘다(필요한 이미지 먼저).
         if choice == ConflictChoice::Remote {
-            self.download_attachments(storage, &ctx, &document.attachments).await.map_err(|e| match e {
+            // Resolve 응답의 attachments 가 비어 와도 본문이 참조하는 이미지는 모두 받는다(빠진 채 확정하지 않는다).
+            let mut manifest = document.attachments.clone();
+            let referenced: Vec<WireAttachment> = mapper::manifest_from_items(&document.items)
+                .into_iter()
+                .filter(|m| !document.attachments.iter().any(|a| a.name == m.name))
+                .collect();
+            manifest.extend(referenced);
+            self.download_attachments(storage, &ctx, &manifest).await.map_err(|e| match e {
                 StepError::App(e) => e,
                 StepError::Transport(t) => {
                     AppError::new("sync_failed", format!("PLAN-A Work 이미지를 받지 못했습니다({t}). 잠시 뒤 자동으로 다시 받습니다."))

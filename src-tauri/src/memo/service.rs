@@ -415,10 +415,10 @@ pub fn rename_list(conn: &mut Connection, id: &str, name: &str) -> AppResult<Nex
     if info.is_default {
         return Err(AppError::validation("기본 Next 의 이름은 바꿀 수 없습니다."));
     }
+    // List 이름은 이 PC 의 정보다. memo-sync-v1 에는 이미 있는 List 의 이름을 바꾸는 API 가 없고 Push 문서에도
+    // 이름 필드가 없다 — 연결된 List 라도 PLAN-A Work 로 보내지 않는다(화면이 '이 PC 에만' 이라고 알린다).
+    // 문서 revision 을 올리지 않는다(올려도 보낼 내용이 없어 '보내는 중' 표시만 생긴다).
     tx.execute("UPDATE next_lists SET name = ?2, updated_at = ?3 WHERE id = ?1", params![id, name, now()])?;
-    if let Some(doc) = &info.document {
-        touch(&tx, &doc.id)?; // List 이름도 문서 내용이다(연결돼 있으면 전달)
-    }
     let info = repo::list_info(&tx, id)?;
     tx.commit()?;
     Ok(info)

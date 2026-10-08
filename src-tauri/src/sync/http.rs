@@ -108,9 +108,12 @@ pub fn map_status(status: StatusCode, body: &[u8]) -> TransportError {
         404 if message == "Memo sync unavailable" => TransportError::Unavailable,
         404 => TransportError::NotFound,
         409 => TransportError::Conflict { code: parsed.code.or(parsed.message).unwrap_or_else(|| "conflict".into()) },
-        413 | 422 => {
-            TransportError::Rejected { status: status.as_u16(), message: if message.is_empty() { "형식 오류".into() } else { message } }
-        }
+        413 | 422 => TransportError::Rejected {
+            status: status.as_u16(),
+            message: if message.is_empty() { parsed.code.clone().unwrap_or_else(|| "형식 오류".into()) } else { message },
+            code: parsed.code,
+            item: parsed.item,
+        },
         429 => TransportError::RateLimited,
         503 => TransportError::Unavailable,
         code => TransportError::Server(format!("HTTP {code}")),
@@ -197,12 +200,12 @@ impl SyncTransport for PlanAWorkSyncTransport {
 
     async fn upload(&self, ctx: &SyncContext, request_id: &str, file_name: &str, mime: &str, bytes: Vec<u8>) -> TResult<UploadResponse> {
         if !valid_request_id(request_id) {
-            return Err(TransportError::Rejected { status: 422, message: "Invalid request ID".into() });
+            return Err(TransportError::rejected(422, "Invalid request ID"));
         }
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(file_name.to_string())
             .mime_str(mime)
-            .map_err(|_| TransportError::Rejected { status: 422, message: "이미지 형식".into() })?;
+            .map_err(|_| TransportError::rejected(422, "이미지 형식"))?;
         let form = reqwest::multipart::Form::new().part("file", part);
         let request = self
             .http
@@ -276,10 +279,18 @@ mod tests {
         assert!(map_status(s(409), br#"{"detail":{"code":"link_inactive"}}"#).is_conflict("link_inactive"));
         assert!(map_status(s(409), br#"{"detail":{"code":"item_moved_or_not_owned"}}"#).is_conflict("item_moved_or_not_owned"));
         assert!(map_status(s(409), br#"{"detail":"Request ID reused"}"#).is_conflict("Request ID reused"));
+        assert_eq!(map_status(s(422), br#"{"detail":"Duplicate item"}"#), TransportError::rejected(422, "Duplicate item"));
         assert_eq!(
-            map_status(s(422), br#"{"detail":"Local paths are not allowed"}"#),
-            TransportError::Rejected { status: 422, message: "Local paths are not allowed".into() }
+            map_status(s(422), br#"{"detail":{"code":"reference_not_allowed","item":0}}"#),
+            TransportError::Rejected {
+                status: 422,
+                message: "reference_not_allowed".into(),
+                code: Some("reference_not_allowed".into()),
+                item: Some(0)
+            }
         );
+        assert!(map_status(s(409), br#"{"detail":{"code":"device_revoked"}}"#).is_conflict("device_revoked"));
+        assert!(map_status(s(409), br#"{"detail":{"code":"client_key_in_use"}}"#).is_conflict("client_key_in_use"));
         assert_eq!(map_status(s(429), b"{}"), TransportError::RateLimited);
         assert_eq!(map_status(s(503), br#"{"detail":"Memo sync namespace is not configured"}"#), TransportError::Unavailable);
         assert!(map_status(s(502), b"<html>").is_transient());

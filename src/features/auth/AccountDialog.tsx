@@ -11,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { listen } from '@tauri-apps/api/event';
 import { keys, refreshMemo, useAuthStatus } from '../../services/queries';
 import { authService, errorMessage } from '../../tauri/api';
+import { accountMode, canReconnectSameDevice } from './accountState';
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -37,7 +38,11 @@ export default function AccountDialog({
   const auth = status.data;
   const session = auth?.session ?? null;
   const loggedIn = !!auth?.loggedIn;
-  const expired = !!auth?.expired;
+  // 만료(같은 기기로 다시 연결)와 폐기(device_revoked — 새 기기 등록은 사용자가 고를 때만)를 구분한다.
+  const mode = accountMode(auth);
+  const revoked = mode === 'revoked';
+  const expired = mode === 'expired' || revoked;
+  const [reconnecting, setReconnecting] = useState(false);
   const isMock = auth?.provider === 'mock';
 
   // 브라우저에서 돌아와 연결이 끝나면(auth://changed → useAuthStatus 갱신) 닫는다.
@@ -69,6 +74,7 @@ export default function AccountDialog({
     setNotice(null);
     try {
       await authService.beginLogin(reconnect);
+      setReconnecting(reconnect);
       setWaiting(true);
       refresh();
     } catch (failure) {
@@ -112,11 +118,17 @@ export default function AccountDialog({
             <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
               이 PC: {session.deviceName} · 연결 {formatDate(session.connectedAt)} · {formatDate(session.expiresAt)} 까지
             </Typography>
-            {expired && (
+            {revoked ? (
+              <Alert severity="warning" sx={{ mt: 1.5, fontSize: '0.8rem' }} data-testid="account-revoked">
+                이 기기의 PLAN-A Work 연결이 해제되었습니다. 로컬 메모는 그대로 보존되어 있습니다. 다시 연결하려면 기기 등록이 필요합니다.
+                새 기기로 등록해도 이전에 연결했던 날짜·List 는 자동으로 다시 연결되지 않습니다 — 필요한 것만 직접 다시 연결하면 내용 비교부터 합니다.
+              </Alert>
+            ) : expired ? (
               <Alert severity="warning" sx={{ mt: 1.5, fontSize: '0.8rem' }}>
                 연결이 만료되었거나 PLAN-A Work 에서 이 PC 가 해제되었습니다. 다시 연결하면 이어서 동기화합니다. 그동안의 변경은 이 PC 에 보관돼 있습니다.
+                PLAN-A Work 의 기기 관리에서 이 PC 를 해제했다면 [새 기기로 등록]을 쓰세요(이전에 연결한 날짜·List 는 직접 다시 연결해야 합니다).
               </Alert>
-            )}
+            ) : null}
             {session.isMock && (
               <Alert severity="info" sx={{ mt: 1.5, fontSize: '0.8rem' }}>
                 개발용 Mock 서버 계정입니다. 실제 PLAN-A Work 계정·서버와 연결되지 않았습니다.
@@ -145,6 +157,11 @@ export default function AccountDialog({
             {isMock
               ? '연결하는 중…'
               : '브라우저에서 PLAN-A Work 로그인 후 [확인]을 누르면 자동으로 돌아옵니다(5분 안에).'}
+            {reconnecting && !isMock && (
+              <>
+                {' '}브라우저에 '이 기기는 해제되었습니다(device_revoked)' 가 보이면 [취소] 후 [새 기기로 등록]을 눌러주세요.
+              </>
+            )}
           </Alert>
         )}
         {notice && <Alert severity="success" sx={{ mt: 1.5, fontSize: '0.8rem' }}>{notice}</Alert>}
@@ -156,9 +173,19 @@ export default function AccountDialog({
           <Button color="inherit" onClick={() => void cancel()}>취소</Button>
         ) : loggedIn ? (
           <Button color="inherit" onClick={() => void logout()} disabled={busy}>로그아웃</Button>
-        ) : expired ? (
+        ) : revoked ? (
           <>
             <Button color="inherit" onClick={() => void logout()} disabled={busy}>다른 계정으로</Button>
+            <Button variant="contained" onClick={() => void connect(false)} disabled={busy} data-testid="account-register-new">
+              새 기기로 등록
+            </Button>
+          </>
+        ) : canReconnectSameDevice(mode) ? (
+          <>
+            <Button color="inherit" onClick={() => void logout()} disabled={busy}>다른 계정으로</Button>
+            <Button color="inherit" onClick={() => void connect(false)} disabled={busy} data-testid="account-register-new">
+              새 기기로 등록
+            </Button>
             <Button variant="contained" onClick={() => void connect(true)} disabled={busy} data-testid="account-connect">
               다시 연결
             </Button>

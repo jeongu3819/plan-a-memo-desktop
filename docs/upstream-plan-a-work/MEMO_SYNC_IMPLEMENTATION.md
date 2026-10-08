@@ -82,7 +82,9 @@ DDL은 모델에서 **컴파일만** 했고 MySQL에 실행하지 않았다. `te
 N은 Desktop bearer, W는 기존 Web 인증(+SaaS 쓰기 CSRF). 예외는 N auth/start와
 auth/exchange 두 공개 PKCE 경로다. JSON은 extra 필드를 거절한다.
 일반 오류: 401 인증/만료/폐기, 403 소유권, 404 비노출/미소유,
-409 버전·세대·재전송 불일치, 413 용량, 422 스키마, 429 rate limit, 503 설정.
+409 버전·세대·재전송 불일치, 413 본문 byte 용량, 422 스키마/항목 수·글자 수/참조 검사,
+429 rate limit, 503 설정. 1,000항목/항목 500,000자 초과는422, 문서 2,000,000 UTF-8
+byte 초과 및 공통 sanitizer byte 상한 초과는413이다.
 
 | Method/path | Request | Response/동작 |
 |---|---|---|
@@ -136,7 +138,9 @@ payload를 바꿔 같은 request_id를 쓰면409. 실패/충돌 후 임의로 �
 provider 구현이나 사용자 계정 복제는 없다. Web의 확인 버튼은 기존 CSRF 경계를 통과한다.
 PKCE verifier는 Desktop에만 남고 서버에는 challenge가 저장된다. 일회용 코드와
 전용 credential은 hash만 DB에 저장한다. credential은 30일 만료; 기존 device_id로
-브라우저 재인증하면 동일 기기/링크를 유지하며 token을 회전한다.
+브라우저 재인증하면 폐기되지 않은 기기는 동일 기기/링크를 유지하며 token을 회전한다.
+명시적 revoke/logout 이후 동일 ID의 재인증은409 `device_revoked`이며, 새 기기 등록과
+선택적 재연결이 필요하다. 만료와 폐기 정책은 계약 문서 참조.
 
 Loopback 선택 근거와 Desktop callback/credential 저장 지침은 계약 문서 참조.
 계정 탈퇴/비활성은 매 native 요청에서 거절한다. revoke/logout은 연결된 데이터 자체를

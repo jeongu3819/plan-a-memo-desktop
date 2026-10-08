@@ -92,6 +92,14 @@ export class App {
     return this.page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [command, args]);
   }
 
+  /** 실패를 기대하는 명령 — 앱 오류({code, message})를 그대로 돌려준다(성공하면 null). */
+  invokeError(command, args = {}) {
+    return this.page.evaluate(
+      ([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a).then(() => null, error => error),
+      [command, args],
+    );
+  }
+
   async shot(name) {
     await this.page.screenshot({ path: path.join(this.shotDir, `${name}.png`) });
   }

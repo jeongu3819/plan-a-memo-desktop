@@ -4,13 +4,14 @@
 > Desktop 은 `plan-a-work` 저장소를 수정하지 않았고, SQL 을 실행하지 않았고, 서버 flag 를 켜지 않았다.
 > Desktop 쪽 검증 결과는 [sync-contract-verification.md](sync-contract-verification.md).
 
-| # | 항목 | 종류 | 우선 |
+| # | 항목 | 종류 | 상태(4차 스냅샷 기준) |
 |---|---|---|---|
-| 1 | 로컬 경로 검사 정규식이 `https://` 링크를 거절 | **버그 — Backend 수정 필요** | 높음(통합 전 필수) |
-| 2 | 이미 있는 Next List 의 이름 변경 API 없음 | 기능 확장 요청 | 중간 |
-| 3 | Contract ↔ 코드 확인 요청 5건 | 확인 | 중간 |
-| 4 | 실제 통합 테스트 준비 | 환경 | 통합 전 필수 |
-| 5 | 다음 스냅샷에 넣어 줄 파일 | 자료 | 낮음 |
+| 1 | 로컬 경로 검사 정규식이 `https://` 링크를 거절 | 버그 | **PLAN-A Work 수정 완료**(URL 속성·CSS url() 문맥 검사, 422 `{code, item}`) — Desktop Mock·안내 반영 완료. 실제 서버 확인은 통합 때 |
+| 2 | 이미 있는 Next List 의 이름 변경 API 없음 | 기능 확장 | **v1 범위 밖으로 확정**(계약: 응답 전용, 통합 전제 아님). Desktop 은 'PC 에만' 유지 |
+| 3 | Contract ↔ 코드 확인 요청 | 확인 | **답변 받음**(READINESS §2 A–E): source 명시, manifest 중복 없음, 크기 422/413, 이동 409 code 유지, 폐기 기기 409 `device_revoked` — Desktop 반영 완료 |
+| 4 | 실제 통합 테스트 준비 | 환경 | **대기** — 승인된 일회용 MySQL·Staging·OAuth·저장소(READINESS §6–9) |
+| 5 | 다음 스냅샷에 넣어 줄 파일 | 자료 | 일부 — `services/memo_sync.py`·models 는 아직 스냅샷에 없음(READINESS 문서로 동작 확인) |
+| 6 | 폐기 기기 안내를 Desktop 이 받을 수 있게(선택) | 개선 제안 | 신규 — §6 |
 
 ---
 
@@ -157,7 +158,7 @@ def has_local_reference(fragment) -> bool:          # fragment = prepare_content
 | 경로 참조 | Desktop 은 보내지 않음(`attachment://` → 서버 이미지 주소 변환) | 같음 |
 
 Desktop 은 링크를 지우거나 본문을 고쳐서 우회하지 **않는다**(이번 작업에서 안내 문구의 '해당 글자를 빼면 보낼 수 있습니다'
-권유도 없앴다). Mock 서버(`sync/mock.rs::server_rejects_as_local_path`)는 현행 규칙을 그대로 흉내 내고 있으므로, 서버가
+권유도 없앴다). (4차: 서버 수정 후 Mock 은 `sync/reference.rs` 의 URL 위치 검사로 교체했다.) 3차 당시 Mock 서버(`sync/mock.rs::server_rejects_as_local_path`)는 현행 규칙을 그대로 흉내 내고 있으므로, 서버가
 고쳐지면 Mock 도 같은 규칙으로 바꾼다.
 
 ---
@@ -279,3 +280,15 @@ npm run e2e                                         # 실제 서버 모드: Mock
 * `backend/app/memo_sync_models.py` — 특히 `MemoSyncConflict.source` 기본값
 * `backend/app/services/personal_memos.py` 의 `INLINE_IMAGE_POLICY`, `prepare_content`, `process_task_inline_image`, `image_url`
 * `backend/tests/test_memo_sync.py`(Contract 사례 확인용)
+
+## 6. (4차 · 선택) 폐기된 기기 안내를 Desktop 이 받을 수 있게
+
+현재 `native/auth/start` 는 폐기된 `device_id` 도 받아 주고, **브라우저 동의(`web/auth/authorize`)** 에서야 409 `device_revoked` 를 낸다.
+그 오류는 브라우저 화면에만 보이고 loopback 으로 오지 않으므로, Desktop 은 5분 동안 기다리다 시간 초과로만 끝난다(지금은
+기다리는 동안 "브라우저에 device_revoked 가 보이면 [새 기기로 등록]" 을 안내한다). 다음 중 하나가 있으면 Desktop 이 바로 안내할 수 있다.
+
+1. `auth/start` 에서 `device_id` 가 폐기돼 있으면 409 `{code: device_revoked}`(브라우저를 열기 전에 알 수 있음).
+2. 동의 화면이 폐기 오류일 때 `redirect_uri?error=device_revoked&state=<state>` 로 이동(RFC 6749 의 error 응답과 같은 모양).
+   Desktop loopback 은 이미 `error` 를 읽는다 — `device_revoked` 를 구분해 '새 기기 등록 필요' 로 보여 주도록 바로 맞출 수 있다.
+
+어느 쪽이든 Contract 문장 한 줄과 함께 알려 주면 반영한다. 통합 테스트의 전제는 아니다.

@@ -169,9 +169,10 @@ fn map_rows(conn: &Connection, doc_id: &str, account_key: &str) -> AppResult<Vec
     Ok(rows)
 }
 
-/// 새 client_key — 서버 규칙 8–64자. 로컬 id 와 별개(같은 로컬 항목이 다른 문서로 가면 새 key).
+/// 새 client_key — 서버 권장대로 소문자 UUID(8–64자 규칙 안). 로컬 id 와 별개(같은 로컬 항목이 다른 문서로 가면 새 key).
+/// 이미 보낸 key(예전 32자 hex)는 그대로 쓴다. 서버 저장소는 대소문자를 구분하므로 대소문자만 다른 key 를 만들지 않는다.
 fn new_client_key() -> String {
-    new_id().replace('-', "")
+    new_id().to_ascii_lowercase()
 }
 
 pub struct PushPlan {

@@ -198,22 +198,21 @@ fn token() -> String {
 }
 
 fn rejected(message: &str) -> TransportError {
-    TransportError::Rejected { status: 422, message: message.into() }
+    TransportError::rejected(422, message)
 }
 
 fn conflict(code: &str) -> TransportError {
     TransportError::Conflict { code: code.into() }
 }
 
-/// 서버 `normalize` 의 local path 검사 — `re.search(r'(?:file:|[A-Za-z]:[\\/])', content, re.I)` 그대로.
-/// (주의: 이 규칙은 `https://` 같은 링크도 걸린다 — plan-a-work 쪽 수정 필요 항목으로 보고했다.)
-pub fn server_rejects_as_local_path(content: &str) -> bool {
-    let lower = content.to_lowercase();
-    if lower.contains("file:") {
-        return true;
-    }
-    let bytes = content.as_bytes();
-    bytes.windows(3).any(|w| w[0].is_ascii_alphabetic() && w[1] == b':' && (w[2] == b'/' || w[2] == b'\\'))
+/// 공통 Web rich-content 정책의 항목당 원본 HTML 상한(서버 기본 1 MiB, 배포 설정으로 바뀔 수 있음 → 413).
+pub const MOCK_ITEM_RAW_HTML_BYTES: usize = 1024 * 1024;
+
+const IMAGE_ONLY_OWNED: &str = "개인 메모에 붙여넣은 이미지만 사용할 수 있습니다. 이미지를 다시 붙여넣어주세요.";
+
+/// 서버 참조 검사 거절(422 `{code, item}` — 경로·본문은 싣지 않는다).
+fn reference_rejected(code: &str, item: usize) -> TransportError {
+    TransportError::Rejected { status: 422, message: code.into(), code: Some(code.into()), item: Some(item) }
 }
 
 impl MockServerState {
@@ -397,16 +396,20 @@ impl MockServerState {
         Ok(())
     }
 
+    /// 서버와 같은 순서: Pydantic(항목 수·글자 수 → 422) → 문서 byte(413) → 항목별 검사.
     fn normalize(&self, doc: &MockDoc, deleted: bool, items: &[PushItem]) -> TResult<WireProposal> {
-        if items.iter().map(|i| i.content.len()).sum::<usize>() > MAX_DOCUMENT_BYTES {
-            return Err(TransportError::Rejected { status: 413, message: "Document exceeds 2 MB".into() });
-        }
         if items.len() > MAX_ITEMS {
-            return Err(rejected("too many items"));
+            return Err(rejected("List should have at most 1000 items"));
+        }
+        if items.iter().any(|i| i.content.chars().count() > MAX_ITEM_CHARS) {
+            return Err(rejected("String should have at most 500000 characters"));
+        }
+        if items.iter().map(|i| i.content.len()).sum::<usize>() > MAX_DOCUMENT_BYTES {
+            return Err(TransportError::rejected(413, "Document exceeds 2 MB"));
         }
         let (mut keys, mut ids) = (BTreeSet::new(), BTreeSet::new());
         let mut out = Vec::new();
-        for item in items {
+        for (index, item) in items.iter().enumerate() {
             match item.id {
                 Some(id) => {
                     if !ids.insert(id) {
@@ -420,15 +423,21 @@ impl MockServerState {
                     }
                 }
             }
-            if server_rejects_as_local_path(&item.content) {
-                return Err(rejected("Local paths are not allowed"));
+            if item.content.len() > MOCK_ITEM_RAW_HTML_BYTES {
+                return Err(TransportError::rejected(413, "Rich content exceeds the size limit"));
             }
-            if item.content.contains("attachment://") || item.content.contains("blob:") || item.content.contains("data:image") {
-                return Err(rejected("개인 메모에 붙여넣은 이미지만 사용할 수 있습니다. 이미지를 다시 붙여넣어주세요."));
+            // URL 이 쓰이는 속성·CSS url() 만 검사(본문 글자는 검사하지 않는다) — sync/reference.rs
+            let scan = super::reference::scan(&item.content);
+            if let Some(code) = scan.violation {
+                return Err(reference_rejected(code, index));
+            }
+            // 이미지는 소유한 개인 메모 서버 이미지만(외부 https 이미지는 첨부가 아니다)
+            if scan.image_sources.iter().any(|src| image_names(src).is_empty()) {
+                return Err(rejected(IMAGE_ONLY_OWNED));
             }
             for name in image_names(&item.content) {
                 if !self.images.get(&name).map(|i| i.owner == doc.owner).unwrap_or(false) {
-                    return Err(rejected("개인 메모에 붙여넣은 이미지만 사용할 수 있습니다. 이미지를 다시 붙여넣어주세요."));
+                    return Err(rejected(IMAGE_ONLY_OWNED));
                 }
             }
             if !matches!(item.section.as_str(), "main" | "am" | "pm") {
@@ -499,6 +508,10 @@ impl MockServerState {
                     }
                 }
             };
+            // 같은 row 를 id 와 client_key 로 두 번 가리키면(별칭 중복) 422 — 부분 저장 없음
+            if !keep.insert(id) {
+                return Err(rejected("Duplicate item"));
+            }
             let memo = staged.get_mut(&id).unwrap();
             memo.content = item.content.clone();
             memo.section = item.section.clone();
@@ -507,7 +520,6 @@ impl MockServerState {
             memo.sort_order = item.sort_order;
             memo.deleted = false;
             memo.version += 1;
-            keep.insert(id);
         }
         for (id, memo) in &current {
             if !keep.contains(id) && !memo.deleted {
@@ -878,6 +890,10 @@ impl MockSyncTransport {
                 if s.devices.get(device).map(|d| d.owner) != Some(owner) {
                     return Err(TransportError::Forbidden);
                 }
+                // 명시적 폐기(Web 기기 해제·로그아웃)는 그 기기 id 의 끝 — 브라우저 동의도 409
+                if s.devices.get(device).is_some_and(|d| d.revoked) {
+                    return Err(conflict("device_revoked"));
+                }
             }
             let auth = s.authorizations.get_mut(authorization_id).unwrap();
             if auth.code_hash.is_some() {
@@ -1197,11 +1213,11 @@ impl SyncTransport for MockSyncTransport {
             }
             let ext = file_name.rsplit('.').next().unwrap_or_default().to_lowercase();
             if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") || bytes.len() > MAX_IMAGE_BYTES {
-                return Err(TransportError::Rejected { status: 413, message: "이미지 형식 또는 크기 제한".into() });
+                return Err(TransportError::rejected(413, "이미지 형식 또는 크기 제한"));
             }
             let sniffed = crate::attachments::sniff_image(&bytes).map(|(m, _)| m);
             if !matches!(sniffed, Some("image/png" | "image/jpeg" | "image/webp")) || sniffed != Some(mime) {
-                return Err(TransportError::Rejected { status: 413, message: "이미지 형식".into() });
+                return Err(TransportError::rejected(413, "이미지 형식"));
             }
             let name = format!("{}.{}", uid().replace('-', ""), if ext == "jpeg" { "jpg" } else { &ext });
             s.images.insert(
@@ -1308,8 +1324,12 @@ impl AuthApi for MockSyncTransport {
                     if d.owner != owner {
                         return Err(TransportError::Forbidden);
                     }
+                    // 폐기된 기기는 되살리지 않는다(폐기 전에 받은 code 라도) — 서버 409 device_revoked.
+                    // 단순 만료(expired)는 같은 기기로 credential 만 바꾼다(link·cursor 유지).
+                    if d.revoked {
+                        return Err(conflict("device_revoked"));
+                    }
                     d.token_hash = hashed(&access_token);
-                    d.revoked = false;
                     d.expired = false;
                     device
                 }
@@ -1347,13 +1367,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_path_rule_matches_server_regex_including_its_url_false_positive() {
-        assert!(server_rejects_as_local_path("<img src=\"C:\\Users\\a.png\">"));
-        assert!(server_rejects_as_local_path("file:///C:/x"));
-        // 서버 정규식 `[A-Za-z]:[\\/]` 는 https:// 의 "s:/" 에도 걸린다(Python 으로 확인 — plan-a-work 수정 필요).
-        assert!(server_rejects_as_local_path("<a href=\"https://example.com\">x</a>"));
-        assert!(server_rejects_as_local_path("profile: me"));
-        assert!(!server_rejects_as_local_path("<img src=\"/api/personal-memos/images/a.png/download\">"));
-        assert!(!server_rejects_as_local_path("12:30 회의"));
+    fn reference_errors_carry_code_and_item_index_only() {
+        assert_eq!(
+            reference_rejected(super::super::reference::LOCAL_PATH_NOT_ALLOWED, 3),
+            TransportError::Rejected {
+                status: 422,
+                message: "local_path_not_allowed".into(),
+                code: Some("local_path_not_allowed".into()),
+                item: Some(3)
+            }
+        );
     }
 }

@@ -349,9 +349,46 @@ async fn backend_error_shapes_from_memo_sync_api_py() {
         items: vec![],
     };
     assert!(
-        matches!(t.push(&c, "d", &push).await.unwrap_err(), TransportError::Rejected { status: 422, ref message } if message.contains("Extra inputs"))
+        matches!(t.push(&c, "d", &push).await.unwrap_err(), TransportError::Rejected { status: 422, ref message, .. } if message.contains("Extra inputs"))
     );
     assert_eq!(t.changes(&c, None).await.unwrap_err(), TransportError::RateLimited);
     assert_eq!(t.changes(&c, None).await.unwrap_err(), TransportError::Unavailable);
     assert_eq!(t.push(&c, "d", &push).await.unwrap(), PushResponse::Conflict { conflict_id: "c1".into(), version: 7 });
+}
+
+/// 최신 memo_sync_api.py: 폐기된 기기 재인증은 409 {code: device_revoked}, 참조 검사는 422 {code, item}.
+#[tokio::test]
+async fn revoked_device_and_reference_errors_over_http() {
+    let (origin, _) = stub(vec![
+        (409, json!({"detail":{"code":"device_revoked"}}).to_string()),
+        (422, json!({"detail":{"code":"local_path_not_allowed","item":1}}).to_string()),
+        (413, json!({"detail":"Rich content exceeds the size limit"}).to_string()),
+    ])
+    .await;
+    let api = PlanAWorkAuthApi::new(HttpClient::new(&origin).unwrap());
+    let exchange = ExchangeRequest {
+        code: "c".repeat(43),
+        verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".into(),
+        redirect_uri: "http://127.0.0.1:50123/memo-sync/callback".into(),
+    };
+    assert!(api.exchange(&exchange).await.unwrap_err().is_conflict("device_revoked"));
+    let t = PlanAWorkSyncTransport::new(HttpClient::new(&origin).unwrap());
+    let push = PushRequest {
+        base_version: 1,
+        local_version: 1,
+        request_id: "abcdefgh".into(),
+        link_id: "l".into(),
+        deleted: false,
+        items: vec![],
+    };
+    assert_eq!(
+        t.push(&ctx(), "d", &push).await.unwrap_err(),
+        TransportError::Rejected {
+            status: 422,
+            message: "local_path_not_allowed".into(),
+            code: Some("local_path_not_allowed".into()),
+            item: Some(1)
+        }
+    );
+    assert!(matches!(t.push(&ctx(), "d", &push).await.unwrap_err(), TransportError::Rejected { status: 413, code: None, .. }));
 }

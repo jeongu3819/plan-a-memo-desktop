@@ -342,20 +342,24 @@ pub struct UploadResponse {
 pub struct ErrorBody {
     pub code: Option<String>,
     pub message: Option<String>,
+    /// 참조 검사 오류의 항목 위치(Push items 배열 index)
+    pub item: Option<usize>,
 }
 
 pub fn parse_error_body(bytes: &[u8]) -> ErrorBody {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else { return ErrorBody::default() };
     let detail = value.get("detail").cloned().unwrap_or(serde_json::Value::Null);
     match detail {
-        serde_json::Value::String(message) => ErrorBody { code: None, message: Some(message) },
+        serde_json::Value::String(message) => ErrorBody { code: None, message: Some(message), item: None },
         serde_json::Value::Object(map) => ErrorBody {
             code: map.get("code").and_then(|v| v.as_str()).map(str::to_string),
             message: map.get("message").and_then(|v| v.as_str()).map(str::to_string),
+            item: map.get("item").and_then(|v| v.as_u64()).map(|n| n as usize),
         },
         serde_json::Value::Array(list) => ErrorBody {
             code: Some("validation".into()),
             message: list.first().and_then(|e| e.get("msg")).and_then(|v| v.as_str()).map(str::to_string),
+            item: None,
         },
         _ => ErrorBody::default(),
     }
@@ -487,6 +491,9 @@ mod tests {
         assert_eq!(parse_error_body(br#"{"detail":"Memo sync unavailable"}"#).message.as_deref(), Some("Memo sync unavailable"));
         assert_eq!(parse_error_body(br#"{"detail":[{"msg":"field required"}]}"#).code.as_deref(), Some("validation"));
         assert_eq!(parse_error_body(b"<html>"), ErrorBody::default());
+        // 참조 검사(422): 경로·본문은 싣지 않고 code + 항목 위치만
+        let reference = parse_error_body(br#"{"detail":{"code":"local_path_not_allowed","item":2}}"#);
+        assert_eq!((reference.code.as_deref(), reference.item), (Some("local_path_not_allowed"), Some(2)));
     }
 
     #[test]

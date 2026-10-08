@@ -67,7 +67,7 @@ export default function ConflictDialog({ open, documentId, onClose }: { open: bo
     } catch (failure) {
       refreshMemo(queryClient);
       await conflicts.refetch();
-      if (failure instanceof AppError && (failure.code === 'conflict_stale' || failure.code === 'conflict_resolved_elsewhere')) {
+      if (failure instanceof AppError && ['conflict_stale', 'conflict_resolved_elsewhere', 'conflict_items_moved'].includes(failure.code)) {
         setInfo(failure.message); // 비교 화면이 최신으로 바뀌었다 — 다시 고른다
       } else {
         setError(errorMessage(failure, '선택을 보내지 못했습니다. 두 내용은 그대로 보관되어 있습니다.'));

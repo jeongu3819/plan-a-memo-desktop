@@ -258,6 +258,35 @@ step('deep-link', async () => {
 });
 
 step(
+  'device-revoke',
+  async () => {
+    // Web 기기 관리에서 이 PC 해제 → 401. 같은 기기로 다시 연결은 거절(device_revoked) — 자동 재활성화 없음
+    const before = await app.invoke('auth_status');
+    const oldDevice = before.session.serverDeviceId;
+    const outbox = (await app.invoke('sync_overview')).outbox;
+    await app.invoke('mock_revoke_device');
+    const report = await app.invoke('sync_now');
+    assert.equal(report.authRequired, true);
+    const err = await app.invokeError('auth_login_begin', { reconnect: true });
+    assert.equal(err?.code, 'device_revoked', '폐기된 기기 id 로 다시 연결하지 않는다');
+    assert.ok((await day()).items.length >= 4, '로컬 메모 그대로');
+    assert.equal((await app.invoke('sync_overview')).outbox, outbox, 'Outbox 그대로');
+    // 사용자가 [새 기기로 등록] — 새 기기, 이전 연결은 이어받지 않는다(다시 고른 문서만 연결)
+    await app.invoke('auth_login_begin', { reconnect: false });
+    const after = await waitFor(async () => {
+      const s = await app.invoke('auth_status');
+      return s.loggedIn ? s : null;
+    }, '새 기기 등록');
+    assert.notEqual(after.session.serverDeviceId, oldDevice);
+    const sync = await app.invoke('sync_now');
+    assert.ok(sync.notices.some(n => n.includes('이전 기기')), '이전 기기 연결 안내');
+    assert.equal((await day()).document.syncStatus, 'auth_required', '이전 연결은 멈춤(보존)');
+    await app.shot('09-device-revoked');
+  },
+  { mockOnly: true },
+);
+
+step(
   'logout',
   async () => {
     const result = await app.invoke('auth_logout');

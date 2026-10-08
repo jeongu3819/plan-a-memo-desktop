@@ -609,23 +609,40 @@ async fn stale_request_for_an_item_moved_elsewhere_is_explained_not_unknown() {
 }
 
 #[tokio::test]
-async fn server_rejection_marks_only_that_document() {
+async fn reference_policy_allows_links_and_blocks_only_documents_with_local_references() {
+    // 최신 서버(memo-sync-v1): URL 속성·CSS url() 만 검사 — https/http 링크·'profile:'·경로를 설명하는 글자는 허용.
     let e = env_logged_in().await;
-    add(&e.storage, day("2026-10-07"), "main", "<a href=\"https://example.com\">링크</a>");
-    add(&e.storage, day("2026-10-08"), "main", "평범한 메모");
-    e.link(day("2026-10-07"));
-    e.link(day("2026-10-08"));
+    let ok = [
+        "<a href=\"https://example.com/docs\">링크</a>",
+        "<p>http://intranet/wiki 참고, profile: 설정</p>",
+        "<p>경로는 C:\\Users\\me\\a.png 입니다</p>",
+    ];
+    for html in ok {
+        add(&e.storage, day("2026-10-07"), "main", html);
+    }
+    add(&e.storage, day("2026-10-08"), "main", "첫 메모");
+    let bad = add(&e.storage, day("2026-10-08"), "main", "<a href=\"file:///C:/Users/me/report.docx\">보고서</a>");
+    add(&e.storage, day("2026-10-09"), "main", "<a href=\"//cdn.example/x\">주소</a>");
+    for d in ["2026-10-07", "2026-10-08", "2026-10-09"] {
+        e.link(day(d));
+    }
     let report = e.sync().await;
-    assert_eq!(e.status(&day("2026-10-07")), "error");
-    assert!(e.error(&day("2026-10-07")).unwrap().contains("PC 파일 경로"), "서버 거절 이유를 알 수 있게");
-    assert_eq!(
-        texts(&e.storage, "2026-10-07"),
-        vec!["<a href=\"https://example.com\">링크</a>"],
-        "정상 링크를 지우거나 본문을 고쳐서 우회하지 않는다"
-    );
-    assert_eq!(e.outbox(), 1, "서버가 고쳐지면 같은 내용으로 다시 보내도록 Outbox 에 남긴다");
-    assert_eq!(e.status(&day("2026-10-08")), "synced", "다른 문서는 계속 진행");
-    assert!(report.failed >= 1);
+    assert_eq!(e.status(&day("2026-10-07")), "synced", "정상 링크·글자는 그대로 올라간다");
+    assert_eq!(e.server(&d7()).len(), 3);
+    assert_eq!(e.status(&day("2026-10-08")), "error");
+    let message = e.error(&day("2026-10-08")).unwrap();
+    assert!(message.contains("PC 파일 경로"), "{message}");
+    assert!(message.contains("2번째 메모('보고서')"), "서버가 알려 준 항목 위치를 이 PC 의 메모로: {message}");
+    assert_eq!(e.status(&day("2026-10-09")), "error");
+    assert!(e.error(&day("2026-10-09")).unwrap().contains("https://"), "https 로 바꾸라는 안내");
+    assert_eq!(texts(&e.storage, "2026-10-08")[1], "<a href=\"file:///C:/Users/me/report.docx\">보고서</a>", "본문을 몰래 고치지 않는다");
+    assert!(e.server(&Unit::day("2026-10-08")).is_empty(), "거절된 문서는 서버에 아무것도 남지 않는다(부분 저장 없음)");
+    assert!(report.failed >= 2);
+    // 사용자가 링크를 고치면 다시 보낸다
+    e.storage.with_conn(|c| service::update_content(c, &bad.id, "<a href=\"https://drive.example/report\">보고서</a>")).unwrap();
+    e.sync().await;
+    assert_eq!(e.status(&day("2026-10-08")), "synced");
+    assert_eq!(e.server(&Unit::day("2026-10-08")).len(), 2);
 }
 
 #[tokio::test]
@@ -1148,7 +1165,7 @@ async fn http_error_statuses_follow_the_contract() {
         edit(&a.id, text);
         let other = format!("8일 {status}");
         edit(&b.id, &other);
-        e.mock.inject("push", TransportError::Rejected { status, message: "rejected".into() });
+        e.mock.inject("push", TransportError::rejected(status, "rejected"));
         e.sync().await;
         assert_eq!(e.status(&day("2026-10-07")), "error", "{status}");
         assert!(e.error(&day("2026-10-07")).is_some());
@@ -1340,4 +1357,250 @@ async fn next_and_day_moves_follow_the_same_selective_link_policy() {
     assert_eq!(e.server(&Unit::list("default")), vec!["연결끼리 이동"]);
     let history = e.storage.with_conn(|c| history::list_for_location(c, &day("2026-10-07"))).unwrap();
     assert!(history.iter().any(|v| v.preview.contains("연결끼리 이동")), "옮기기 전 상태는 원래 날짜 History 에");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 4차 — 최신 PLAN-A Work 계약(device_revoked · 오류 규격 · ACK manifest · 참조 검사) 반영. Mock 결과다.
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn revoked_device_is_never_reactivated_and_needs_explicit_new_registration() {
+    let e = env_logged_in().await;
+    let a = add(&e.storage, day("2026-10-07"), "main", "원래");
+    add(&e.storage, day("2026-10-20"), "main", "이 PC 에만(로컬)");
+    e.link(day("2026-10-07"));
+    e.sync().await;
+    let old_device = e.device();
+    let old_link = e.link_id(&day("2026-10-07"));
+    // 단순 만료 → 같은 기기로 다시 연결하던 중(브라우저 동의까지 받음) Web 에서 이 PC 를 해제했다
+    e.mock.expire_device(&old_device);
+    e.storage.with_conn(|c| service::update_content(c, &a.id, "보내지 못한 편집")).unwrap();
+    assert!(e.sync().await.auth_required);
+    let start = e.auth.begin_login(&format!("{REDIRECT_BASE}/memo-sync/callback"), true).await.unwrap();
+    let callback = e.mock.approve_login(&start.authorization_id, 1).unwrap(); // 폐기 전에 발급된 code
+    e.mock.web_revoke_device(&old_device);
+    let params = loopback::parse_target(&callback[REDIRECT_BASE.len()..]).unwrap();
+    let err = e.auth.complete_login(params).await.unwrap_err();
+    assert_eq!(err.code(), "device_revoked", "폐기 전에 받은 code 로도 되살리지 않는다");
+    assert!(err.to_string().contains("로컬 메모는 그대로"));
+    let status = e.auth.status();
+    assert!(status.revoked && !status.logged_in);
+    assert!(e.mock.devices().iter().any(|(id, _, revoked)| *id == old_device && *revoked), "서버 기기는 폐기 상태 그대로");
+    // 같은 기기 id 로 자동·반복 재시도하지 않는다(서버 요청조차 없음)
+    let requests = e.mock.request_count();
+    assert_eq!(e.auth.begin_login(&format!("{REDIRECT_BASE}/memo-sync/callback"), true).await.unwrap_err().code(), "device_revoked");
+    e.sync().await;
+    assert_eq!(e.mock.request_count(), requests, "폐기된 credential 로 계속 요청하지 않는다");
+    // 브라우저 동의 단계에서도 폐기된 id 는 409
+    let again = plan_a_memo_lib::auth::AuthApi::start(
+        e.mock.as_ref(),
+        &plan_a_memo_lib::sync::contract::AuthStartRequest {
+            name: "Test PC".into(),
+            challenge: "c".repeat(43),
+            state: "s".repeat(43),
+            redirect_uri: format!("{REDIRECT_BASE}/memo-sync/callback"),
+            device_id: Some(old_device.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(e.mock.approve_login(&again.authorization_id, 1).unwrap_err().is_conflict("device_revoked"));
+    // 로컬 메모·미전송 Outbox 보존
+    assert_eq!(texts(&e.storage, "2026-10-07"), vec!["보내지 못한 편집"]);
+    assert_eq!(texts(&e.storage, "2026-10-20"), vec!["이 PC 에만(로컬)"]);
+    assert_eq!(e.outbox(), 1);
+
+    // 사용자가 [새 기기로 등록] — device_id 없이 새 로그인 → 새 기기. 이전 연결·cursor 는 이어받지 않는다
+    let session = e.login(1, false).await;
+    assert_ne!(session.server_device_id, old_device);
+    let sent_before = e.mock.pushes().len();
+    let report = e.sync().await;
+    assert!(report.notices.iter().any(|n| n == engine::NOTICE_PREVIOUS_DEVICE));
+    assert_eq!(e.status(&day("2026-10-07")), "auth_required");
+    assert_eq!(e.error(&day("2026-10-07")).as_deref(), Some(engine::NOTICE_PREVIOUS_DEVICE));
+    assert_eq!(e.mock.pushes().len(), sent_before, "이전 generation 요청을 새 credential 로 보내지 않는다");
+    assert_eq!(e.server(&d7()), vec!["원래"], "미전송 편집을 몰래 올리지 않는다");
+    assert_eq!(e.outbox(), 1, "이전 기기의 Outbox 도 지우지 않고 보관");
+    assert!(!e.mock.snapshot_state().links[&old_link].active);
+    // 사용자가 그 날짜를 직접 다시 연결 → 새 link generation, 양쪽 내용을 비교부터(덮어쓰지 않음)
+    e.link(day("2026-10-07"));
+    let report = e.sync().await;
+    assert_eq!(report.conflicts, 1);
+    assert_ne!(e.link_id(&day("2026-10-07")), old_link);
+    assert_eq!(texts(&e.storage, "2026-10-07"), vec!["보내지 못한 편집"]);
+    assert_eq!(e.server(&d7()), vec!["원래"]);
+}
+
+#[tokio::test]
+async fn expired_credential_keeps_the_same_device_and_links() {
+    let e = env_logged_in().await;
+    add(&e.storage, day("2026-10-07"), "main", "처음");
+    e.link(day("2026-10-07"));
+    e.sync().await;
+    let (device, link_id) = (e.device(), e.link_id(&day("2026-10-07")));
+    e.mock.expire_device(&device);
+    assert!(e.sync().await.auth_required);
+    assert!(!e.auth.status().revoked, "만료는 폐기가 아니다");
+    let session = e.login(1, true).await;
+    assert_eq!(session.server_device_id, device, "같은 기기 id 로 credential 만 바뀐다");
+    e.sync().await;
+    assert_eq!(e.link_id(&day("2026-10-07")), link_id, "연결(generation) 유지");
+    assert_eq!(e.status(&day("2026-10-07")), "synced");
+}
+
+#[tokio::test]
+async fn client_key_already_used_elsewhere_is_checked_not_blindly_resent() {
+    let e = env_logged_in().await;
+    add(&e.storage, day("2026-10-07"), "main", "7일 항목");
+    let b = add(&e.storage, day("2026-10-08"), "main", "8일 기존");
+    e.link(day("2026-10-07"));
+    e.link(day("2026-10-08"));
+    e.sync().await;
+    // 8일의 새 항목이 (오래된 매핑 때문에) 7일 항목의 client_key 를 들고 있다
+    let used_key = e.mock.unit_items(1, &d7())[0].1.client_key.clone().unwrap();
+    let fresh = add(&e.storage, day("2026-10-08"), "main", "8일 새 항목");
+    e.storage
+        .with_conn(|c| {
+            let doc = repo::doc_for_location(c, &day("2026-10-08"))?.unwrap();
+            // 로컬에서는 7일 항목 매핑이 그 key 를 잊었고(서버에는 남아 있음) 8일 새 항목이 그 key 를 쓴다
+            c.execute("UPDATE sync_item_map SET client_key = NULL WHERE client_key = ?1", [&used_key])?;
+            c.execute(
+                "INSERT INTO sync_item_map (document_id, item_id, account_key, client_key) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![doc.id, fresh.id, e.account(), used_key],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    e.storage.with_conn(|c| service::update_content(c, &b.id, "8일 기존 수정")).unwrap();
+    let report = e.sync().await;
+    assert!(report.notices.iter().any(|n| n == engine::NOTICE_CLIENT_KEY));
+    assert_eq!(
+        pushes_for(&e, &Unit::day("2026-10-08")).iter().filter(|p| p.items.len() == 2).count(),
+        1,
+        "같은 실행에서 바로 다시 보내지 않는다"
+    );
+    assert_eq!(e.server(&d7()), vec!["7일 항목"], "다른 날짜의 항목을 가져가지 않는다");
+    // 다음 실행: 최신 상태 확인 뒤 이 날짜의 새 항목(새 client_key)으로
+    e.sync().await;
+    assert_eq!(e.server(&Unit::day("2026-10-08")), vec!["8일 기존 수정", "8일 새 항목"]);
+    assert_eq!(e.server(&d7()), vec!["7일 항목"]);
+    assert_eq!(e.status(&day("2026-10-08")), "synced");
+}
+
+#[tokio::test]
+async fn choosing_a_proposal_whose_item_moved_elsewhere_keeps_both_and_asks_again() {
+    let e = env_logged_in().await;
+    let a = add(&e.storage, day("2026-10-07"), "main", "옮겨질 항목");
+    e.link(day("2026-10-07"));
+    e.link(day("2026-10-08"));
+    e.sync().await;
+    e.mock.web_create(1, &d7(), "pm", "Web 추가");
+    e.storage.with_conn(|c| service::update_content(c, &a.id, "Desktop 수정")).unwrap();
+    assert_eq!(e.sync().await.conflicts, 1);
+    // 비교를 고르기 전에 Web 이 그 항목을 8일로 옮겼다
+    let moved = e.mock.unit_items(1, &d7()).into_iter().find(|(_, m)| m.content == "옮겨질 항목").unwrap().0;
+    e.mock.web_move(moved, &Unit::day("2026-10-08"));
+    assert_eq!(e.resolve(ConflictChoice::Local).await.unwrap_err().code(), "conflict_stale", "먼저 최신 base 로 비교를 새로 고친다");
+    let err = e.resolve(ConflictChoice::Local).await.unwrap_err();
+    assert_eq!(err.code(), "conflict_items_moved", "409 item_moved_or_not_owned — 다른 날짜의 항목을 가져오지 않는다");
+    assert_eq!(e.storage.with_conn(|c| list_conflicts(c)).unwrap().len(), 1, "비교는 열린 채로");
+    assert_eq!(texts(&e.storage, "2026-10-07"), vec!["Desktop 수정"], "이 PC 내용 그대로");
+    assert_eq!(e.server(&Unit::day("2026-10-08")), vec!["옮겨질 항목"], "옮겨진 위치도 그대로");
+    // PLAN-A Work 쪽을 고르면 정상 해결
+    e.resolve(ConflictChoice::Remote).await.unwrap();
+    assert_eq!(texts(&e.storage, "2026-10-07"), vec!["Web 추가"]);
+    let versions = e.storage.with_conn(|c| history::list_for_location(c, &day("2026-10-07"))).unwrap();
+    assert!(versions.iter().any(|v| v.preview.contains("Desktop 수정")), "고르지 않은 이 PC 내용은 History 에");
+}
+
+#[tokio::test]
+async fn size_errors_follow_the_413_422_contract_and_keep_local_text() {
+    let e = env_logged_in().await;
+    // 50만 자 이하라도 공통 rich-content 정책(항목당 HTML 1MiB)을 넘으면 서버가 413
+    let big = "가".repeat(400_000); // 1.2MB
+    add(&e.storage, day("2026-10-01"), "main", &big);
+    add(&e.storage, day("2026-10-02"), "main", "평범");
+    e.link(day("2026-10-01"));
+    e.link(day("2026-10-02"));
+    e.sync().await;
+    assert_eq!(e.status(&day("2026-10-01")), "error");
+    assert!(e.error(&day("2026-10-01")).unwrap().contains("크기 제한"));
+    assert_eq!(texts(&e.storage, "2026-10-01")[0].len(), big.len(), "로컬 내용 그대로");
+    assert_eq!(e.status(&day("2026-10-02")), "synced");
+    // 서버가 돌려주는 모양 그대로: 개수·글자 수(Pydantic) 422, 문서 byte 413
+    let ctx = e.ctx();
+    let doc = e.mock.document_of(1, &Unit::day("2026-10-02")).unwrap();
+    let link_id = e.link_id(&day("2026-10-02"));
+    let item = |content: String, key: usize| plan_a_memo_lib::sync::contract::PushItem {
+        id: None,
+        item_version: None,
+        client_key: Some(format!("00000000-0000-4000-8000-{key:012}")),
+        section: "main".into(),
+        kind: "text".into(),
+        content,
+        completed: false,
+        sort_order: 0,
+    };
+    let push = |items| PushRequest {
+        base_version: doc.version,
+        local_version: 1,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        link_id: link_id.clone(),
+        deleted: false,
+        items,
+    };
+    let too_many: Vec<_> = (0..1001).map(|i| item("x".into(), i)).collect();
+    assert!(matches!(e.mock.push(&ctx, &doc.id, &push(too_many)).await.unwrap_err(), TransportError::Rejected { status: 422, .. }));
+    let too_long = vec![item("a".repeat(500_001), 1)];
+    assert!(matches!(e.mock.push(&ctx, &doc.id, &push(too_long)).await.unwrap_err(), TransportError::Rejected { status: 422, .. }));
+    let too_heavy: Vec<_> = (0..3).map(|i| item("가".repeat(300_000), i)).collect(); // 2.7MB
+    assert!(matches!(e.mock.push(&ctx, &doc.id, &push(too_heavy)).await.unwrap_err(), TransportError::Rejected { status: 413, .. }));
+    // 같은 row 를 id 와 client_key 로 두 번 → 422, 부분 저장 없음
+    let current = e.mock.document_of(1, &Unit::day("2026-10-02")).unwrap();
+    let row = current.items[0].clone();
+    let mut by_id = item(row.content.clone(), 9);
+    (by_id.id, by_id.client_key) = (row.id, None);
+    let mut by_key = item("별칭".into(), 9);
+    by_key.client_key = row.client_key.clone();
+    assert!(matches!(
+        e.mock.push(&ctx, &doc.id, &push(vec![by_id, by_key])).await.unwrap_err(),
+        TransportError::Rejected { status: 422, .. }
+    ));
+    assert_eq!(e.mock.document_of(1, &Unit::day("2026-10-02")).unwrap().version, current.version);
+}
+
+#[tokio::test]
+async fn one_image_used_many_times_is_acked_once() {
+    let e = env_logged_in().await;
+    let main = add(&e.storage, day("2026-10-07"), "main", "M");
+    let am = add(&e.storage, day("2026-10-07"), "am", "A");
+    let pm = add(&e.storage, day("2026-10-07"), "pm", "P");
+    let info = e.storage.with_conn(|c| attachments::import_bytes(c, &e.storage.paths, PNG, None, Some(&main.id))).unwrap();
+    let twice = format!("<img src=\"{0}\"> 두 번 <img src=\"{0}\">", info.url);
+    for item in [&main, &am, &pm] {
+        e.storage.with_conn(|c| service::update_content(c, &item.id, &twice)).unwrap();
+    }
+    e.link(day("2026-10-07"));
+    e.sync().await;
+    assert_eq!(e.mock.snapshot_state().images.len(), 1, "한 장만 올린다");
+    let manifest = e.mock.document_of(1, &d7()).unwrap().attachments;
+    assert_eq!(manifest.len(), 1, "서버 manifest 는 문서 전체에서 이름이 하나");
+    assert_eq!(e.mock.link_status(&e.link_id(&day("2026-10-07"))).as_deref(), Some("synced"), "중복 없는 이름으로 ACK");
+    // ACK 이름이 중복·누락·추가되면 409 attachments_incomplete
+    let ctx = e.ctx();
+    let doc = e.mock.document_of(1, &d7()).unwrap();
+    let name = manifest[0].name.clone();
+    for names in [vec![name.clone(), name.clone()], vec![], vec![name.clone(), "extra.png".into()]] {
+        let ack = plan_a_memo_lib::sync::contract::AckRequest {
+            version: doc.version,
+            link_id: e.link_id(&day("2026-10-07")),
+            attachments: names,
+        };
+        assert!(e.mock.ack(&ctx, &doc.id, &ack).await.unwrap_err().is_conflict("attachments_incomplete"));
+    }
+    // Web 이 같은 이미지를 여러 날짜 구역에 다시 써도 한 번만 받고 synced
+    e.mock.web_create(1, &d7(), "am", &format!("Web {}", twice.replace(&info.url, &format!("/api/personal-memos/images/{name}/download"))));
+    e.sync().await;
+    assert_eq!(e.status(&day("2026-10-07")), "synced");
+    assert_eq!(e.mock.link_status(&e.link_id(&day("2026-10-07"))).as_deref(), Some("synced"));
 }

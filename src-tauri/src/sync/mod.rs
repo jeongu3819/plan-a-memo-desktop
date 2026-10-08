@@ -15,6 +15,7 @@ pub mod http;
 pub mod link;
 pub mod mapper;
 pub mod mock;
+pub mod reference;
 pub mod transport;
 
 use std::sync::Arc;

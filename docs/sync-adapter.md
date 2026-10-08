@@ -53,7 +53,9 @@ Web 전용 경로(`/web/...` — 기기 목록·Web 연결·History 복원 등)�
 오류(`http::map_status`): 401 → 다시 로그인(credential 만료·Web 에서 기기 해제), 404 `Memo sync unavailable`·503 →
 '아직 사용할 수 없음'(변경 보관), 404 → 찾을 수 없음, 409 `{code}` → link_inactive · request_id_reused ·
 resolution_stale · ack_version_stale · attachments_incomplete · item_moved_or_not_owned · client_key_in_use ·
-cursor_namespace_mismatch, 413/422 → 거절(문서만 오류 표시), 429 → 잠시 뒤, 네트워크 → 오프라인.
+cursor_namespace_mismatch · device_revoked(교환), 413/422 → 거절(문서만 오류 표시 — detail 이 문장·Pydantic 목록·
+`{code: local_path_not_allowed|reference_not_allowed, item}` 중 무엇이든 읽는다), 429 → 잠시 뒤, 네트워크 → 오프라인.
+409 를 받았다고 비교 화면을 열지 않는다 — 비교는 Push 의 HTTP 200 `status=conflict` 와 서버 conflict 목록으로만 연다.
 
 ## DTO Mapping (`mapper.rs`)
 
@@ -124,6 +126,10 @@ Desktop 은 기본 버튼 [Desktop에서만 이동] 이 이 의미이고, [○�
   5분 제한) → exchange → namespace 가 빌드 환경과 맞는지 확인 → Windows Credential Manager.
 * 저장 값(한 건, JSON): credential, 만료 시각, 서버 device_id, user_id, namespace, 기기 이름. refresh token 은 Contract 에
   없다 — 30일 만료 후 [다시 연결](같은 device_id 로 start → 서버가 credential 을 바꾸고 link·cursor 유지).
+* **만료와 폐기를 구분**: 401(만료 또는 Web 에서 해제) → [다시 연결] = 같은 device_id. 서버가 교환에서 409 `device_revoked` 를
+  주면 그 id 는 끝 — credential 에 `revoked` 를 남기고(토큰 삭제) 같은 id 로 다시 시도하지 않는다. 사용자가 [새 기기로 등록]을
+  고를 때만 device_id 없이 새로 로그인한다. 새 기기로 바뀌면 이전 기기의 연결·UNLINK 는 `<account_key>#device:<이전 id>` 로
+  옮겨 보존만 하고(로컬 메모·Outbox·History 그대로, 새 credential 로 보내지 않음) 사용자가 고른 날짜/List 만 다시 연결한다.
 * 로그아웃 = `POST logout`(서버가 기기 폐기 → link 모두 비활성) + 로컬 credential 삭제 + 그 계정 연결을 '이 PC 에만' 으로.
   오프라인이면 로컬만 지우고 Web 기기 관리에서 해제하라고 안내한다.
 * `plana-memo://` deep link 는 창 활성화만 한다(로그인 callback 으로 쓰지 않는다 — Contract 가 loopback 으로 확정).
@@ -141,7 +147,8 @@ Desktop 은 기본 버튼 [Desktop에서만 이동] 이 이 의미이고, [○�
 | 브라우저 로그인 · loopback · PKCE · 재연결 · 로그아웃 | 완료 | 완료(Mock 동의 + 실제 loopback) | 아직 |
 | 계정 바꾸기 보호 | 완료 | 완료 | 아직 |
 | HTTP 요청 모양(Method·Path·Header·Body·multipart) | 완료 | stub HTTP 서버로 확인 | 아직 |
-| https 링크가 있는 메모 | 완료(본문 보존·재시도) | 완료 | **차단** — 서버 정규식 수정 필요(인계 §1) |
+| https 링크가 있는 메모 | 완료 | 완료(4차: 서버의 URL 위치 검사 규칙으로 Mock 교체) | 아직(서버 수정 완료, 통합 확인 전) |
+| 폐기된 기기(device_revoked)·새 기기 등록 | 완료 | 완료(Mock + 실제 loopback) | 아직 |
 | 연결된 List 이름 변경 | 이 PC 에만(안내) | 완료 | 서버 API 없음(인계 §2) |
 
 3차 Contract 대조의 항목별 표·테스트 목록: [sync-contract-verification.md](sync-contract-verification.md).

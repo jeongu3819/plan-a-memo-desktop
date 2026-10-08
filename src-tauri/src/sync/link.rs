@@ -62,12 +62,28 @@ pub struct LinkRow {
     pub server_digest: Option<String>,
 }
 
+/// 이전 기기 연결 표시(engine::retire_previous_device 가 붙인다).
+pub const PREVIOUS_DEVICE_MARK: &str = "#device:";
+
+/// `key` 가 `account_key` 계정의 이전(폐기된) 기기 연결인가.
+pub fn is_previous_device_key(key: &str, account_key: &str) -> bool {
+    key.strip_prefix(account_key).is_some_and(|rest| rest.starts_with(PREVIOUS_DEVICE_MARK))
+}
+
 /// 이 문서를 PLAN-A Work 와 연결한다(사용자가 고른 문서 하나). 실제 전송은 다음 Sync 때.
 /// `account_key` — 지금 로그인한 계정. 이 계정의 Sync 상태로만 묶는다.
 pub fn enable_link(conn: &Connection, doc_id: &str, account_key: &str) -> AppResult<()> {
-    let doc = repo::doc_by_id(conn, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
+    let mut doc = repo::doc_by_id(conn, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
     if doc.sync_enabled {
-        return Ok(());
+        // 해제된 이전 기기 등록으로 연결돼 있던 문서를 사용자가 다시 연결 — 이전 연결 기록만 정리하고(내용·History 유지)
+        // 새 기기로 처음 연결하듯 비교부터 한다. 다른 계정의 연결은 건드리지 않는다.
+        let previous_device =
+            link_row(conn, doc_id)?.and_then(|l| l.account_key).is_some_and(|key| is_previous_device_key(&key, account_key));
+        if !previous_device {
+            return Ok(());
+        }
+        end_local_link(conn, doc_id)?;
+        doc = repo::doc_by_id(conn, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
     }
     // 해제를 아직 서버에 보내지 못했는데 다시 연결 — 그 UNLINK 는 취소(서버 link 는 아직 살아 있다).
     let pending_unlink: Option<(Option<String>, Option<String>)> = conn
@@ -106,7 +122,9 @@ pub fn enable_link(conn: &Connection, doc_id: &str, account_key: &str) -> AppRes
 pub fn disable_link(conn: &Connection, doc_id: &str) -> AppResult<DocumentInfo> {
     let link = link_row(conn, doc_id)?;
     end_local_link(conn, doc_id)?;
-    if let Some(LinkRow { server_document_id: Some(server_id), link_id: Some(link_id), account_key, .. }) = link {
+    // 이전(폐기된) 기기의 연결은 서버에서 이미 비활성 — 보낼 credential 도 없으므로 UNLINK 를 남기지 않는다.
+    let retired = link.as_ref().and_then(|l| l.account_key.as_deref()).is_some_and(|k| k.contains(PREVIOUS_DEVICE_MARK));
+    if let Some(LinkRow { server_document_id: Some(server_id), link_id: Some(link_id), account_key, .. }) = link.filter(|_| !retired) {
         let payload = OutboxPayload { server_document_id: Some(server_id), link_id: Some(link_id), inflight: None };
         let doc = repo::doc_by_id(conn, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
         repo::enqueue(conn, doc_id, "UNLINK", doc.local_revision, Some(&serde_json::to_string(&payload)?))?;

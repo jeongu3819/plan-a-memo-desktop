@@ -28,7 +28,12 @@ Pulled items include `item_version` for Web draft reconstruction; Desktop echoes
 it unchanged (or omits it for new items). It never substitutes for base_version.
 Documents include a display `title` (date or Next List title).
 Push limits: 1,000 items, 500,000 characters per item, 2,000,000 UTF-8 content
-bytes per document. Image upload uses the existing inline-image format/size
+bytes per document. Item/count Pydantic limits return **422**; aggregate content
+bytes return **413**. The shared Web rich-content policy ALSO applies: by default
+1 MiB raw HTML and 256 KiB sanitized HTML per item (deployment-configurable);
+these byte limits return 413, structural/image-count validation returns 422.
+Thus 500,000 characters is an input ceiling, not a promise all such items fit.
+Image upload uses the existing inline-image format/size
 policy. General binary file attachments are outside the current personal memo
 model. An oversized existing Web document must be reduced before Desktop push.
 Recurrence definitions and Dashboard today picks remain Web-managed metadata.
@@ -47,6 +52,13 @@ links or downloads the destination. Desktop must retain its source history and
 any independently existing local destination. In v1 a Desktop push cannot claim
 an item belonging to another unit; explicit Web movement or remove+new local
 item is required. Existing destination local content is never overwritten.
+For an otherwise applicable replacement, an ID no longer in this unit returns
+409 `detail.code=item_moved_or_not_owned`; a new item's client_key already used
+outside it returns 409 `client_key_in_use`. A stale base first preserves the
+proposal as a conflict (HTTP 200); applying that proposal during resolution
+performs the same ownership checks and can return these 409 codes. Neither
+error authorizes moving/stealing the row. Duplicate IDs/keys, including two
+references resolving to the same row, return 422 with no partial commit.
 
 Unlink retains both copies and stops pushes. A durable `unlinked` event tells
 the device to retain its local copy. Relink starts a new link generation; stale
@@ -100,6 +112,27 @@ sync attachment routes, maps names to local paths, verifies bytes, then ACKs the
 exact manifest. Missing files prevent ACK. Snapshot/history references pin images
 against orphan cleanup. No generic arbitrary-path download exists.
 
+Manifest entries are sorted and **unique by name across the entire document**,
+even if an image appears repeatedly or in several sections. ACK attachments
+must contain each required name exactly once, in any order. Missing, extra or
+duplicate ACK names return 409 `attachments_incomplete`; do not ACK on download
+failure. This matches the Desktop's deduplicated name list.
+
+Native push validates URL-valued HTML attributes (including srcset) and CSS
+url() before AND after the existing sanitizer. HTTPS/HTTP links, relative links,
+mailto and ordinary text such as `profile:` are retained by the shared policy.
+Plain text describing a Windows path is text, not a file reference, and allowed.
+File/drive/UNC references, protocol-relative URLs (`//host/...`), blob/data,
+attachment and other unsupported schemes in URL positions are rejected (422).
+Use explicit https:// for network links. Entities, URL percent encoding, ASCII
+controls and CSS escapes are examined. Error detail for this guard is
+`{code: local_path_not_allowed|reference_not_allowed, item: <zero-based index>}`;
+no original path is echoed. Images must still be owned personal-memo server
+images; an external https image is not a supported attachment. Existing Web
+sanitizer rules remain unchanged (for example tel links lose their href).
+Failed validation commits no item/version/request record. A corrected payload
+may reuse that unrecorded request ID; accepted/conflict requests cannot change.
+
 ## Native authentication
 
 Use the system browser and existing PLAN-A login. Start registers S256 challenge,
@@ -119,7 +152,15 @@ ownership. Body user_id is rejected. Browser consent retains Web CSRF protection
 native routes accept only their own credential, never a Web cookie.
 Reconnection supplies the persisted `device_id` in auth/start. Browser consent
 must authenticate that same owner; exchange rotates the credential in place and
-preserves existing links/cursors. Explicitly revoked links stay inactive.
+preserves existing links/cursors **only for a non-revoked device**, including
+one whose credential merely expired. Explicit Web revoke and native logout are
+terminal for that device ID: consent/exchange return 409 `device_revoked`, even
+if consent was issued just before revocation. Old credentials return 401.
+After explaining the revocation to the user, a fresh explicit browser login may
+omit device_id to register a NEW device. Do not automatically retry without the
+old ID. Old links/cursors are never inherited; the user must relink chosen units.
+Local data/history/outbox must remain preserved, and old link-generation requests
+must not be blindly replayed with the new credential.
 
 Loopback + PKCE follows [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252.html).
 Custom URI was considered; Tauri's Windows deep-link handling requires process
@@ -139,6 +180,15 @@ Web polls while visible; open/unsaved editor drafts remain untouched. API detail
 DDL proposal and executed tests are recorded in `docs/MEMO_SYNC_IMPLEMENTATION.md`.
 Real Tauri listener, Windows credential storage, SQLite queue/ACK durability,
 download mapping and EXE interoperability require the separate Desktop repository.
+Pre-integration corrections, DDL review and approval-gated rollout/E2E procedure:
+[`../MEMO_SYNC_INTEGRATION_READINESS.md`](../MEMO_SYNC_INTEGRATION_READINESS.md).
+
+Next List title is response-only in v1. No rename endpoint exists in either
+Web or Native. Native list creation with an existing ID and a different title
+returns 409; this must not be interpreted as permission to overwrite another
+list. Local renames remain PC-only. A future bidirectional rename must use the
+document base version, request ID and whole-unit conflict/history rules, not
+last-write-wins. It is not a prerequisite for v1 integration testing.
 
 ## Desktop integration sequence
 

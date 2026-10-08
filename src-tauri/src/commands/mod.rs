@@ -497,8 +497,15 @@ pub async fn auth_login_begin(state: State<'_, AppState>, app: AppHandle, reconn
         }
         // 개발용 Mock 서버 — 브라우저 대신 'Web 동의' 를 흉내 내고 실제 loopback callback 으로 돌아온다.
         (None, Some(mock)) => {
-            let callback =
-                mock.approve_login(&start.authorization_id, mock_account()).map_err(|e| AppError::new("auth_failed", e.to_string()))?;
+            let callback = mock.approve_login(&start.authorization_id, mock_account()).map_err(|e| {
+                // 실제 서버라면 브라우저 동의 화면이 보여 줄 오류 — 개발용 Mock 은 여기서 알린다.
+                state.auth.cancel_login();
+                if e.is_conflict("device_revoked") {
+                    AppError::new("device_revoked", crate::auth::DEVICE_REVOKED_MESSAGE)
+                } else {
+                    AppError::new("auth_failed", e.to_string())
+                }
+            })?;
             tauri::async_runtime::spawn(async move {
                 if reqwest::get(callback).await.is_err() {
                     log::warn!("mock consent callback could not reach the local listener");

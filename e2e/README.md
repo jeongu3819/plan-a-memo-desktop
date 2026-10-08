@@ -22,6 +22,7 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 | linked-list-rename-notice | (Mock) 연결된 List 이름 변경 → 이 PC 에만(서버 API 없음, 보낼 것 없음) |
 | storage-move | 저장 위치 변경 후 같은 메모 |
 | deep-link | `plana-memo://open` → 두 번째 창 없이 기존 창(single instance) |
+| device-revoke | (Mock) Web 에서 이 PC 해제 → 같은 기기 재연결은 `device_revoked` 로 거절(자동 재활성화 없음), 메모·Outbox 유지 → [새 기기로 등록] → 이전 연결은 보존·멈춤 |
 | logout | (Mock) 로그아웃 → 연결은 '이 PC 에만', 메모 유지 |
 
 * **격리**: `PLANA_CONFIG_DIR`(development 빌드에서만 읽음)로 앱 설정을 임시 폴더에 두고, 저장 위치도 임시 폴더다.

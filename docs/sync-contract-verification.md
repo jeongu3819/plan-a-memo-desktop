@@ -1,8 +1,57 @@
 # memo-sync-v1 Contract 검증 보고 (Desktop ↔ PLAN-A Work)
 
-> 3차 작업(2026-10-08). **이 문서의 '검증'은 Mock 서버·HTTP stub·실제 앱(Mock 서버 연결) 결과다.
+> 3차 작업(2026-10-08), **4차 갱신(최신 스냅샷 반영)은 §0**. **이 문서의 '검증'은 Mock 서버·HTTP stub·실제 앱(Mock 서버 연결) 결과다.
 > 실제 PLAN-A Work Backend + MySQL + Web 과 연결한 통합 검증은 아직 하지 않았다**(서버 migration·flag 미적용 — §6).
 > PLAN-A Work 쪽 수정 요청은 [PLAN_A_WORK_SYNC_HANDOFF.md](PLAN_A_WORK_SYNC_HANDOFF.md).
+
+## 0. 4차 갱신 — 최신 PLAN-A Work 스냅샷 반영 (2026-10-08)
+
+PLAN-A Work 가 3차 인계서를 반영해 Backend 를 고친 뒤 스냅샷을 다시 넣었다(`docs/upstream-plan-a-work/`, 사용자 복사본 그대로 —
+수정·재복사하지 않음). 추가 문서 `MEMO_SYNC_INTEGRATION_READINESS.md` 가 있다. 이 절이 최신 상태이고, §1 이하는 3차 기준 기록이다.
+
+| 스냅샷 변경(최신 계약) | Desktop 반영 |
+|---|---|
+| 참조 검사: HTML 전체 정규식 → **URL 속성(srcset 포함)·CSS url() 만**, sanitizer 전후. https/http/상대/mailto 링크·`profile:`·경로를 설명하는 글자 허용. file·드라이브·UNC → 422 `{code: local_path_not_allowed, item}`, `//host`·blob·data·attachment·그 밖 scheme → 422 `{code: reference_not_allowed, item}`. 실패 시 아무것도 기록되지 않아 고친 본문을 같은 request ID 로 다시 보낼 수 있음 | Mock 규칙 교체(`sync/reference.rs`: entity·percent·제어 문자·CSS escape 를 풀어 판정, `<img>` 는 소유한 서버 이미지만). 422 detail 의 `code`·`item` 을 `TransportError::Rejected` 로 읽고, item 위치를 이 PC 메모 미리보기로 바꿔 안내("2번째 메모('보고서')의 링크…"). 본문은 고치지 않음 — 사용자가 고치면 다시 보냄. '서버가 잘못 판단' 안내 제거 |
+| 크기: 항목 1,000개·항목 50만 자 초과 = **422**(Pydantic), 문서 2,000,000 byte = **413**, 공통 rich-content 정책(기본 항목당 HTML 1MiB / 정리 후 256KiB) = **413** | Mock 이 같은 순서·코드로 응답. Desktop 은 413·422 모두 그 문서만 보류하고 로컬 보존. 413 안내에 rich-content 상한을 함께 표시 |
+| 다른 문서 항목: 409 `item_moved_or_not_owned`, 다른 곳에서 쓰인 client_key: 409 `client_key_in_use` — **Resolve 로 제안을 적용할 때도** 같은 409 | Push: 최신 서버 문서로 매핑을 확인한 뒤 **그 실행에서는 다시 보내지 않고** 다음 실행(반복되면 간격을 늘리고 3번째부터 문서에 표시). client_key_in_use 는 별도 안내. Resolve: `conflict_items_moved` — 비교를 최신으로 다시 채우고 양쪽 보존, 사용자가 다시 고름 |
+| 같은 row 를 id·client_key 로 두 번(별칭 중복) = 422, 부분 저장 없음 | Desktop 은 항목마다 id 또는 client_key 하나만 보냄. Mock 도 422 |
+| **폐기된 기기**: Web revoke·logout 은 그 기기 id 의 끝. consent·exchange 409 `device_revoked`(폐기 전에 발급된 code 도). 옛 credential 401. 새 기기 등록은 사용자가 명시적으로, device_id 없이. 옛 링크·cursor 승계 금지, 로컬 데이터·History·Outbox 보존, 옛 generation 요청을 새 credential 로 재전송 금지 | `DesktopAuth`: exchange 409 → `revoked` 기록(토큰 지움), 같은 id 재연결은 서버 요청 없이 거절, 계정 화면에 '이 기기의 연결이 해제되었습니다 … 새 기기 등록이 필요합니다' + [새 기기로 등록]. 만료(401, 폐기 아님)는 기존대로 같은 기기 재연결. 새 기기로 바뀌면 `engine::retire_previous_device` 가 이전 기기의 연결·UNLINK 를 `<account_key>#device:<이전 id>` 로 옮겨 **보존만**(보내지 않음, '다시 연결하세요' 안내). 사용자가 그 날짜/List 를 다시 연결하면 새 generation 으로 비교부터 |
+| 만료(expired)는 같은 id 로 재인증, token 만 회전, link·cursor 유지 | 변경 없음(회귀 테스트 추가) |
+| ACK manifest: 문서 전체에서 이름 **중복 없이** 정렬, ACK 는 각 이름을 정확히 한 번(순서 무관), 중복·누락·추가 = 409 `attachments_incomplete` | Desktop 은 이미 중복 없는 이름 목록 — 같은 이미지를 3구역에 두 번씩 써도 ACK 1개(테스트 추가). 다운로드·저장 실패면 ACK·'동기화됨' 표시 안 함(3차 수정 유지) |
+| Conflict `source` 를 Native 생성에서 `'desktop'` 으로 명시 | 영향 없음(Desktop 은 source 를 그대로 읽음) |
+| client_key 는 소문자 UUID 권장, 서버 저장은 대소문자 구분(utf8mb4_bin) | 새 client_key 를 소문자 UUID(36자)로. 이미 보낸 32자 hex key 는 그대로 사용 |
+| Next List 이름: v1 응답 전용, rename API 없음, 통합 전제 아님 | 3차의 'PC 에만' 동작·안내 유지 |
+| DDL: MySQL ≥ 8.0.16, utf8mb4_bin | Desktop 영향 없음. **실행하지 않음** |
+
+계약 문서와 `memo_sync_api.py` 사이에 이번에 새로 발견한 불일치는 없다. 단, `start()` 는 폐기된 device_id 도 받아 주고 consent
+단계에서야 409 를 낸다 — Desktop 은 브라우저 동의 화면의 오류를 알 수 없으므로(loopback 으로 오지 않음) 기다리는 동안
+"브라우저에 device_revoked 가 보이면 [새 기기로 등록]" 을 안내한다. 개선 제안은 인계서 §6.
+
+### 4차 수정 파일
+
+| 구분 | 파일 |
+|---|---|
+| Rust | `sync/transport.rs`(Rejected 에 code·item), `sync/contract.rs`(detail.item), `sync/http.rs`(413/422 객체 detail), `sync/engine.rs`(거절 안내·이동 409 재시도 간격·Resolve 409·이전 기기 보존·로그아웃 범위), `sync/link.rs`(이전 기기 문서 다시 연결), `sync/mapper.rs`(client_key 소문자 UUID), `auth/mod.rs`(device_revoked), `commands/mod.rs`(Mock 동의 오류) |
+| Mock | `sync/mock.rs`(참조 검사·크기 순서·별칭 중복·폐기 기기 consent/exchange 409), 신규 `sync/reference.rs` |
+| Frontend | `features/auth/AccountDialog.tsx`·신규 `accountState.ts`(만료/폐기 구분, [새 기기로 등록]), `features/sync/ConflictDialog.tsx`(`conflict_items_moved`), `domain/types.ts` |
+| Tests | `tests/sync_tests.rs`(신규 6 + 기존 1 교체), `tests/http_adapter_tests.rs`(신규 1), `sync/reference.rs`(신규 2), `src/tests/accountState.test.ts`(신규 4), `e2e/run.mjs`·`harness.mjs`(신규 단계 device-revoke) |
+
+Local SQLite 스키마(migration)·UI 구조·Rich Editor·이미지 저장·History·Export 는 바꾸지 않았다. 기기 정보는 기존 `sync_state` 표에
+키 하나(`device|<account_key>`)로 둔다.
+
+### 4차 검증 결과
+
+| 구분 | 전체 | 4차 신규 |
+|---|---|---|
+| Rust 단위(reference·contract·config 등) | 23 통과 | 2 |
+| HTTP Adapter(HTTP stub) | 7 통과 | 1 |
+| Memo / Storage | 14 / 14 통과 | 0 |
+| Sync(Mock) | 52 통과 | 6(+기존 1 을 새 정책으로 교체) |
+| Frontend vitest | 73 통과 | 4 |
+| tsc · ESLint · cargo clippy(-D warnings) · cargo fmt --check | 통과 | |
+| 실제 앱 E2E(Mock, debug 빌드) | 14단계 통과 | 1(device-revoke) |
+| 실제 PLAN-A Work 서버 E2E | **미실행** | Staging·MySQL 준비 전 |
+
 
 ## 1. 기준 자료
 

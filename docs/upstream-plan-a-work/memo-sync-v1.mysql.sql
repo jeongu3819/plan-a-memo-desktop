@@ -1,8 +1,10 @@
 -- REVIEW ONLY: not applied. No USE, migration runner, backfill or existing row changes.
 
--- MySQL 8 / InnoDB. Validate in a separately authorized disposable environment.
+-- MySQL >= 8.0.16 / InnoDB. Validate in a separately authorized disposable environment.
 
 -- Existing users/personal_memos/personal_memo_images must exist; preserve their IDs.
+
+-- Explicit utf8mb4_bin keeps opaque IDs/request IDs case-sensitive across installations.
 
 -- Generated from app/memo_sync_models.py through the offline harness.
 
@@ -18,7 +20,7 @@ CREATE TABLE memo_sync_devices (
 	PRIMARY KEY (id),
 	FOREIGN KEY(owner_user_id) REFERENCES users (id),
 	UNIQUE (token_hash)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_memo_sync_devices_owner_user_id ON memo_sync_devices (owner_user_id);
 
@@ -35,7 +37,7 @@ CREATE TABLE memo_sync_documents (
 	CONSTRAINT ck_memo_sync_type CHECK (type IN ('DAY', 'NEXT_LIST')),
 	CONSTRAINT ck_memo_sync_version CHECK (version >= 1),
 	FOREIGN KEY(owner_user_id) REFERENCES users (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_memo_sync_documents_owner_user_id ON memo_sync_documents (owner_user_id);
 
@@ -45,7 +47,7 @@ CREATE TABLE personal_memo_lists (
 	title VARCHAR(120) NOT NULL,
 	PRIMARY KEY (id),
 	FOREIGN KEY(owner_user_id) REFERENCES users (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_personal_memo_lists_owner_user_id ON personal_memo_lists (owner_user_id);
 
@@ -65,7 +67,7 @@ CREATE TABLE memo_sync_authorizations (
 	FOREIGN KEY(owner_user_id) REFERENCES users (id),
 	UNIQUE (code_hash),
 	FOREIGN KEY(device_id) REFERENCES memo_sync_devices (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE memo_sync_conflicts (
 	id VARCHAR(36) NOT NULL,
@@ -81,7 +83,7 @@ CREATE TABLE memo_sync_conflicts (
 	PRIMARY KEY (id),
 	FOREIGN KEY(document_id) REFERENCES memo_sync_documents (id),
 	FOREIGN KEY(device_id) REFERENCES memo_sync_devices (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_memo_sync_conflicts_document_id ON memo_sync_conflicts (document_id);
 
@@ -91,7 +93,7 @@ CREATE TABLE memo_sync_image_pins (
 	PRIMARY KEY (document_id, image_id),
 	FOREIGN KEY(document_id) REFERENCES memo_sync_documents (id),
 	FOREIGN KEY(image_id) REFERENCES personal_memo_images (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE memo_sync_links (
 	id VARCHAR(36) NOT NULL,
@@ -102,7 +104,7 @@ CREATE TABLE memo_sync_links (
 	PRIMARY KEY (id),
 	FOREIGN KEY(document_id) REFERENCES memo_sync_documents (id),
 	FOREIGN KEY(device_id) REFERENCES memo_sync_devices (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_memo_sync_link_device_active ON memo_sync_links (device_id, active, document_id);
 
@@ -117,7 +119,7 @@ CREATE TABLE memo_sync_requests (
 	result JSON NOT NULL,
 	PRIMARY KEY (device_id, request_id),
 	FOREIGN KEY(device_id) REFERENCES memo_sync_devices (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE memo_sync_revisions (
 	id INTEGER NOT NULL AUTO_INCREMENT,
@@ -128,7 +130,7 @@ CREATE TABLE memo_sync_revisions (
 	PRIMARY KEY (id),
 	CONSTRAINT uq_memo_sync_revision UNIQUE (document_id, version),
 	FOREIGN KEY(document_id) REFERENCES memo_sync_documents (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_memo_sync_revisions_document_id ON memo_sync_revisions (document_id);
 
@@ -140,7 +142,7 @@ CREATE TABLE memo_sync_uploads (
 	PRIMARY KEY (device_id, request_id),
 	FOREIGN KEY(device_id) REFERENCES memo_sync_devices (id),
 	FOREIGN KEY(image_id) REFERENCES personal_memo_images (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE memo_sync_changes (
 	id INTEGER NOT NULL AUTO_INCREMENT,
@@ -153,7 +155,7 @@ CREATE TABLE memo_sync_changes (
 	FOREIGN KEY(device_id) REFERENCES memo_sync_devices (id),
 	FOREIGN KEY(link_id) REFERENCES memo_sync_links (id),
 	FOREIGN KEY(document_id) REFERENCES memo_sync_documents (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_memo_sync_change_device_cursor ON memo_sync_changes (device_id, id);
 
@@ -165,6 +167,6 @@ CREATE TABLE personal_memo_list_items (
 	PRIMARY KEY (memo_id),
 	FOREIGN KEY(memo_id) REFERENCES personal_memos (id),
 	FOREIGN KEY(list_id) REFERENCES personal_memo_lists (id)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE INDEX ix_personal_memo_list_items_list_id ON personal_memo_list_items (list_id);

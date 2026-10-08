@@ -232,8 +232,10 @@ export interface AuthStatus {
   configured: boolean;
   webOrigin: string | null;
   loggedIn: boolean;
-  /** 만료·Web 에서 기기 해제 — 같은 기기로 다시 연결할 수 있다 */
+  /** 연결을 쓸 수 없음(만료 또는 폐기). 만료면 같은 기기로 다시 연결할 수 있다 */
   expired: boolean;
+  /** 이 기기가 PLAN-A Work 에서 폐기됨(device_revoked) — 같은 기기로는 다시 연결할 수 없고 새 기기 등록만 가능 */
+  revoked: boolean;
   loginPending: boolean;
   session: AuthSession | null;
 }

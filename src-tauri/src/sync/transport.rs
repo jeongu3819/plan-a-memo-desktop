@@ -31,9 +31,10 @@ pub enum TransportError {
     /// 409 — code 는 서버 detail.code(link_inactive, request_id_reused, resolution_stale, item_moved_or_not_owned, …).
     #[error("서버 상태와 맞지 않습니다({code}).")]
     Conflict { code: String },
-    /// 413 · 422 — 내용 거절(용량·형식·로컬 경로 등).
+    /// 413 · 422 — 내용 거절(용량·형식·참조 검사 등). `code`·`item` 은 서버 detail 이 객체일 때
+    /// (예: `{code: local_path_not_allowed, item: 0}` — item 은 Push 항목 배열의 0부터 시작하는 위치, 서버 id 아님).
     #[error("서버가 요청을 거절했습니다: {message}")]
-    Rejected { status: u16, message: String },
+    Rejected { status: u16, message: String, code: Option<String>, item: Option<usize> },
     #[error("요청이 너무 많습니다. 잠시 뒤 다시 시도합니다.")]
     RateLimited,
     #[error("서버 오류({0})")]
@@ -41,6 +42,10 @@ pub enum TransportError {
 }
 
 impl TransportError {
+    /// 문장만 있는 거절(코드·항목 위치 없음).
+    pub fn rejected(status: u16, message: impl Into<String>) -> Self {
+        TransportError::Rejected { status, message: message.into(), code: None, item: None }
+    }
     pub fn is_conflict(&self, code: &str) -> bool {
         matches!(self, TransportError::Conflict { code: c } if c == code)
     }

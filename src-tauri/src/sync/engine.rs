@@ -62,6 +62,37 @@ impl SyncReport {
 pub const NOTICE_MOVED: &str = "메모가 다른 위치에서 이미 변경되었습니다. 최신 상태를 불러왔습니다.";
 pub const NOTICE_UNLINKED: &str = "PLAN-A Work 에서 연결이 해제된 메모가 있습니다. 이 PC 의 내용은 그대로 있습니다.";
 pub const NOTICE_OTHER_ACCOUNT: &str = "다른 PLAN-A Work 계정으로 연결된 메모입니다. 그 계정으로 로그인하면 이어서 맞춥니다.";
+pub const NOTICE_PREVIOUS_DEVICE: &str =
+    "해제된 이전 기기 등록으로 연결돼 있던 메모입니다. 이 PC 의 내용과 보내지 못한 변경은 그대로 있습니다. \
+     다시 맞추려면 이 날짜/List 를 새로 연결해주세요(연결하면 PLAN-A Work 내용과 비교부터 합니다).";
+
+/// 이 계정의 Sync 상태를 지금 서버 기기에 묶는다. 기기 id 가 바뀌었으면(이전 기기 폐기 후 새 등록) 이전 기기의
+/// 연결·UNLINK 를 `<account_key>#device:<이전 id>` 로 옮겨 **보존만** 한다 — 새 credential 로 보내지 않고, 몰래 새 기기에
+/// 다시 연결하지 않는다(memo-sync-v1: old links/cursors are never inherited). 옮긴 연결 수를 돌려준다.
+pub fn retire_previous_device(conn: &mut Connection, ctx: &SyncContext) -> AppResult<usize> {
+    let key = format!("device|{}", ctx.account_key);
+    let previous = state_get(conn, &key)?;
+    if previous.as_deref() == Some(ctx.server_device_id.as_str()) {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    let moved = match previous {
+        None => 0, // 처음 — 지금 기기로 기록만
+        Some(old) => {
+            let retired = format!("{}{}{old}", ctx.account_key, link::PREVIOUS_DEVICE_MARK);
+            let moved = tx.execute("UPDATE sync_links SET account_key = ?2 WHERE account_key = ?1", params![ctx.account_key, retired])?;
+            tx.execute(
+                "UPDATE sync_outbox SET account_key = ?2 WHERE op = 'UNLINK' AND account_key = ?1",
+                params![ctx.account_key, retired],
+            )?;
+            tx.execute("DELETE FROM sync_state WHERE key LIKE ?1", [format!("weblink|{}|%", ctx.account_key)])?;
+            moved
+        }
+    };
+    state_set(&tx, &key, &ctx.server_device_id)?;
+    tx.commit()?;
+    Ok(moved)
+}
 
 #[derive(Debug)]
 enum StepError {
@@ -162,19 +193,67 @@ fn link_of(conn: &Connection, doc_id: &str) -> AppResult<Option<LinkRow>> {
     link::link_row(conn, doc_id)
 }
 
-/// 서버 오류 → 사용자에게 보일 문장.
-fn rejected_message(status: u16, message: &str) -> String {
-    if message.contains("Local paths are not allowed") {
-        // 서버의 경로 검사가 https:// 링크도 PC 경로로 오인한다(docs/PLAN_A_WORK_SYNC_HANDOFF.md §1).
-        // 본문은 바꾸지 않는다 — 서버가 고쳐지면 같은 내용 그대로 다시 보낸다.
-        return "PLAN-A Work 가 이 날짜/List 의 링크(https://…) 등을 PC 파일 경로로 잘못 판단해 받지 않았습니다. \
-                이 PC 의 내용은 그대로 보관되며, PLAN-A Work 서버가 수정되면 자동으로 다시 보냅니다. 다른 날짜/List 는 계속 동기화됩니다."
-            .into();
+/// 서버 거절(413·422) → 사용자에게 보일 문장. 본문은 고치지 않는다 — 사용자가 고치면(또는 서버 정책이 바뀌면) 다시 보낸다.
+/// `item` 은 서버가 알려 준 Push 항목 위치, `preview` 는 그 항목의 앞부분(이 PC 에서 만든 것 — 서버는 본문을 돌려주지 않는다).
+pub fn rejected_message(status: u16, message: &str, code: Option<&str>, item: Option<usize>, preview: Option<&str>) -> String {
+    let which = match (item, preview) {
+        (Some(index), Some(text)) if !text.is_empty() => format!("{}번째 메모('{text}')", index + 1),
+        (Some(index), _) => format!("{}번째 메모", index + 1),
+        _ => "이 날짜/List 의 메모".into(),
+    };
+    let keep = "이 PC 의 내용은 그대로 보관되며, 고치면 자동으로 다시 보냅니다. 다른 날짜/List 는 계속 동기화됩니다.";
+    match code {
+        Some("local_path_not_allowed") => {
+            return format!(
+                "{which}의 링크·이미지에 PC 파일 경로(file:, C:\\…, \\\\서버\\…) 참조가 있어 PLAN-A Work 가 받지 않았습니다. \
+                 그 링크를 https:// 주소로 바꾸거나 지워주세요. {keep}"
+            )
+        }
+        Some("reference_not_allowed") => {
+            return format!(
+                "{which}에 PLAN-A Work 가 받지 않는 링크·이미지 주소(//로 시작하는 주소, data:, blob: 등)가 있습니다. \
+                 링크는 https:// 로 시작하게 바꿔주세요. {keep}"
+            )
+        }
+        _ => {}
     }
     if status == 413 {
-        return format!("PLAN-A Work 가 너무 크거나 지원하지 않는 형식이라 거절했습니다({message}).");
+        return format!(
+            "메모 하나 또는 이 날짜/List 전체가 PLAN-A Work 크기 제한(메모당 HTML 1MiB·정리 후 256KiB, 날짜/List 2MB — 서버 설정에 따라 다름)을 \
+             넘거나 이미지가 제한을 넘어 받지 않았습니다({message}). {keep}"
+        );
     }
-    format!("PLAN-A Work 가 이 내용을 거절했습니다: {message}")
+    format!("PLAN-A Work 가 이 내용을 받지 않았습니다({message}). {keep}")
+}
+
+/// Outbox 에 보관한 Push 본문에서 `index` 번째 항목의 앞부분(안내용).
+fn pushed_item_preview(payload: Option<&str>, index: usize) -> Option<String> {
+    let payload: OutboxPayload = serde_json::from_str(payload?).ok()?;
+    let item = payload.inflight?.body.items.into_iter().nth(index)?;
+    let text = crate::memo::text::search_text(&item.content);
+    let short: String = text.chars().take(30).collect();
+    Some(if text.chars().count() > 30 { format!("{short}…") } else { short })
+}
+
+pub const NOTICE_CLIENT_KEY: &str =
+    "이 PC 의 새 메모 일부가 PLAN-A Work 의 다른 날짜/List 에 이미 있는 것으로 확인되었습니다. 다른 위치의 메모는 건드리지 않고, 최신 상태를 확인한 뒤 이 날짜/List 의 새 메모로 보냅니다.";
+
+/// 이동 충돌(409 item_moved_or_not_owned · client_key_in_use) 뒤 재시도 간격 — 같은 오류가 반복되면 점점 늦추고 3번째부터 문서에 표시.
+fn defer_after_moved(conn: &Connection, outbox_id: i64, doc_id: &str, attempts: i64, code: &str) -> AppResult<()> {
+    let attempts = attempts + 1;
+    let next = chrono::Utc::now() + chrono::Duration::seconds(backoff_seconds(attempts));
+    conn.execute(
+        "UPDATE sync_outbox SET attempts = ?2, next_attempt_at = ?3, last_error = ?4 WHERE id = ?1",
+        params![outbox_id, attempts, next.to_rfc3339_opts(chrono::SecondsFormat::Millis, true), code],
+    )?;
+    if attempts >= 3 {
+        set_error(
+            conn,
+            doc_id,
+            "이 날짜/List 의 메모 일부가 PLAN-A Work 에서 다른 위치로 옮겨져 있어 계속 맞추지 못하고 있습니다. 이 PC 의 내용은 그대로이며, PLAN-A Work 에서 위치를 확인해주세요.",
+        )?;
+    }
+    Ok(())
 }
 
 impl SyncEngine {
@@ -220,14 +299,26 @@ impl SyncEngine {
             report.finished_at = now();
             return Ok(report);
         };
-        // 다른 계정(또는 계정 정보 없는 예전 개발용 연결)의 문서는 멈춤 표시만.
+        // 같은 계정이지만 서버 기기가 바뀌었다(이전 기기 폐기 → 새 기기 등록) — 이전 기기의 연결·cursor 를 이어받지 않는다.
+        if storage.with_conn(|c| retire_previous_device(c, &ctx))? > 0 {
+            report.notice(NOTICE_PREVIOUS_DEVICE);
+        }
+        // 다른 계정(또는 계정 정보 없는 예전 개발용 연결)·이전 기기의 문서는 멈춤 표시만(Outbox·내용 보존, 보내지 않음).
         let foreign = storage.with_conn(|c| {
-            Ok(c.execute(
+            c.execute(
                 "UPDATE documents SET sync_status = 'auth_required', sync_error = ?2
                   WHERE sync_enabled = 1 AND sync_status <> 'conflict' AND id IN
-                        (SELECT document_id FROM sync_links WHERE account_key IS NULL OR account_key <> ?1)",
+                        (SELECT document_id FROM sync_links WHERE account_key LIKE ?1 || '#device:%')",
+                params![ctx.account_key, NOTICE_PREVIOUS_DEVICE],
+            )?;
+            let foreign = c.execute(
+                "UPDATE documents SET sync_status = 'auth_required', sync_error = ?2
+                  WHERE sync_enabled = 1 AND sync_status <> 'conflict' AND id IN
+                        (SELECT document_id FROM sync_links
+                          WHERE account_key IS NULL OR (account_key <> ?1 AND account_key NOT LIKE ?1 || '#device:%'))",
                 params![ctx.account_key, NOTICE_OTHER_ACCOUNT],
-            )?)
+            )?;
+            Ok(foreign)
         })?;
         if foreign > 0 {
             report.notice(NOTICE_OTHER_ACCOUNT);
@@ -390,16 +481,17 @@ impl SyncEngine {
                 return self.end_link(storage, &entry.document_id, report);
             }
             TransportError::Conflict { code } if code == "item_moved_or_not_owned" || code == "client_key_in_use" => {
-                // 다른 위치로 이미 옮겨진 항목을 오래된 요청이 가져오려 했다 — 최신을 다시 받는다.
+                // 다른 위치로 이미 옮겨진 항목을 오래된 요청이 가져오려 했다 — 최신을 다시 받는다(바로 재전송하지 않는다).
                 storage.with_conn(|c| {
                     let tx = c.transaction()?;
                     clear_inflight(&tx, entry.id)?;
                     tx.execute("DELETE FROM sync_item_map WHERE document_id = ?1 AND server_item_id IS NULL", [&entry.document_id])?;
                     tx.execute("UPDATE sync_links SET remote_pending = 1 WHERE document_id = ?1", [&entry.document_id])?;
+                    defer_after_moved(&tx, entry.id, &entry.document_id, entry.attempts, code)?;
                     tx.commit()?;
                     Ok(())
                 })?;
-                report.notice(NOTICE_MOVED);
+                report.notice(if code == "client_key_in_use" { NOTICE_CLIENT_KEY } else { NOTICE_MOVED });
                 report.touched(&entry.document_id);
                 return Ok(());
             }
@@ -411,7 +503,16 @@ impl SyncEngine {
         }
         report.failed += 1;
         let (message, delay, permanent) = match error {
-            TransportError::Rejected { status, message } => (rejected_message(*status, message), 3600, true),
+            TransportError::Rejected { status, message, code, item } => {
+                // 방금 보낸 본문(Outbox 에 보관된 요청)에서 그 항목을 찾는다.
+                let payload: Option<String> = storage
+                    .with_conn(|c| Ok(c.query_row("SELECT payload FROM sync_outbox WHERE id = ?1", [entry.id], |r| r.get(0)).optional()?))
+                    .ok()
+                    .flatten()
+                    .flatten();
+                let preview = item.and_then(|i| pushed_item_preview(payload.as_deref(), i));
+                (rejected_message(*status, message, code.as_deref(), *item, preview.as_deref()), 3600, true)
+            }
             TransportError::Forbidden => ("PLAN-A Work 가 권한이 없다고 거절했습니다.".to_string(), 3600, true),
             other => (other.to_string(), backoff_seconds(entry.attempts + 1), false),
         };
@@ -731,13 +832,11 @@ impl SyncEngine {
                             tx.execute("DELETE FROM sync_item_map WHERE document_id = ?1 AND item_id = ?2", params![doc.id, item])?;
                         }
                     }
-                    tx.execute("UPDATE sync_outbox SET next_attempt_at = NULL WHERE id = ?1", [entry.id])?;
                     tx.commit()?;
                     Ok(())
                 })?;
-                report.notice(NOTICE_MOVED);
-                report.touched(&doc.id);
-                return Ok(());
+                // 이번 실행에서는 다시 보내지 않는다 — step_failed 가 안내·재시도 간격(반복되면 문서에 표시)을 맡는다.
+                return Err(TransportError::Conflict { code }.into());
             }
             other => other?,
         };
@@ -1410,6 +1509,16 @@ impl SyncEngine {
                     "그 사이 PLAN-A Work 내용이 다시 바뀌었습니다. 최신 내용으로 비교 화면을 새로 고쳤으니 다시 선택해주세요.",
                 ));
             }
+            Err(TransportError::Conflict { code }) if code == "item_moved_or_not_owned" || code == "client_key_in_use" => {
+                // 고른 내용 안의 메모가 그 사이 다른 날짜/List 로 옮겨졌다 — 서버는 그 메모를 가져오지 않는다(v1).
+                // 양쪽 내용은 그대로, 비교 화면을 최신으로 다시 채우고 사용자가 다시 판단하게 한다.
+                let _ = self.refresh_conflict(storage, &ctx, &doc_id, &server_id, Some(&server_conflict), &mut report).await;
+                return Err(AppError::new(
+                    "conflict_items_moved",
+                    "고른 내용의 메모 일부가 그 사이 PLAN-A Work 에서 다른 날짜/List 로 옮겨져 그대로 적용할 수 없습니다. \
+                     두 내용은 그대로 보관되어 있습니다. 옮겨진 위치를 확인한 뒤 다시 선택해주세요.",
+                ));
+            }
             Err(TransportError::NotFound) => {
                 // 다른 곳에서 이미 해결 — 최신 문서를 받는다.
                 storage.with_conn(|c| Ok(c.execute("UPDATE sync_links SET remote_pending = 1 WHERE document_id = ?1", [&doc_id])?))?;
@@ -1507,13 +1616,14 @@ impl SyncEngine {
 pub fn end_account_links(conn: &mut Connection, account_key: &str) -> AppResult<usize> {
     let tx = conn.transaction()?;
     let ids: Vec<String> = tx
-        .prepare("SELECT document_id FROM sync_links WHERE account_key = ?1")?
+        // 이 계정의 연결 + 이 계정의 해제된 이전 기기 연결(<account_key>#device:…)
+        .prepare("SELECT document_id FROM sync_links WHERE account_key = ?1 OR account_key LIKE ?1 || '#device:%'")?
         .query_map([account_key], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     for id in &ids {
         link::end_local_link(&tx, id)?;
     }
-    tx.execute("DELETE FROM sync_outbox WHERE op = 'UNLINK' AND account_key = ?1", [account_key])?;
+    tx.execute("DELETE FROM sync_outbox WHERE op = 'UNLINK' AND (account_key = ?1 OR account_key LIKE ?1 || '#device:%')", [account_key])?;
     tx.execute("DELETE FROM sync_state WHERE key LIKE ?1", [format!("weblink|{account_key}|%")])?;
     tx.commit()?;
     Ok(ids.len())

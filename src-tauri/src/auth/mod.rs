@@ -119,6 +119,9 @@ struct StoredCredential {
     /// 서버가 401 을 돌려줬다(만료·Web 에서 기기 해제) — 다시 연결이 필요하다.
     #[serde(default)]
     expired: bool,
+    /// 서버가 이 기기 id 를 폐기했다(409 device_revoked — Web 기기 해제·로그아웃). 같은 id 로는 다시 연결하지 않는다.
+    #[serde(default)]
+    revoked: bool,
 }
 
 impl std::fmt::Debug for StoredCredential {
@@ -138,6 +141,7 @@ impl StoredCredential {
     }
     fn usable(&self) -> bool {
         !self.expired
+            && !self.revoked
             && chrono::DateTime::parse_from_rfc3339(&self.expires_at)
                 .map(|t| t.with_timezone(&chrono::Utc) > chrono::Utc::now())
                 .unwrap_or(false)
@@ -177,6 +181,8 @@ pub struct AuthStatus {
     pub logged_in: bool,
     /// 만료·Web 에서 기기 해제 — 같은 기기로 다시 연결할 수 있다.
     pub expired: bool,
+    /// 이 기기가 PLAN-A Work 에서 폐기됨(device_revoked) — 같은 기기로 다시 연결할 수 없고, 새 기기 등록만 가능.
+    pub revoked: bool,
     pub login_pending: bool,
     pub session: Option<AuthSession>,
 }
@@ -230,6 +236,8 @@ pub trait AuthProvider: Send + Sync {
 }
 
 struct PendingLogin {
+    /// 같은 기기로 다시 연결하는 요청이면 그 서버 기기 id
+    device_id: Option<String>,
     state: String,
     pkce: pkce::PkcePair,
     redirect_uri: String,
@@ -332,13 +340,17 @@ impl DesktopAuth {
     pub async fn begin_login(&self, redirect_uri: &str, reconnect: bool) -> AppResult<LoginStart> {
         let pair = pkce::PkcePair::generate();
         let state = pkce::random_state();
+        if reconnect && self.stored().is_some_and(|c| c.revoked) {
+            // 폐기된 기기 id 로 다시 시도하지 않는다(서버도 409) — 새 기기 등록은 사용자가 따로 고른다.
+            return Err(device_revoked_error());
+        }
         let device_id = if reconnect { self.stored().map(|c| c.server_device_id) } else { None };
         let body = AuthStartRequest {
             name: self.device_name.clone(),
             challenge: pair.challenge.clone(),
             state: state.clone(),
             redirect_uri: redirect_uri.to_string(),
-            device_id,
+            device_id: device_id.clone(),
         };
         let response = self.api.start(&body).await.map_err(|e| auth_error(&e, "로그인을 시작하지 못했습니다."))?;
         if !namespace_allowed(self.env, &response.namespace) {
@@ -359,6 +371,7 @@ impl DesktopAuth {
             pkce: pair,
             redirect_uri: redirect_uri.to_string(),
             authorization_id: response.authorization_id.clone(),
+            device_id,
             started: std::time::Instant::now(),
         });
         Ok(LoginStart {
@@ -391,7 +404,18 @@ impl DesktopAuth {
         }
         let request =
             ExchangeRequest { code: params.code, verifier: pending.pkce.verifier.clone(), redirect_uri: pending.redirect_uri.clone() };
-        let response = self.api.exchange(&request).await.map_err(|e| auth_error(&e, "로그인을 마치지 못했습니다."))?;
+        let response = match self.api.exchange(&request).await {
+            Ok(response) => response,
+            Err(error) if error.is_conflict("device_revoked") => {
+                // 폐기된 기기 — 되살리지 않는다. 같은 id 로 다시 묻지 않도록 기억하고(로컬 메모·Outbox 는 그대로),
+                // 새 기기 등록은 사용자가 고를 때만.
+                if pending.device_id.is_some() {
+                    self.mark_revoked();
+                }
+                return Err(device_revoked_error());
+            }
+            Err(error) => return Err(auth_error(&error, "로그인을 마치지 못했습니다.")),
+        };
         if response.token_type != "Bearer" || !response.access_token.starts_with("pms_") {
             return Err(AppError::new("auth_invalid_response", "서버 응답이 Desktop credential 형식이 아닙니다."));
         }
@@ -410,6 +434,7 @@ impl DesktopAuth {
             device_name: self.device_name.clone(),
             connected_at: crate::util::now(),
             expired: false,
+            revoked: false,
         };
         self.store(Some(credential.clone()))?;
         log::info!("desktop credential stored (device registered)");
@@ -435,6 +460,18 @@ impl DesktopAuth {
         Ok(LogoutResult { server_revoked, account_key: Some(credential.account_key()) })
     }
 
+    /// 서버가 이 기기 id 를 폐기했다고 알렸다 — credential 은 쓸 수 없게 지우고(토큰 없음) 계정·기기 정보만 남긴다.
+    fn mark_revoked(&self) {
+        if let Some(mut c) = self.stored() {
+            c.revoked = true;
+            c.expired = true;
+            c.access_token.clear();
+            if let Err(error) = self.store(Some(c)) {
+                log::warn!("credential update failed: {}", error.code());
+            }
+        }
+    }
+
     pub fn pending_authorization_id(&self) -> Option<String> {
         self.pending.lock().unwrap().as_ref().map(|p| p.authorization_id.clone())
     }
@@ -449,6 +486,7 @@ impl AuthProvider for DesktopAuth {
             web_origin: self.api.web_origin(),
             logged_in: stored.as_ref().map(|c| c.usable()).unwrap_or(false),
             expired: stored.as_ref().map(|c| !c.usable()).unwrap_or(false),
+            revoked: stored.as_ref().map(|c| c.revoked).unwrap_or(false),
             login_pending: self.login_pending(),
             session: stored.as_ref().map(|c| self.session_of(c)),
         }
@@ -479,6 +517,13 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+pub const DEVICE_REVOKED_MESSAGE: &str =
+    "이 기기의 PLAN-A Work 연결이 해제되었습니다. 로컬 메모는 그대로 보존되어 있습니다. 다시 연결하려면 새 기기 등록이 필요합니다.";
+
+fn device_revoked_error() -> AppError {
+    AppError::new("device_revoked", DEVICE_REVOKED_MESSAGE)
+}
+
 fn auth_error(error: &TransportError, fallback: &str) -> AppError {
     match error {
         TransportError::Offline => AppError::new("offline", "PLAN-A Work 에 연결할 수 없습니다. 인터넷 연결을 확인해주세요."),
@@ -487,6 +532,7 @@ fn auth_error(error: &TransportError, fallback: &str) -> AppError {
             AppError::new("auth_code_invalid", "로그인 코드가 만료되었거나 이미 사용되었습니다. 다시 로그인해주세요.")
         }
         TransportError::NotFound => AppError::new("auth_device_missing", "이 PC 의 기기 등록을 찾을 수 없습니다. 새로 로그인해주세요."),
+        TransportError::Conflict { code } if code == "device_revoked" => device_revoked_error(),
         TransportError::RateLimited => AppError::new("rate_limited", "로그인 시도가 너무 많습니다. 잠시 뒤 다시 시도해주세요."),
         other => AppError::new("auth_failed", format!("{fallback} ({other})")),
     }

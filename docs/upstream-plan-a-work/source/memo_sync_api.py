@@ -183,9 +183,11 @@ def register(app, policy):
         if not row or row.namespace != sync.namespace() or row.expires_at <= datetime.utcnow():
             raise HTTPException(404, 'Authorization request expired')
         if row.device_id:
-            existing = db.query(MemoSyncDevice).filter_by(id=row.device_id, owner_user_id=user.id).first()
+            existing = db.query(MemoSyncDevice).filter_by(id=row.device_id, owner_user_id=user.id).populate_existing().with_for_update().first()
             if not existing:
                 raise HTTPException(403, 'Device belongs to another account')
+            if existing.revoked_at:
+                raise HTTPException(409, {'code': 'device_revoked'})
         code = secrets.token_urlsafe(32)
         result = db.execute(update(MemoSyncAuthorization).where(MemoSyncAuthorization.id == row.id,
             MemoSyncAuthorization.code_hash.is_(None)).values(code_hash=hashed(code), owner_user_id=user.id,
@@ -203,8 +205,16 @@ def register(app, policy):
         challenge = base64.urlsafe_b64encode(hashlib.sha256(body.verifier.encode()).digest()).decode().rstrip('=')
         if not row or not row.owner_user_id or not hmac.compare_digest(row.challenge, challenge) or body.redirect_uri != row.redirect_uri:
             raise HTTPException(401, 'Invalid authorization code or verifier')
-        sync.lock_owner(db, row.owner_user_id)
-        user = db.get(User, row.owner_user_id)
+        owner, authorization_id = row.owner_user_id, row.id
+        # End the unauthenticated lookup's MySQL read snapshot before locking.
+        # Revoke and exchange serialize on the same owner, then use current reads.
+        db.rollback()
+        sync.lock_owner(db, owner)
+        row = db.query(MemoSyncAuthorization).filter_by(id=authorization_id,
+            code_hash=hashed(body.code), namespace=sync.namespace()).populate_existing().with_for_update().first()
+        if not row or row.owner_user_id != owner or not hmac.compare_digest(row.challenge, challenge) or body.redirect_uri != row.redirect_uri:
+            raise HTTPException(401, 'Invalid authorization code or verifier')
+        user = db.query(User).filter_by(id=owner).populate_existing().with_for_update().first()
         if not user or not user.is_active or user.deletion_state:
             raise HTTPException(401, 'Account unavailable')
         result = db.execute(update(MemoSyncAuthorization).where(MemoSyncAuthorization.id == row.id,
@@ -213,9 +223,13 @@ def register(app, policy):
         if result.rowcount != 1:
             raise HTTPException(401, 'Authorization code expired or consumed')
         token = 'pms_' + secrets.token_urlsafe(48)
-        desktop = db.get(MemoSyncDevice, row.device_id) if row.device_id else None
+        desktop = db.query(MemoSyncDevice).filter_by(id=row.device_id).populate_existing().with_for_update().first() if row.device_id else None
+        if row.device_id and desktop is None:
+            raise HTTPException(404, 'Device not found')
         if desktop and (desktop.owner_user_id != row.owner_user_id or desktop.namespace != sync.namespace()):
             raise HTTPException(403, 'Device mismatch')
+        if desktop and desktop.revoked_at:
+            raise HTTPException(409, {'code': 'device_revoked'})
         if desktop is None:
             desktop = MemoSyncDevice(id=sync.uid(), owner_user_id=row.owner_user_id, namespace=sync.namespace(), name=row.name)
             db.add(desktop)
@@ -349,7 +363,7 @@ def register(app, policy):
         # Resolve an existing conflict before changing this same unit again.
         pending = db.query(MemoSyncConflict).filter_by(document_id=doc.id, resolved_version=None).first()
         if body.base_version != doc.version or pending:
-            conflict = MemoSyncConflict(id=sync.uid(), document_id=doc.id, device_id=desktop.id,
+            conflict = MemoSyncConflict(id=sync.uid(), document_id=doc.id, device_id=desktop.id, source='desktop',
                 base_version=body.base_version, local_version=body.local_version,
                 proposed=value, server_snapshot=sync.snapshot(db, doc))
             db.add(conflict)

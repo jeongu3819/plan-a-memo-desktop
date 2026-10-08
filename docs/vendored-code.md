@@ -14,7 +14,6 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | `components/RichTextContextMenu.tsx`, `RichTextToolbar.tsx`, `LinkEditDialog.tsx`, `RichLinkHoverHint.tsx`, `MentionSuggestionPopper.tsx` | 우클릭 서식 메뉴·링크 |
 | `components/common/ImageZoomViewer.tsx`, `components/richTable/RichTableResizeOverlay.tsx` | 이미지 확대·표 크기 조절 |
 | `components/personalMemo/PersonalMemoContentView.tsx` | 저장된 메모 읽기 화면 |
-| `components/personalMemo/personalMemoTheme.tsx` | 메모 색·Radius·요일/Today/Next 배지 |
 | `components/personalMemo/personalMemoPreview.ts` (+test) | 주간 칸 구역별 미리보기 개수 |
 | `components/personalMemo/memoSearchHighlight.ts` (+test) | 검색어 강조(CSS Highlight) |
 | `hooks/useDescriptionTableResize.ts`, `hooks/useMentionAutocomplete.ts` | 표 크기 조절·멘션(메모에서는 꺼짐) |
@@ -32,6 +31,7 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | `components/RichDescriptionEditor.tsx` | 외부 value 동기화 한 줄: `el.innerHTML = storedHtmlForDisplay(value)` (원본은 `value` 를 그대로 넣고 나서 hydrate) |
 | `utils/taskDescription.ts` | `safeImageUrl` 에 `attachment://<uuid>` 허용 한 줄 추가(나머지 sanitizer 규칙 그대로) |
 | `utils/inlineImageMetrics.ts` | 서버 보고 대신 no-op(같은 함수 모양) |
+| `components/personalMemo/personalMemoTheme.tsx` | Desktop 표면 톤: 창 바탕 `#F7F6F3`, 칸 경계를 반투명 선(`rgba(28,25,23,.07)`)으로, `MEMO_CARD_SHADOW`·`MEMO_CARD_SHADOW_HOVER` 추가, `MEMO_RADIUS` 18px → 14px, Today 배지 굵기 800 → 700. 다시 복사하면 이 값들만 다시 적용 |
 | `api/personalMemos.ts` | 원본 API 클라이언트 대신 **타입만**(`MemoSection`, `MemoKind`) |
 
 ## 참고만 하고 Desktop 코드로 새로 쓴 것

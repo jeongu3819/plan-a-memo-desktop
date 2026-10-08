@@ -7,7 +7,7 @@ import { Alert, Box, Button, Paper, Stack, Typography } from '@mui/material';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { LocationInspection, StorageStatus } from '../../domain/types';
 import { errorMessage, storageService } from '../../tauri/api';
-import { MEMO_NOTE_DATE, MEMO_NOTE_SERIF, MEMO_SURFACE } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
+import { MEMO_CARD_BORDER, MEMO_NOTE_DATE, MEMO_NOTE_SERIF, MEMO_SURFACE, MEMO_WRITE_AREA } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 
 export default function StorageSetup({ status, onReady }: { status: StorageStatus; onReady: () => void }) {
   const [picked, setPicked] = useState<LocationInspection | null>(null);
@@ -39,7 +39,7 @@ export default function StorageSetup({ status, onReady }: { status: StorageStatu
 
   return (
     <Box sx={{ height: '100vh', bgcolor: MEMO_SURFACE, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
-      <Paper data-testid="storage-setup" sx={{ maxWidth: 560, width: '100%', p: 4, borderRadius: '18px', border: '1px solid #EEEBE5' }}>
+      <Paper data-testid="storage-setup" sx={{ maxWidth: 560, width: '100%', p: 4, borderRadius: '14px', border: '1px solid', borderColor: MEMO_CARD_BORDER, boxShadow: '0 12px 32px -8px rgba(28, 25, 23, 0.10), 0 1px 3px rgba(28, 25, 23, 0.04)' }}>
         <Typography sx={{ fontFamily: MEMO_NOTE_SERIF, fontSize: '1.7rem', color: MEMO_NOTE_DATE, mb: 1 }}>PLAN-A Memo</Typography>
         {missing ? (
           <>
@@ -58,7 +58,7 @@ export default function StorageSetup({ status, onReady }: { status: StorageStatu
           <>
             <Typography sx={{ fontWeight: 800, fontSize: '1.05rem' }}>PLAN-A Memo에 오신 것을 환영합니다.</Typography>
             <Typography sx={{ fontSize: '0.9rem', color: 'text.secondary', mt: 1 }}>메모를 저장할 위치를 선택해주세요.</Typography>
-            <Box sx={{ mt: 2.5, p: 2, borderRadius: 2, bgcolor: '#F7F6F2' }}>
+            <Box sx={{ mt: 2.5, p: 2, borderRadius: '10px', bgcolor: MEMO_WRITE_AREA }}>
               <Typography sx={{ fontSize: '0.78rem', color: 'text.secondary', fontWeight: 700 }}>권장 위치</Typography>
               <Typography data-testid="default-storage-path" sx={{ fontSize: '0.92rem', fontWeight: 700, wordBreak: 'break-all', mt: 0.25 }}>
                 {status.defaultPath ?? '(사용자 폴더를 찾지 못했습니다)'}

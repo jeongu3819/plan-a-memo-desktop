@@ -34,7 +34,7 @@ export function MoveDecisionDialog({
 }) {
   return (
     <Dialog open={!!request} onClose={onClose} data-personal-memo-overlay="true" data-testid="move-decision-dialog" maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>{targetLabel}은 PLAN-A Work와 연결되어 있지 않습니다.</DialogTitle>
+      <DialogTitle>{targetLabel}은 PLAN-A Work와 연결되어 있지 않습니다.</DialogTitle>
       <DialogContent>
         <Typography sx={{ fontSize: '0.88rem', color: 'text.secondary' }}>
           옮기면 이 메모는 PLAN-A Work 의 원래 날짜에서 빠집니다. {targetLabel}은 연결하지 않으면 이 PC 에만 저장됩니다(PLAN-A Work 의 이동과 같은
@@ -76,7 +76,7 @@ export function DatePickerDialog({
   const valid = /^\d{4}-\d{2}-\d{2}$/.test(value);
   return (
     <Dialog open onClose={onClose} data-personal-memo-overlay="true">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>날짜 선택</DialogTitle>
+      <DialogTitle>날짜 선택</DialogTitle>
       <DialogContent>
         <TextField
           type="date"

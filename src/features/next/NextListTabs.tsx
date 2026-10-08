@@ -33,7 +33,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { NextListInfo } from '../../domain/types';
 import { errorMessage, nextListService } from '../../tauri/api';
 import { refreshMemo, useLists } from '../../services/queries';
-import { dayTone, MEMO_CARD, MEMO_CARD_BORDER, MEMO_MUTED, NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
+import { dayTone, MEMO_CARD, MEMO_CARD_BORDER, MEMO_CARD_BORDER_HOVER, MEMO_CARD_SHADOW, MEMO_MUTED, NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { usePersonalMemo } from '../memo/MemoProvider';
 import SyncMark from '../sync/SyncMark';
 
@@ -81,7 +81,7 @@ export function ListNameDialog({
   };
   return (
     <Dialog open={open} onClose={onClose} data-personal-memo-overlay="true" data-testid="memo-list-name-dialog" fullWidth maxWidth="xs">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>{title}</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         {notice && (
           <Alert severity="info" sx={{ mb: 1.5, fontSize: '0.8rem' }} data-testid="memo-list-name-notice">
@@ -133,13 +133,14 @@ function ListTab({ card, selected, onSelect }: { card: NextListInfo; selected: b
         if (!selected) onSelect();
       }}
       sx={{
-        flexShrink: 0, gap: 0.75, px: 1.25, height: 32, borderRadius: 999,
-        border: '1px solid', borderColor: selected ? tone.text : MEMO_CARD_BORDER,
+        flexShrink: 0, gap: 0.75, px: 1.5, height: 32, borderRadius: '8px',
+        border: '1px solid', borderColor: selected ? 'rgba(109, 40, 217, 0.30)' : MEMO_CARD_BORDER,
         bgcolor: selected ? tone.soft : MEMO_CARD, color: selected ? tone.text : 'text.primary',
-        fontWeight: selected ? 800 : 600, fontSize: '0.82rem', maxWidth: 240,
+        boxShadow: selected ? 'none' : MEMO_CARD_SHADOW,
+        fontWeight: selected ? 700 : 600, fontSize: '0.82rem', maxWidth: 240,
         opacity: sortable.isDragging ? 0.6 : 1,
         transition: 'background-color 0.15s, border-color 0.15s',
-        '&:hover': { borderColor: tone.text },
+        '&:hover': { borderColor: selected ? 'rgba(109, 40, 217, 0.45)' : MEMO_CARD_BORDER_HOVER },
         '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
       }}
     >
@@ -208,7 +209,7 @@ export default function NextListTabs({ activeListId, onSelect }: { activeListId:
           startIcon={<AddIcon sx={{ fontSize: 16 }} />}
           onClick={() => setCreating(true)}
           data-testid="memo-next-list-create"
-          sx={{ flexShrink: 0, borderRadius: 999, fontSize: '0.78rem', px: 1.25, minWidth: 0 }}
+          sx={{ flexShrink: 0, borderRadius: '8px', fontSize: '0.78rem', px: 1.25, height: 32, minWidth: 0 }}
         >
           List
         </Button>
@@ -261,7 +262,7 @@ export default function NextListTabs({ activeListId, onSelect }: { activeListId:
         }}
       />
       <Dialog open={!!deleting} onClose={() => setDeleting(null)} data-personal-memo-overlay="true" data-testid="memo-list-delete-confirm">
-        <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>'{deleting?.name}' List 를 삭제할까요?</DialogTitle>
+        <DialogTitle>'{deleting?.name}' List 를 삭제할까요?</DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: '0.88rem' }}>
             {deleting?.itemCount

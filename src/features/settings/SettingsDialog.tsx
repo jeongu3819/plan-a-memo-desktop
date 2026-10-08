@@ -1,4 +1,8 @@
-/** 설정 — 저장 위치 · Backup · PLAN-A Work 연결 · (개발용) Mock 서버 · 로그 · 정보. */
+/**
+ * 설정 — 저장 위치 · Backup · PLAN-A Work 연결 · (개발용) Mock 서버.
+ * 섹션마다 흰 카드 한 장(머리: 아이콘·제목·설명 / 몸: 줄 단위 항목) — 메모 칸과 같은 선·그림자·모서리.
+ * 로그는 앱이 계속 남기지만(문제 확인용) 설정 화면에는 보이지 않는다.
+ */
 import { useState } from 'react';
 import {
   Alert,
@@ -10,22 +14,106 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
-  Divider,
   FormControlLabel,
   Stack,
   Switch,
   TextField,
   Typography,
 } from '@mui/material';
+import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
+import BackupOutlinedIcon from '@mui/icons-material/BackupOutlined';
+import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AppInfo, LocationInspection } from '../../domain/types';
 import { keys, refreshMemo, useSyncOverview } from '../../services/queries';
 import { attachmentService, errorMessage, mockServerService, storageService, syncService } from '../../tauri/api';
 import { useAppUi } from '../../app/AppUi';
+import {
+  MEMO_CARD,
+  MEMO_CARD_BORDER,
+  MEMO_CARD_SHADOW,
+  MEMO_GROUP_DIVIDER,
+  MEMO_MUTED,
+  MEMO_SECTION_TITLE,
+  MEMO_SURFACE,
+  MEMO_WRITE_AREA,
+} from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <Typography sx={{ fontWeight: 800, fontSize: '0.9rem', mb: 1 }}>{children}</Typography>;
+/** 설정 섹션 카드 — 머리(아이콘 · 제목 · 한 줄 설명 · 오른쪽 보조 표시) + 아래 줄들. */
+function SettingsSection({
+  icon,
+  title,
+  description,
+  aside,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description?: React.ReactNode;
+  aside?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box
+      component="section"
+      aria-label={title}
+      sx={{ bgcolor: MEMO_CARD, border: '1px solid', borderColor: MEMO_CARD_BORDER, borderRadius: '12px', boxShadow: MEMO_CARD_SHADOW }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, px: 2, pt: 1.75, pb: 1.5 }}>
+        <Box
+          aria-hidden
+          sx={{
+            width: 32, height: 32, flexShrink: 0, borderRadius: '8px', bgcolor: MEMO_WRITE_AREA, color: MEMO_SECTION_TITLE,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', '& .MuiSvgIcon-root': { fontSize: 18 },
+          }}
+        >
+          {icon}
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.92rem', lineHeight: 1.4 }}>{title}</Typography>
+          {description && <Typography sx={{ fontSize: '0.78rem', color: MEMO_MUTED, mt: 0.25, lineHeight: 1.55 }}>{description}</Typography>}
+        </Box>
+        {aside && <Box sx={{ flexShrink: 0, pt: 0.25 }}>{aside}</Box>}
+      </Box>
+      {children}
+    </Box>
+  );
+}
+
+/** 섹션 안 한 줄 — 왼쪽 내용, 오른쪽 버튼. 좁으면 버튼이 아래로 내려간다. */
+function SettingsRow({ children, actions }: { children?: React.ReactNode; actions?: React.ReactNode }) {
+  return (
+    <Box
+      sx={{
+        display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: 2, rowGap: 1,
+        px: 2, py: 1.5, borderTop: '1px solid', borderColor: MEMO_GROUP_DIVIDER,
+      }}
+    >
+      {children && <Box sx={{ flex: '1 1 240px', minWidth: 0 }}>{children}</Box>}
+      {actions && <Stack direction="row" spacing={1} sx={{ flexShrink: 0, ml: 'auto' }}>{actions}</Stack>}
+    </Box>
+  );
+}
+
+function RowLabel({ title, detail }: { title: React.ReactNode; detail?: React.ReactNode }) {
+  return (
+    <>
+      <Typography sx={{ fontSize: '0.86rem', fontWeight: 600, color: 'text.primary' }}>{title}</Typography>
+      {detail && <Typography sx={{ fontSize: '0.76rem', color: MEMO_MUTED, mt: 0.25, lineHeight: 1.5 }}>{detail}</Typography>}
+    </>
+  );
+}
+
+function Stat({ label, value, alert = false }: { label: string; value: number; alert?: boolean }) {
+  return (
+    <Box sx={{ px: 1.5, py: 1, borderRadius: '8px', bgcolor: alert ? 'rgba(239, 68, 68, 0.06)' : MEMO_WRITE_AREA, minWidth: 0 }}>
+      <Typography sx={{ fontSize: '0.72rem', color: alert ? 'error.main' : MEMO_MUTED, whiteSpace: 'nowrap' }}>{label}</Typography>
+      <Typography sx={{ fontSize: '1rem', fontWeight: 700, color: alert ? 'error.main' : 'text.primary', fontVariantNumeric: 'tabular-nums', lineHeight: 1.4 }}>
+        {value}
+      </Typography>
+    </Box>
+  );
 }
 
 function RelocateDialog({ target, onClose, onDone }: { target: LocationInspection | null; onClose: () => void; onDone: (message: string) => void }) {
@@ -34,7 +122,7 @@ function RelocateDialog({ target, onClose, onDone }: { target: LocationInspectio
   if (!target) return null;
   return (
     <Dialog open onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth data-testid="relocate-dialog">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>저장 위치 변경</DialogTitle>
+      <DialogTitle>저장 위치 변경</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ fontSize: '0.88rem' }}>
           메모 DB · 첨부 이미지 · History · Backup · Sync 대기열을 아래 위치로 복사하고 검증한 뒤 새 위치를 사용합니다.
@@ -89,7 +177,7 @@ function MockTools() {
     }
   };
   return (
-    <Box data-testid="mock-tools" sx={{ border: '1px dashed', borderColor: 'warning.main', borderRadius: 2, p: 1.5 }}>
+    <Box data-testid="mock-tools" sx={{ border: '1px dashed', borderColor: 'rgba(245, 158, 11, 0.55)', bgcolor: 'rgba(254, 243, 199, 0.35)', borderRadius: '10px', p: 1.5 }}>
       <Typography sx={{ fontSize: '0.8rem', color: 'warning.dark', fontWeight: 700, mb: 1 }}>
         개발용 Mock 서버(memo-sync-v1 흉내) — 실제 PLAN-A Work 가 아닙니다. 개발 빌드에서 서버 주소가 없을 때만 보입니다.
         상태는 저장 폴더 sync/mock-server-v1.json 에 있습니다.
@@ -161,138 +249,170 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
   const tryOpen = (kind: Parameters<typeof storageService.openFolder>[0]) =>
     void storageService.openFolder(kind).catch(error => setNotice({ severity: 'error', text: errorMessage(error) }));
 
+  const backupNow = () =>
+    void storageService
+      .backupNow()
+      .then(() => {
+        void backups.refetch();
+        setNotice({ severity: 'success', text: 'Backup 을 만들었습니다.' });
+      })
+      .catch(error => setNotice({ severity: 'error', text: errorMessage(error) }));
+
+  const cleanupImages = () =>
+    void attachmentService
+      .cleanup(true)
+      .then(async preview => {
+        if (!preview.candidates) {
+          setNotice({ severity: 'info', text: `정리할 이미지가 없습니다(전체 ${preview.total}개${preview.keptForBackups ? ` · Backup 때문에 보관 ${preview.keptForBackups}개` : ''}).` });
+          return;
+        }
+        const mb = (preview.candidateBytes / 1024 / 1024).toFixed(1);
+        if (!window.confirm(`쓰지 않는 이미지 ${preview.candidates}개(${mb}MB)를 지울까요? 메모와 History 는 바뀌지 않습니다.`)) return;
+        const done = await attachmentService.cleanup(false);
+        setNotice({ severity: 'success', text: `이미지 ${done.removed}개를 정리했습니다.` });
+      })
+      .catch(error => setNotice({ severity: 'error', text: errorMessage(error) }));
+
+  const syncNow = () =>
+    void syncService
+      .syncNow()
+      .then(report => {
+        refreshMemo(queryClient);
+        void queryClient.invalidateQueries({ queryKey: keys.sync });
+        setNotice({
+          severity: report.offline || report.failed ? 'info' : 'success',
+          text: report.offline
+            ? '서버에 연결할 수 없습니다. 변경은 전달 대기로 남아 있습니다.'
+            : `동기화 — 보냄 ${report.pushed} · 받음 ${report.pulled} · 확인 필요 ${report.conflicts}${report.failed ? ` · 실패 ${report.failed}` : ''}`,
+        });
+      })
+      .catch(error => setNotice({ severity: 'error', text: errorMessage(error) }));
+
   const s = sync.data;
+  const latestBackup = backups.data?.[0]?.createdAt;
+  const authState = s?.auth.loggedIn ? 'connected' : s?.auth.expired ? 'expired' : 'none';
+  const authDot = { connected: '#16A34A', expired: '#F59E0B', none: '#B4BAC4' }[authState];
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth data-personal-memo-overlay="true" data-testid="settings-dialog">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>설정</DialogTitle>
-      <DialogContent>
-        {notice && <Alert severity={notice.severity} sx={{ mb: 2 }} onClose={() => setNotice(null)}>{notice.text}</Alert>}
+      <DialogTitle sx={{ borderBottom: '1px solid', borderColor: MEMO_CARD_BORDER }}>설정</DialogTitle>
+      <DialogContent
+        sx={{
+          bgcolor: MEMO_SURFACE,
+          display: 'flex', flexDirection: 'column', gap: 1.5,
+          // DialogTitle 바로 다음 칸의 padding-top: 0 규칙보다 앞서야 한다.
+          '&&': { px: 2.5, py: 2 },
+        }}
+      >
+        {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
 
-        <SectionTitle>저장 위치</SectionTitle>
-        <Typography data-testid="storage-path" sx={{ fontSize: '0.85rem', wordBreak: 'break-all', mb: 1 }}>{status.data?.path ?? info.storage.path}</Typography>
-        <Stack direction="row" spacing={1}>
-          <Button size="small" variant="outlined" onClick={() => tryOpen('root')}>폴더 열기</Button>
-          <Button size="small" variant="outlined" onClick={() => void chooseNewLocation()}>위치 변경</Button>
-        </Stack>
-
-        <Divider sx={{ my: 2 }} />
-        <SectionTitle>Backup</SectionTitle>
-        <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
-          Migration 전 · 저장 위치 변경 전 · 앱 업데이트 후 첫 실행 · 하루 한 번 자동으로 만듭니다(최대 20개 · 1GB).
-        </Typography>
-        <Typography sx={{ fontSize: '0.85rem', mt: 0.5 }}>
-          보관 중 {backups.data?.length ?? 0}개{backups.data?.[0]?.createdAt ? ` · 최근 ${new Date(backups.data[0].createdAt).toLocaleString('ko-KR')}` : ''}
-        </Typography>
-        <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-          <Button
-            size="small"
-            variant="outlined"
-            onClick={() =>
-              void storageService
-                .backupNow()
-                .then(() => {
-                  void backups.refetch();
-                  setNotice({ severity: 'success', text: 'Backup 을 만들었습니다.' });
-                })
-                .catch(error => setNotice({ severity: 'error', text: errorMessage(error) }))
+        <SettingsSection icon={<FolderOutlinedIcon />} title="저장 위치" description="메모 · 이미지 · History · Backup 이 모두 이 폴더에 저장됩니다.">
+          <SettingsRow
+            actions={
+              <>
+                <Button size="small" variant="outlined" onClick={() => tryOpen('root')}>폴더 열기</Button>
+                <Button size="small" variant="outlined" onClick={() => void chooseNewLocation()}>위치 변경</Button>
+              </>
             }
           >
-            지금 Backup
-          </Button>
-          <Button size="small" onClick={() => tryOpen('backups')}>Backup 폴더 열기</Button>
-        </Stack>
-        <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary', mt: 1.5 }}>
-          이미지 정리 — 메모·History·비교 화면·Backup 어디에서도 쓰지 않고 7일 넘은 이미지만 지웁니다.
-        </Typography>
-        <Button
-          size="small"
-          variant="outlined"
-          sx={{ mt: 0.5 }}
-          onClick={() =>
-            void attachmentService
-              .cleanup(true)
-              .then(async preview => {
-                if (!preview.candidates) {
-                  setNotice({ severity: 'info', text: `정리할 이미지가 없습니다(전체 ${preview.total}개${preview.keptForBackups ? ` · Backup 때문에 보관 ${preview.keptForBackups}개` : ''}).` });
-                  return;
-                }
-                const mb = (preview.candidateBytes / 1024 / 1024).toFixed(1);
-                if (!window.confirm(`쓰지 않는 이미지 ${preview.candidates}개(${mb}MB)를 지울까요? 메모와 History 는 바뀌지 않습니다.`)) return;
-                const done = await attachmentService.cleanup(false);
-                setNotice({ severity: 'success', text: `이미지 ${done.removed}개를 정리했습니다.` });
-              })
-              .catch(error => setNotice({ severity: 'error', text: errorMessage(error) }))
+            <Typography
+              data-testid="storage-path"
+              sx={{
+                fontSize: '0.8rem', color: MEMO_SECTION_TITLE, wordBreak: 'break-all', lineHeight: 1.5,
+                fontFamily: "'Cascadia Mono', Consolas, 'Malgun Gothic', monospace",
+                bgcolor: MEMO_WRITE_AREA, borderRadius: '6px', px: 1.25, py: 0.75,
+              }}
+            >
+              {status.data?.path ?? info.storage.path}
+            </Typography>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection
+          icon={<BackupOutlinedIcon />}
+          title="Backup"
+          description="Migration 전 · 저장 위치 변경 전 · 앱 업데이트 후 첫 실행 · 하루 한 번 자동으로 만듭니다(최대 20개 · 1GB)."
+        >
+          <SettingsRow
+            actions={
+              <>
+                <Button size="small" onClick={() => tryOpen('backups')} sx={{ color: MEMO_SECTION_TITLE }}>폴더 열기</Button>
+                <Button size="small" variant="outlined" onClick={backupNow}>지금 Backup</Button>
+              </>
+            }
+          >
+            <RowLabel
+              title={`보관 중 ${backups.data?.length ?? 0}개`}
+              detail={latestBackup ? `최근 ${new Date(latestBackup).toLocaleString('ko-KR')}` : '아직 만든 Backup 이 없습니다.'}
+            />
+          </SettingsRow>
+          <SettingsRow actions={<Button size="small" variant="outlined" onClick={cleanupImages}>쓰지 않는 이미지 정리</Button>}>
+            <RowLabel title="이미지 정리" detail="메모·History·비교 화면·Backup 어디에서도 쓰지 않고 7일 넘은 이미지만 지웁니다." />
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection
+          icon={<CloudOutlinedIcon />}
+          title="PLAN-A Work 연결"
+          description="직접 고른 날짜 · List 만 PLAN-A Work 와 맞춥니다."
+          aside={
+            <Chip
+              size="small"
+              label={s?.isMock ? 'Mock 서버(개발용)' : s?.serverOrigin ? s.serverOrigin.replace(/^https?:\/\//, '') : 'PLAN-A Work'}
+              color={s?.isMock ? 'warning' : 'default'}
+              variant="outlined"
+              sx={{ height: 22, fontSize: '0.7rem', fontWeight: 600, borderRadius: '6px', ...(s?.isMock ? {} : { borderColor: MEMO_CARD_BORDER, color: MEMO_SECTION_TITLE }) }}
+            />
           }
         >
-          쓰지 않는 이미지 정리
-        </Button>
-
-        <Divider sx={{ my: 2 }} />
-        <SectionTitle>PLAN-A Work 연결</SectionTitle>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Chip
-            size="small"
-            label={s?.isMock ? 'Mock 서버(개발용)' : s?.serverOrigin ? s.serverOrigin.replace(/^https?:\/\//, '') : 'PLAN-A Work'}
-            color={s?.isMock ? 'warning' : 'primary'}
-            variant="outlined"
-          />
-          <Typography sx={{ fontSize: '0.85rem' }}>
-            {s?.auth.loggedIn
-              ? `${s.auth.session?.displayName} 연결됨`
-              : s?.auth.expired
-                ? '연결 만료 — 다시 연결 필요'
-                : '계정 연결 안 됨'}
-          </Typography>
-          <Button size="small" onClick={() => ui.openAccount()}>{s?.auth.loggedIn ? '계정' : s?.auth.expired ? '다시 연결' : '계정 연결'}</Button>
-        </Stack>
-        <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary', mt: 1 }}>
-          연결된 메모 {s?.linkedDocuments ?? 0}건 · 전달 대기 {s?.outbox ?? 0} · 확인 필요 {s?.conflicts ?? 0} · 오류 {s?.errors ?? 0}
-          {(s?.otherAccount ?? 0) > 0 ? ` · 다른 계정 연결 ${s?.otherAccount}건(보내지 않음)` : ''}
-        </Typography>
-        {s?.lastReport?.unavailable && (
-          <Alert severity="info" sx={{ mt: 1, fontSize: '0.8rem' }}>
-            PLAN-A Work 에서 Desktop 연결을 아직 사용할 수 없습니다. 변경은 이 PC 에 보관되어 있다가 열리면 보냅니다.
-          </Alert>
-        )}
-        <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-          <Button
-            size="small"
-            variant="outlined"
-            onClick={() =>
-              void syncService
-                .syncNow()
-                .then(report => {
-                  refreshMemo(queryClient);
-                  void queryClient.invalidateQueries({ queryKey: keys.sync });
-                  setNotice({
-                    severity: report.offline || report.failed ? 'info' : 'success',
-                    text: report.offline
-                      ? '서버에 연결할 수 없습니다. 변경은 전달 대기로 남아 있습니다.'
-                      : `동기화 — 보냄 ${report.pushed} · 받음 ${report.pulled} · 확인 필요 ${report.conflicts}${report.failed ? ` · 실패 ${report.failed}` : ''}`,
-                  });
-                })
-                .catch(error => setNotice({ severity: 'error', text: errorMessage(error) }))
+          <SettingsRow
+            actions={
+              <Button size="small" variant={authState === 'connected' ? 'outlined' : 'contained'} onClick={() => ui.openAccount()}>
+                {authState === 'connected' ? '계정' : authState === 'expired' ? '다시 연결' : '계정 연결'}
+              </Button>
             }
           >
-            지금 동기화
-          </Button>
-          {(s?.conflicts ?? 0) > 0 && <Button size="small" color="error" onClick={() => ui.openConflicts()}>충돌 확인</Button>}
-        </Stack>
-        {s?.isMock && (
-          <Box sx={{ mt: 1.5 }}>
-            <MockTools />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Box aria-hidden sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: authDot, flexShrink: 0 }} />
+              <Typography sx={{ fontSize: '0.86rem', fontWeight: 600 }}>
+                {authState === 'connected'
+                  ? `${s?.auth.session?.displayName} 연결됨`
+                  : authState === 'expired'
+                    ? '연결 만료 — 다시 연결 필요'
+                    : '계정 연결 안 됨'}
+              </Typography>
+            </Box>
+          </SettingsRow>
+          <Box sx={{ px: 2, py: 1.5, borderTop: '1px solid', borderColor: MEMO_GROUP_DIVIDER }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 1 }}>
+              <Stat label="연결된 메모" value={s?.linkedDocuments ?? 0} />
+              <Stat label="전달 대기" value={s?.outbox ?? 0} />
+              <Stat label="확인 필요" value={s?.conflicts ?? 0} alert={(s?.conflicts ?? 0) > 0} />
+              <Stat label="오류" value={s?.errors ?? 0} alert={(s?.errors ?? 0) > 0} />
+            </Box>
+            {(s?.otherAccount ?? 0) > 0 && (
+              <Typography sx={{ fontSize: '0.76rem', color: MEMO_MUTED, mt: 1 }}>
+                다른 계정 연결 {s?.otherAccount}건(보내지 않음)
+              </Typography>
+            )}
+            {s?.lastReport?.unavailable && (
+              <Alert severity="info" sx={{ mt: 1.25, fontSize: '0.8rem' }}>
+                PLAN-A Work 에서 Desktop 연결을 아직 사용할 수 없습니다. 변경은 이 PC 에 보관되어 있다가 열리면 보냅니다.
+              </Alert>
+            )}
+            <Stack direction="row" spacing={1} sx={{ mt: 1.25 }}>
+              <Button size="small" variant="outlined" onClick={syncNow}>지금 동기화</Button>
+              {(s?.conflicts ?? 0) > 0 && <Button size="small" color="error" onClick={() => ui.openConflicts()}>충돌 확인</Button>}
+            </Stack>
           </Box>
-        )}
-
-        <Divider sx={{ my: 2 }} />
-        <SectionTitle>로그 · 정보</SectionTitle>
-        <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
-          PLAN-A Memo {info.version} · {info.env} · 로그에는 메모 본문·이미지·토큰을 남기지 않습니다.
-        </Typography>
-        <Button size="small" sx={{ mt: 0.5 }} onClick={() => tryOpen('logs')}>로그 폴더 열기</Button>
+          {s?.isMock && (
+            <Box sx={{ px: 2, pb: 2 }}>
+              <MockTools />
+            </Box>
+          )}
+        </SettingsSection>
       </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>닫기</Button>
+      <DialogActions sx={{ borderTop: '1px solid', borderColor: MEMO_CARD_BORDER }}>
+        <Button variant="outlined" onClick={onClose}>닫기</Button>
       </DialogActions>
       <RelocateDialog
         target={target}

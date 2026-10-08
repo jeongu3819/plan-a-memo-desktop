@@ -56,7 +56,7 @@ export default function ExportDialog({ open, onClose }: { open: boolean; onClose
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth data-personal-memo-overlay="true" data-testid="export-dialog">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>내 메모 내보내기</DialogTitle>
+      <DialogTitle>내 메모 내보내기</DialogTitle>
       <DialogContent>
         <RadioGroup value={format} onChange={event => setFormat(event.target.value as ExportOptions['format'])}>
           {FORMATS.map(f => (

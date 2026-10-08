@@ -73,7 +73,7 @@ Sync 때는 `plana-attachment://<server_attachment_id>` 로 바뀌어 전송된�
 ## 로그
 
 `%LOCALAPPDATA%\com.plana.memo\logs\plan-a-memo.log` (2MB × 5). 메모 본문·이미지·토큰·code·PKCE verifier 는 기록하지 않는다.
-설정 → [로그 폴더 열기].
+설정 화면에는 노출하지 않는다(일반 사용자가 볼 일이 없음). 문제 확인이 필요하면 위 경로를 탐색기에서 직접 연다.
 
 ## Migration v2 — memo-sync-v1 (`migrations/0002_memo_sync_v1.sql`)
 

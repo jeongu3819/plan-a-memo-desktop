@@ -131,7 +131,7 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
         gap: 0.5,
         px: 0.5,
         py: variant === 'compact' ? (comfortable ? 0.3 : 0.25) : 0.5,
-        borderRadius: 1.25,
+        borderRadius: '8px',
         opacity: dragging ? 0.4 : 1,
         bgcolor: editing ? 'action.hover' : 'transparent',
         '&:hover': { bgcolor: 'action.hover' },

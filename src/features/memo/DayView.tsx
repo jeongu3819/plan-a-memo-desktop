@@ -18,7 +18,7 @@ import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } 
 import { CSS } from '@dnd-kit/utilities';
 import type { DocumentInfo, ItemSection, Location, MemoItem, MemoSection } from '../../domain/types';
 import { koreanMonthDay, locationLabel } from '../../domain/location';
-import { MEMO_CARD, MEMO_CARD_BORDER, MEMO_RADIUS, NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
+import { MEMO_CARD, MEMO_CARD_BORDER, MEMO_CARD_SHADOW, MEMO_MUTED, MEMO_RADIUS, NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { clearDomHighlights, paintDomHighlights } from '../../vendor/plan-a-work/components/personalMemo/memoSearchHighlight';
 import { useDay, useNextList } from '../../services/queries';
 import { LinkControl } from '../sync/SyncMark';
@@ -84,21 +84,24 @@ function Section({
         border: '1px solid',
         borderColor: isOver ? 'primary.main' : MEMO_CARD_BORDER,
         borderRadius: MEMO_RADIUS,
-        p: { xs: 1.25, sm: 1.75 },
+        px: { xs: 1.5, sm: 2 },
+        pt: { xs: 1.25, sm: 1.75 },
+        pb: { xs: 1, sm: 1.25 },
         bgcolor: MEMO_CARD,
+        boxShadow: MEMO_CARD_SHADOW,
         minWidth: 0,
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
         transition: 'border-color 0.15s, box-shadow 0.15s',
-        '&:focus-within': { borderColor: 'primary.light', boxShadow: '0 0 0 3px rgba(37, 99, 235, 0.10)' },
+        '&:focus-within': { borderColor: 'rgba(37, 99, 235, 0.45)', boxShadow: `0 0 0 3px rgba(37, 99, 235, 0.08), ${MEMO_CARD_SHADOW}` },
       }}
     >
       {title && (
-        <Box sx={{ display: 'flex', alignItems: 'baseline', mb: 0.75 }}>
-          <Typography sx={{ fontWeight: 800, fontSize: '0.95rem', flex: 1 }}>{title}</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'baseline', mb: 1, px: 0.25 }}>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.92rem', flex: 1, letterSpacing: '-0.01em' }}>{title}</Typography>
           {checklist.length > 0 && (
-            <Typography sx={{ fontSize: '0.7rem', color: 'text.disabled' }}>
+            <Typography sx={{ fontSize: '0.72rem', color: MEMO_MUTED, fontVariantNumeric: 'tabular-nums' }}>
               {done}/{checklist.length} 완료
             </Typography>
           )}

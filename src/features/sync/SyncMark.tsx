@@ -138,7 +138,7 @@ export function LinkControl({
             data-testid="sync-linked-button"
             startIcon={<CloudDoneOutlinedIcon sx={{ fontSize: 16 }} />}
             onClick={event => setAnchor(event.currentTarget)}
-            sx={{ fontSize: '0.74rem', color: '#4B5563', borderRadius: 999, px: 1.25 }}
+            sx={{ fontSize: '0.76rem', color: '#4B5563', borderRadius: '8px', px: 1.25 }}
           >
             PLAN-A Work와 연결됨
           </Button>
@@ -157,7 +157,7 @@ export function LinkControl({
             data-testid="sync-link-button"
             startIcon={<CloudUploadOutlinedIcon sx={{ fontSize: 16 }} />}
             onClick={() => void link()}
-            sx={{ fontSize: '0.72rem', borderRadius: 999, py: 0.1, px: 1.25 }}
+            sx={{ fontSize: '0.76rem', borderRadius: '8px', py: 0.25, px: 1.25 }}
           >
             PLAN-A Work와 연결
           </Button>
@@ -165,7 +165,7 @@ export function LinkControl({
       )}
       <Box sx={{ flex: 1 }} />
       <Tooltip title="변경 이력(History)">
-        <Button size="small" startIcon={<HistoryIcon sx={{ fontSize: 16 }} />} onClick={onOpenHistory} sx={{ fontSize: '0.72rem', color: 'text.secondary' }}>
+        <Button size="small" startIcon={<HistoryIcon sx={{ fontSize: 16 }} />} onClick={onOpenHistory} sx={{ fontSize: '0.76rem', color: 'text.secondary' }}>
           History
         </Button>
       </Tooltip>

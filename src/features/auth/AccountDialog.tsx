@@ -110,7 +110,7 @@ export default function AccountDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth data-personal-memo-overlay="true" data-testid="account-dialog">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>PLAN-A Work 계정</DialogTitle>
+      <DialogTitle>PLAN-A Work 계정</DialogTitle>
       <DialogContent>
         {session && (loggedIn || expired) ? (
           <Box>

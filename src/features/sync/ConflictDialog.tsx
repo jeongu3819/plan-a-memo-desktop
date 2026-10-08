@@ -19,13 +19,13 @@ import type { ConflictView } from '../../domain/types';
 import { locationLabel } from '../../domain/location';
 import { refreshMemo, useConflicts } from '../../services/queries';
 import { AppError, errorMessage, syncService } from '../../tauri/api';
-import { MEMO_CARD, MEMO_CARD_BORDER, MEMO_RADIUS } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
+import { MEMO_CARD, MEMO_CARD_BORDER, MEMO_CARD_SHADOW, MEMO_RADIUS } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import SnapshotView from '../history/SnapshotView';
 import { conflictReason, remoteTitle } from './conflictText';
 
 function Side({ title, children, onUse, busy }: { title: string; children: React.ReactNode; onUse: () => void; busy: boolean }) {
   return (
-    <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', border: '1px solid', borderColor: MEMO_CARD_BORDER, borderRadius: MEMO_RADIUS, bgcolor: MEMO_CARD, p: 2 }}>
+    <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', border: '1px solid', borderColor: MEMO_CARD_BORDER, borderRadius: MEMO_RADIUS, bgcolor: MEMO_CARD, boxShadow: MEMO_CARD_SHADOW, p: 2 }}>
       <Typography sx={{ fontWeight: 800, fontSize: '0.92rem', mb: 1 }}>{title}</Typography>
       <Box sx={{ flex: 1, minHeight: 80, overflowY: 'auto', maxHeight: 380 }}>{children}</Box>
       <Button variant="contained" onClick={onUse} disabled={busy} sx={{ mt: 1.5 }}>
@@ -79,7 +79,7 @@ export default function ConflictDialog({ open, documentId, onClose }: { open: bo
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth data-personal-memo-overlay="true" data-testid="conflict-dialog">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>⚠ 메모 내용이 서로 다릅니다.</DialogTitle>
+      <DialogTitle>⚠ 메모 내용이 서로 다릅니다.</DialogTitle>
       <DialogContent>
         {!current ? (
           <Typography sx={{ fontSize: '0.9rem' }}>확인할 충돌이 없습니다.</Typography>

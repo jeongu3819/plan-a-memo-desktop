@@ -20,6 +20,8 @@ import {
   MEMO_CARD,
   MEMO_CARD_BORDER,
   MEMO_CARD_BORDER_HOVER,
+  MEMO_CARD_SHADOW,
+  MEMO_CARD_SHADOW_HOVER,
   MEMO_MUTED,
   MEMO_RADIUS,
   MEMO_SECTION_TITLE,
@@ -76,8 +78,9 @@ function Card({ onClick, children, testId }: { onClick: () => void; children: Re
       data-testid={testId}
       sx={{
         display: 'block', textAlign: 'left', width: '100%', border: '1px solid', borderColor: MEMO_CARD_BORDER,
-        borderRadius: MEMO_RADIUS, bgcolor: MEMO_CARD, px: 2, py: 1.5,
-        '&:hover': { borderColor: MEMO_CARD_BORDER_HOVER },
+        borderRadius: MEMO_RADIUS, bgcolor: MEMO_CARD, px: 2, py: 1.5, boxShadow: MEMO_CARD_SHADOW,
+        transition: 'border-color 0.15s, box-shadow 0.2s',
+        '&:hover': { borderColor: MEMO_CARD_BORDER_HOVER, boxShadow: MEMO_CARD_SHADOW_HOVER },
         '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main' },
       }}
     >
@@ -146,7 +149,11 @@ export default function BrowseView({
             </InputAdornment>
           ) : undefined
         }
-        sx={{ border: '1px solid', borderColor: MEMO_CARD_BORDER, borderRadius: 999, bgcolor: MEMO_CARD, px: 1.75, py: 0.75, fontSize: '0.92rem' }}
+        sx={{
+          border: '1px solid', borderColor: MEMO_CARD_BORDER, borderRadius: '10px', bgcolor: MEMO_CARD, boxShadow: MEMO_CARD_SHADOW, px: 1.75, py: 0.75, fontSize: '0.92rem',
+          transition: 'border-color 0.15s, box-shadow 0.15s',
+          '&.Mui-focused': { borderColor: 'rgba(37, 99, 235, 0.45)', boxShadow: '0 0 0 3px rgba(37, 99, 235, 0.08)' },
+        }}
       />
 
       {searching ? (

@@ -29,9 +29,11 @@ import {
   dayTone,
   MEMO_CARD,
   MEMO_CARD_BORDER,
+  MEMO_CARD_SHADOW,
   MEMO_NOTE_DATE,
   MEMO_NOTE_GREETING,
   MEMO_NOTE_SERIF,
+  MEMO_SECTION_TITLE,
   MEMO_SURFACE,
   NEXT_LABEL,
   TodayBadge,
@@ -61,6 +63,13 @@ type View =
       fromBrowse?: boolean;
     }
   | { kind: 'browse'; monday: string; focusSearch?: boolean };
+
+/** 머리 줄의 보조 버튼(오늘 · List) — 이동 묶음(32px)과 같은 높이·모서리. */
+const HEADER_BUTTON_SX = { height: 32, px: 1.5, minWidth: 0, fontSize: '0.78rem', borderRadius: '8px', borderColor: MEMO_CARD_BORDER, boxShadow: MEMO_CARD_SHADOW } as const;
+const HEADER_BUTTON_ACTIVE_SX = {
+  bgcolor: 'rgba(37, 99, 235, 0.08)', color: 'primary.main', borderColor: 'rgba(37, 99, 235, 0.35)',
+  '&:hover': { bgcolor: 'rgba(37, 99, 235, 0.12)', borderColor: 'rgba(37, 99, 235, 0.5)' },
+} as const;
 
 /** 동기화에 문제가 있을 때만 머리에 작게 보인다(평소에는 아무것도 없다). */
 function SyncProblems() {
@@ -165,13 +174,12 @@ export default function MemoWorkspace() {
       </Tooltip>
       <Button
         size="small"
-        variant={isBrowse ? 'contained' : 'outlined'}
-        disableElevation
+        variant="outlined"
         startIcon={<ViewListOutlinedIcon sx={{ fontSize: 16 }} />}
         aria-pressed={isBrowse}
         data-testid="memo-browse-open"
         onClick={() => (isBrowse ? leaveBrowse() : openBrowse(false))}
-        sx={{ py: 0.25, px: 1.25, minWidth: 0, fontSize: '0.74rem', borderRadius: 999 }}
+        sx={{ ...HEADER_BUTTON_SX, ...(isBrowse ? HEADER_BUTTON_ACTIVE_SX : {}) }}
       >
         List
       </Button>
@@ -185,7 +193,7 @@ export default function MemoWorkspace() {
 
   const navControls = isBrowse ? (
     <>
-      <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={leaveBrowse} data-testid="memo-browse-back" sx={{ mr: 0.5 }}>
+      <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={leaveBrowse} data-testid="memo-browse-back" sx={{ mr: 0.5, height: 32, color: MEMO_SECTION_TITLE }}>
         메모장
       </Button>
       {browseControls}
@@ -193,7 +201,7 @@ export default function MemoWorkspace() {
   ) : (
     <>
       {isDay && view.fromBrowse && (
-        <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={() => openBrowse(false)} data-testid="memo-back-to-browse" sx={{ mr: 0.25 }}>
+        <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={() => openBrowse(false)} data-testid="memo-back-to-browse" sx={{ mr: 0.25, height: 32, color: MEMO_SECTION_TITLE }}>
           목록
         </Button>
       )}
@@ -202,7 +210,7 @@ export default function MemoWorkspace() {
           size="small"
           startIcon={view.fromBrowse ? undefined : <ArrowBackIcon sx={{ fontSize: 16 }} />}
           onClick={() => setView({ kind: 'week', monday: dayKey && !isNextKey(dayKey) ? weekStart(dayKey) : view.monday })}
-          sx={{ mr: 0.5 }}
+          sx={{ mr: 0.5, height: 32, color: MEMO_SECTION_TITLE }}
         >
           주간
         </Button>
@@ -210,8 +218,9 @@ export default function MemoWorkspace() {
       <Box
         data-testid="personal-memo-nav"
         sx={{
-          display: 'inline-flex', alignItems: 'center', gap: 0.25, px: 0.25, minHeight: 32,
-          borderRadius: 999, border: '1px solid', borderColor: MEMO_CARD_BORDER, bgcolor: MEMO_CARD,
+          display: 'inline-flex', alignItems: 'center', gap: 0.25, px: 0.25, height: 32,
+          borderRadius: '8px', border: '1px solid', borderColor: MEMO_CARD_BORDER, bgcolor: MEMO_CARD, boxShadow: MEMO_CARD_SHADOW,
+          '& .MuiIconButton-root': { p: 0.5, borderRadius: '6px' },
         }}
       >
         {!onNext && (
@@ -233,15 +242,15 @@ export default function MemoWorkspace() {
             aria-expanded={!!jumpAnchor}
             aria-label={`${dayLabelWithYear(dayKey!, today)} — 같은 요일 날짜 고르기`}
             onClick={event => setJumpAnchor(event.currentTarget)}
-            sx={{ borderRadius: 1.5, pl: 0.75, pr: 0.25, py: 0.25, '&:hover': { bgcolor: 'action.hover' } }}
+            sx={{ borderRadius: '6px', pl: 0.75, pr: 0.25, py: 0.25, height: 26, '&:hover': { bgcolor: 'action.hover' } }}
           >
-            <Typography data-testid="personal-memo-view-label" sx={{ fontWeight: 800, fontSize: '0.95rem', color: dayTone(dayKey!).text }}>
+            <Typography data-testid="personal-memo-view-label" sx={{ fontWeight: 700, fontSize: '0.9rem', color: dayTone(dayKey!).text }}>
               {dayLabelWithYear(dayKey!, today)}
             </Typography>
             <ArrowDropDownIcon sx={{ fontSize: 20, color: 'text.secondary' }} />
           </ButtonBase>
         ) : (
-          <Typography data-testid="personal-memo-view-label" sx={{ fontWeight: 800, fontSize: '0.95rem', minWidth: 76, textAlign: 'center', color: 'text.primary', px: onNext ? 1.5 : 0 }}>
+          <Typography data-testid="personal-memo-view-label" sx={{ fontWeight: 700, fontSize: '0.9rem', minWidth: 76, textAlign: 'center', color: 'text.primary', px: onNext ? 1.5 : 0.5 }}>
             {isDay ? NEXT_LABEL : weekRangeLabel(view.monday, today)}
           </Typography>
         )}
@@ -264,7 +273,7 @@ export default function MemoWorkspace() {
         size="small"
         variant="outlined"
         onClick={() => setView(isDay ? { kind: 'day', key: today, monday: weekStart(today) } : { kind: 'week', monday: weekStart(today) })}
-        sx={{ ml: 0.75, py: 0.25, px: 1.25, minWidth: 0, fontSize: '0.74rem', borderRadius: 999 }}
+        sx={{ ...HEADER_BUTTON_SX, ml: 0.5 }}
       >
         오늘
       </Button>

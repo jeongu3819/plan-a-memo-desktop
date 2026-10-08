@@ -55,7 +55,7 @@ export default function HistoryDialog({
 
   return (
     <Dialog open={!!location} onClose={onClose} maxWidth="md" fullWidth data-personal-memo-overlay="true" data-testid="history-dialog">
-      <DialogTitle sx={{ fontSize: '1rem', fontWeight: 800 }}>변경 이력 · {title}</DialogTitle>
+      <DialogTitle>변경 이력 · {title}</DialogTitle>
       <DialogContent sx={{ display: 'flex', gap: 2, minHeight: 360 }}>
         {versions.isPending ? (
           <CircularProgress size={20} />

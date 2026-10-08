@@ -25,10 +25,13 @@ import {
   MEMO_CARD,
   MEMO_CARD_BORDER,
   MEMO_CARD_BORDER_HOVER,
+  MEMO_CARD_SHADOW,
+  MEMO_CARD_SHADOW_HOVER,
   MEMO_GROUP_DIVIDER,
   MEMO_MUTED,
   MEMO_RADIUS,
   MEMO_SECTION_TITLE,
+  MEMO_WRITE_AREA,
   NEXT_LABEL,
   TodayBadge,
 } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
@@ -132,20 +135,26 @@ function DayCell({
         position: 'relative',
         cursor: 'pointer',
         border: '1px solid',
-        borderColor: isOver ? 'primary.main' : isActive ? 'primary.light' : MEMO_CARD_BORDER,
+        borderColor: isOver ? 'primary.main' : isActive ? 'rgba(37, 99, 235, 0.45)' : MEMO_CARD_BORDER,
         bgcolor: isOver ? tone.soft : MEMO_CARD,
-        boxShadow: isActive ? '0 0 0 3px rgba(37, 99, 235, 0.08)' : 'none',
+        boxShadow: isActive ? `0 0 0 3px rgba(37, 99, 235, 0.08), ${MEMO_CARD_SHADOW}` : MEMO_CARD_SHADOW,
         borderRadius: MEMO_RADIUS,
-        p: { xs: 1.75, sm: 2.25 },
+        px: { xs: 1.75, sm: 2.25 },
+        pt: { xs: 1.5, sm: 1.75 },
+        pb: { xs: 1.5, sm: 1.75 },
         minHeight: 140,
         display: 'flex',
         flexDirection: 'column',
         minWidth: 0,
-        transition: 'border-color 0.15s, background-color 0.15s, box-shadow 0.15s',
-        '&:hover': { borderColor: isActive ? 'primary.main' : MEMO_CARD_BORDER_HOVER },
+        transition: 'border-color 0.15s, background-color 0.15s, box-shadow 0.2s',
+        '&:hover': {
+          borderColor: isActive ? 'primary.main' : MEMO_CARD_BORDER_HOVER,
+          boxShadow: isActive ? `0 0 0 3px rgba(37, 99, 235, 0.08), ${MEMO_CARD_SHADOW_HOVER}` : MEMO_CARD_SHADOW_HOVER,
+        },
+        '&:hover .memo-cell-empty-hint': { opacity: 1 },
       }}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.25, minHeight: 30 }}>
         <ButtonBase
           onClick={event => {
             event.stopPropagation();
@@ -153,22 +162,31 @@ function DayCell({
           }}
           aria-label={`${label} 메모 쓰기`}
           sx={{
-            borderRadius: 999, pr: 0.5, gap: 1, alignItems: 'center',
+            borderRadius: '8px', pr: 0.75, gap: 1, alignItems: 'center',
             '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
           }}
         >
           <Box
             component="span"
             sx={{
-              minWidth: 32, height: 32, px: isNext ? 1.25 : 0, borderRadius: 999,
+              minWidth: 30, height: 30, px: isNext ? 1.1 : 0, borderRadius: '8px',
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              bgcolor: tone.soft, color: tone.text, fontWeight: 800, fontSize: '1.1rem', lineHeight: 1,
+              // 오늘은 요일 표시만 채운 강조색 — 칸 전체를 칠하지 않고 한눈에 찾게.
+              bgcolor: isToday ? 'primary.main' : tone.soft,
+              color: isToday ? '#FFFFFF' : tone.text,
+              fontWeight: 700, fontSize: isNext ? '0.88rem' : '0.95rem', lineHeight: 1, letterSpacing: isNext ? '0.01em' : 0,
             }}
           >
             {isNext ? NEXT_LABEL : WEEKDAY_LABELS[weekdayOf(cellKey)]}
           </Box>
           {!isNext && (
-            <Typography component="span" sx={{ fontSize: '0.78rem', color: tone.kind === 'weekday' ? MEMO_MUTED : tone.text }}>
+            <Typography
+              component="span"
+              sx={{
+                fontSize: '0.82rem', fontWeight: 500, fontVariantNumeric: 'tabular-nums',
+                color: tone.kind === 'weekday' ? MEMO_SECTION_TITLE : tone.text,
+              }}
+            >
               {shortDate(cellKey)}
             </Typography>
           )}
@@ -178,17 +196,33 @@ function DayCell({
         <Box sx={{ flex: 1 }} />
         {isNext && (
           <Tooltip title="날짜를 정하지 않은 메모">
-            <Typography sx={{ fontSize: '0.7rem', color: MEMO_MUTED }}>날짜 미정</Typography>
+            <Typography sx={{ fontSize: '0.72rem', color: MEMO_MUTED }}>날짜 미정</Typography>
           </Tooltip>
         )}
         {checklist.length > 0 && (
-          <Typography sx={{ fontSize: '0.75rem', color: MEMO_MUTED, fontVariantNumeric: 'tabular-nums' }} aria-label="체크리스트 완료">
+          <Typography
+            sx={{
+              fontSize: '0.72rem', fontWeight: 600, color: done === checklist.length ? '#15803D' : MEMO_MUTED,
+              bgcolor: done === checklist.length ? '#ECFDF3' : MEMO_WRITE_AREA,
+              borderRadius: '6px', px: 0.85, lineHeight: '20px', fontVariantNumeric: 'tabular-nums',
+            }}
+            aria-label="체크리스트 완료"
+          >
             {done}/{checklist.length}
           </Typography>
         )}
       </Box>
 
       <Box sx={{ flex: 1, minWidth: 0 }}>
+        {items.length === 0 && (
+          <Typography
+            className="memo-cell-empty-hint"
+            aria-hidden
+            sx={{ fontSize: '0.8rem', color: 'text.disabled', px: 0.5, opacity: 0, transition: 'opacity 0.15s' }}
+          >
+            + 메모 쓰기
+          </Typography>
+        )}
         {groups.map(([section, list], index) => (
           <Box
             key={section ?? 'next'}
@@ -196,7 +230,7 @@ function DayCell({
             sx={index > 0 ? { mt: 1, pt: 1, borderTop: '1px solid', borderColor: MEMO_GROUP_DIVIDER } : undefined}
           >
             {section && (
-              <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, color: MEMO_SECTION_TITLE, letterSpacing: '0.02em', mb: 0.25 }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: MEMO_MUTED, letterSpacing: '0.02em', mb: 0.25, px: 0.25 }}>
                 {SECTION_LABELS[section]}
               </Typography>
             )}
@@ -307,7 +341,7 @@ export default function WeekView({
       </Box>
       <DragOverlay dropAnimation={null}>
         {activeItem ? (
-          <Box sx={{ bgcolor: 'background.paper', boxShadow: 6, borderRadius: 1.5, px: 1.25, py: 0.75, maxWidth: 320 }}>
+          <Box sx={{ bgcolor: 'background.paper', border: '1px solid', borderColor: MEMO_CARD_BORDER, boxShadow: '0 12px 28px -6px rgba(15, 23, 42, 0.18)', borderRadius: '8px', px: 1.5, py: 0.75, maxWidth: 320 }}>
             <Typography noWrap sx={{ fontSize: '0.84rem' }}>{textOf(activeItem.contentHtml) || '메모'}</Typography>
           </Box>
         ) : null}

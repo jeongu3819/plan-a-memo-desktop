@@ -23,3 +23,10 @@ release/
 
 # E2E 스크린샷
 e2e/output/
+
+# 업데이트 서명 개인키 — 절대 커밋하지 않는다(공개키 src-tauri/updater/*.pub 만 커밋)
+*.key
+*.key.pub
+src-tauri/updater/*
+!src-tauri/updater/*.pub
+!src-tauri/updater/README.md

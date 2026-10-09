@@ -233,6 +233,13 @@ PATCH /api/memo-sync/web/lists/{list_id}      {"title": "..."}                  
 | 9 | 테스트 사용자, (필요하면) 두 번째 테스트 사용자 | ☐ |
 | 10 | §1 정규식 수정 배포 | ☐ |
 
+> **2026-10-08 실제 서버 확인(Desktop 0.2.3 작업 중)** — 자세한 표: [release.md §6](release.md#6-plan-a-work-서버-준비계정-연결에-필요--2026-10-08-확인-결과)
+> * `planawork.com`: Cloudflare 에 NS·SOA 만 있고 A/AAAA 레코드가 없다 → 운영 Installer 의 [계정 연결]이 DNS 단계에서 실패한다
+>   (사용자에게 보이던 '인터넷 연결을 확인해주세요' 의 실제 원인).
+> * `staging.planawork.com`: Backend 는 동작하지만 memo-sync-v1 라우트가 없다(`GET …/native/changes` → 404 `Not Found`).
+> * staging 은 **모든** `POST /api/*` 에 라우팅 전에 `401 Authentication required` 를 준다. `native/auth/start`·`native/auth/exchange` 는
+>   로그인 전 요청이므로 전역 인증 미들웨어에서 이 두 경로를 제외해야 한다(그 밖의 native 경로는 Contract 의 Bearer 검사 그대로).
+
 ### 4-2. Desktop 실행 방법(운영 Installer 사용 금지)
 
 운영 Installer(0.2.x)는 `https://planawork.com` 고정이다. **통합 테스트에 쓰지 않는다.** 개발 빌드를 쓴다.

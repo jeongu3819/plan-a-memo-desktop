@@ -1,6 +1,6 @@
 [package]
 name = "plan-a-memo"
-version = "0.2.2"
+version = "0.2.3"
 description = "PLAN-A Memo — Windows local-first memo app"
 authors = ["PLAN-A"]
 edition = "2021"
@@ -11,6 +11,7 @@ name = "plan_a_memo_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+serde_json = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -38,6 +39,7 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["sync", "time", "macros", "rt", "net", "io-util"] }
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+tauri-plugin-updater = "2"
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

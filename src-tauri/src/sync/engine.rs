@@ -360,7 +360,7 @@ impl SyncEngine {
     /// 전역으로 멈춰야 하는 오류인가(true = 이번 실행 중단).
     fn global_stop(&self, storage: &Storage, error: &TransportError, report: &mut SyncReport) -> AppResult<bool> {
         match error {
-            TransportError::Offline => {
+            TransportError::Offline | TransportError::Network(_) => {
                 report.offline = true;
                 Ok(true)
             }
@@ -376,7 +376,7 @@ impl SyncEngine {
                 report.auth_required = true;
                 Ok(true)
             }
-            TransportError::Unavailable => {
+            TransportError::Unavailable | TransportError::EndpointMissing => {
                 report.unavailable = true;
                 report.notice("PLAN-A Work 에서 Desktop 연결을 아직 사용할 수 없습니다. 이 PC 의 변경은 보관해 두었다가 나중에 보냅니다.");
                 Ok(true)
@@ -1528,7 +1528,7 @@ impl SyncEngine {
                     "이 비교는 다른 곳에서 이미 해결되었습니다. 최신 내용을 불러왔습니다.",
                 ));
             }
-            Err(TransportError::Offline) => {
+            Err(TransportError::Offline | TransportError::Network(_)) => {
                 return Err(AppError::new(
                     "offline",
                     "PLAN-A Work 에 연결할 수 없어 선택을 보내지 못했습니다. 두 내용은 그대로 보관되어 있습니다.",

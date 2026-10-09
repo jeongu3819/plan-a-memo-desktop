@@ -40,23 +40,25 @@ npm run e2e:build && npm run e2e   # 실제 앱 E2E(개발용 Mock 서버) — e
 npm test                 # Frontend(vitest) — Web 공용 코드 테스트 포함
 npm run lint             # ESLint(React 에 SQL 금지 규칙 포함)
 npm run type-check
-npm run test:rust        # Rust — SQLite·Migration·Crash·위치 변경·Contract DTO·HTTP Adapter·Mock Sync·Auth
+npm run test:rust        # Rust — SQLite·Migration·Crash·위치 변경·Contract DTO·HTTP Adapter·Mock Sync·Auth·네트워크 오류 분류
+npm run e2e:installer    # 실제 Installer·Updater·제거(별도 테스트 앱 'PLAN-A Memo InstTest' — 10분 이상)
 ```
 
 ## 빌드 · Installer
 
 ```bash
-npm run tauri build
+npm run dist:staging       # 테스트용 — 'PLAN-A Memo Staging'(com.plana.memo.staging), staging 서버, staging 업데이트 채널
+npm run dist:production    # 실사용자용 — 'PLAN-A Memo'(com.plana.memo), 운영 서버, production 업데이트 채널
 ```
-결과:
-* `src-tauri/target/release/PLAN-A Memo.exe`
-* `src-tauri/target/release/bundle/nsis/PLAN-A Memo_<버전>_x64-setup.exe` (NSIS, 사용자 단위 설치)
+환경을 정하지 않은 `npm run dist` 는 멈춘다. 환경 변수 이름은 **`PLANA_ENV`** 다 — `PLAN_A_ENV` 를 주면 빌드가 멈춘다
+(예전에는 조용히 production 이 됐다). 결과는 `release/<환경>/`. 배포·업데이트 절차는 [docs/release.md](docs/release.md).
 
-환경: `PLANA_ENV=staging npm run dist` (development / staging / production · 서버 주소 `PLANA_SERVER_ORIGIN`, `.env.example`).
-운영 빌드의 기본 서버는 https://planawork.com, staging 은 https://staging.planawork.com 이다.
+운영 빌드의 기본 서버는 https://planawork.com, staging 은 https://staging.planawork.com 이다(`PLANA_SERVER_ORIGIN` 으로 바꿀 수 있음,
+`.env.example`). `dist:production` 은 서버 주소를 찾지 못하거나 memo-sync API 가 없으면 멈춘다.
 
-Installer 는 시작 메뉴 바로가기와 `plana-memo://`(창 열기 전용) 를 등록한다. **제거해도 메모 저장 폴더는 지우지 않는다**
-(저장 위치는 사용자가 고른 폴더이고, Installer 는 그 경로를 모른다).
+Installer 는 사용자 단위 설치(기본 `%LOCALAPPDATA%\PLAN-A Memo`, 관리자 권한 없음)이고 시작 메뉴 바로가기와 `plana-memo://`
+(창 열기 전용, staging 은 `plana-memo-staging://`)를 등록한다. 쓰기 권한이 없는 폴더를 고르면 설치 전에 안내하고 멈춘다.
+**제거·업데이트해도 메모 저장 폴더는 지우지 않는다**(저장 위치는 설치 폴더 밖 — 기본 `%USERPROFILE%\PLAN-A Memo`).
 
 ## 폴더
 

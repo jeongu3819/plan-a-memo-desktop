@@ -180,6 +180,28 @@ pub struct LocationInspection {
 }
 
 /// 사용자가 고른 폴더를 저장 위치로 쓸 수 있는지 본다(아무것도 만들지 않는다).
+/// 제거 프로그램·업데이트가 지우거나 덮어쓸 수 있는 폴더인가.
+///   * %APPDATA%\com.plana.memo* · %LOCALAPPDATA%\com.plana.memo* — 제거 때 [앱 데이터 삭제]를 고르면 통째로 지워진다
+///   * %LOCALAPPDATA%\PLAN-A Memo* — 기본 설치 폴더(이 환경·다른 환경 모두)
+pub fn reserved_app_folder(path: &Path) -> Option<&'static str> {
+    let normalized = |p: &Path| p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let target = normalized(path);
+    let under = |base: Option<std::path::PathBuf>, prefix: &str| {
+        base.map(|b| normalized(&b)).is_some_and(|b| {
+            target
+                .strip_prefix(&format!("{b}\\"))
+                .is_some_and(|rest| rest.split('\\').next().is_some_and(|first| first.starts_with(prefix)))
+        })
+    };
+    if under(dirs::config_dir(), "com.plana.memo") || under(dirs::data_local_dir(), "com.plana.memo") {
+        return Some("앱 설정 폴더 안에는 저장할 수 없습니다(제거할 때 함께 지워질 수 있습니다).");
+    }
+    if under(dirs::data_local_dir(), "plan-a memo") {
+        return Some("프로그램 설치 폴더 안에는 저장할 수 없습니다(제거할 때 함께 지워질 수 있습니다).");
+    }
+    None
+}
+
 pub fn inspect_location(path: &Path) -> LocationInspection {
     let mut result = LocationInspection {
         path: path.display().to_string(),
@@ -212,6 +234,10 @@ pub fn inspect_location(path: &Path) -> LocationInspection {
             result.problem = Some("프로그램 설치 폴더 안에는 저장할 수 없습니다(제거할 때 함께 지워질 수 있습니다).".into());
             return result;
         }
+    }
+    if let Some(problem) = reserved_app_folder(path) {
+        result.problem = Some(problem.into());
+        return result;
     }
     let paths = StoragePaths::new(path);
     result.is_storage = paths.has_database();

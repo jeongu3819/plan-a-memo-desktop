@@ -33,6 +33,8 @@ import type {
   StorageStatus,
   SyncOverview,
   SyncReport,
+  UpdateInfo,
+  UpdateStatus,
   VersionDetail,
   VersionSummary,
   WeekMemo,
@@ -70,6 +72,14 @@ export function errorMessage(error: unknown, fallback = '처리하지 못했습�
 
 export const appService = {
   info: () => call<AppInfo>('app_info'),
+};
+
+export const updateService = {
+  status: () => call<UpdateStatus>('update_status'),
+  /** 새 버전이 있으면 정보, 최신이면 null */
+  check: () => call<UpdateInfo | null>('update_check'),
+  /** 성공하면 설치 프로그램이 뜨고 앱이 종료된다(설치 후 다시 실행). */
+  install: () => call<void>('update_install'),
 };
 
 export const storageService = {

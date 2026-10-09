@@ -33,7 +33,9 @@ export default function AccountDialog({
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ severity: 'success' | 'info'; text: string } | null>(null);
+  /** 마지막으로 시도한 연결 방식 — 실패하면 [다시 시도]가 같은 방식으로 다시 연결한다. */
+  const [lastAttempt, setLastAttempt] = useState<boolean | null>(null);
   const [waiting, setWaiting] = useState(false);
   const auth = status.data;
   const session = auth?.session ?? null;
@@ -72,6 +74,7 @@ export default function AccountDialog({
     setBusy(true);
     setError(null);
     setNotice(null);
+    setLastAttempt(reconnect);
     try {
       await authService.beginLogin(reconnect);
       setReconnecting(reconnect);
@@ -87,6 +90,7 @@ export default function AccountDialog({
   const cancel = async () => {
     await authService.cancelLogin().catch(() => undefined);
     setWaiting(false);
+    setNotice({ severity: 'info', text: '계정 연결이 취소되었습니다. 로컬 메모는 그대로 쓸 수 있습니다.' });
     refresh();
   };
 
@@ -95,11 +99,12 @@ export default function AccountDialog({
     setError(null);
     try {
       const result = await authService.logout();
-      setNotice(
-        result.serverRevoked
+      setNotice({
+        severity: 'success',
+        text: result.serverRevoked
           ? '로그아웃했습니다. 연결돼 있던 날짜·List 는 이 PC 에만 남습니다.'
           : '이 PC 에서 로그아웃했습니다. 서버에 알리지 못했으니 PLAN-A Work 의 기기 관리에서 이 PC 를 해제해주세요.',
-      );
+      });
       refresh();
     } catch (failure) {
       setError(errorMessage(failure, '로그아웃하지 못했습니다.'));
@@ -164,8 +169,23 @@ export default function AccountDialog({
             )}
           </Alert>
         )}
-        {notice && <Alert severity="success" sx={{ mt: 1.5, fontSize: '0.8rem' }}>{notice}</Alert>}
-        {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
+        {notice && (
+          <Alert severity={notice.severity} sx={{ mt: 1.5, fontSize: '0.8rem' }} data-testid="account-notice">
+            {notice.text}
+          </Alert>
+        )}
+        {error && (
+          <Alert
+            severity="error"
+            sx={{ mt: 1.5 }}
+            data-testid="account-error"
+          >
+            {error}
+            <Box component="span" sx={{ display: 'block', mt: 0.5, fontSize: '0.76rem', opacity: 0.85 }}>
+              계정 연결과 관계없이 이 PC 의 메모 작성·검색·저장은 그대로 됩니다.
+            </Box>
+          </Alert>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>닫기</Button>
@@ -187,12 +207,13 @@ export default function AccountDialog({
               새 기기로 등록
             </Button>
             <Button variant="contained" onClick={() => void connect(true)} disabled={busy} data-testid="account-connect">
-              다시 연결
+              {error && lastAttempt ? '다시 시도' : '다시 연결'}
             </Button>
           </>
         ) : (
-          <Button variant="contained" onClick={() => void connect(false)} disabled={busy} data-testid="account-connect">
-            계정 연결
+          // 실패했으면 같은 버튼이 [다시 시도] — 마지막에 시도한 방식 그대로 다시 연결한다.
+          <Button variant="contained" onClick={() => void connect(lastAttempt ?? false)} disabled={busy} data-testid="account-connect">
+            {error ? '다시 시도' : '계정 연결'}
           </Button>
         )}
       </DialogActions>

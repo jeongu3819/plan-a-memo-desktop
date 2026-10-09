@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PLAN-A Memo Staging",
+  "mainBinaryName": "PLAN-A Memo Staging",
+  "identifier": "com.plana.memo.staging",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "PLAN-A Memo Staging",
+        "width": 1100,
+        "height": 780,
+        "minWidth": 850,
+        "minHeight": 620,
+        "center": true,
+        "resizable": true,
+        "decorations": true,
+        "dragDropEnabled": false,
+        "visible": true
+      }
+    ]
+  },
+  "bundle": {
+    "shortDescription": "PLAN-A Memo Staging (테스트용)",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["Korean", "English"],
+        "startMenuFolder": "PLAN-A Memo Staging",
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["plana-memo-staging"]
+      }
+    }
+  }
+}

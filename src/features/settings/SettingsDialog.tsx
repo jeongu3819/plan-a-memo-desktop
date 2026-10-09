@@ -1,7 +1,7 @@
 /**
- * 설정 — 저장 위치 · Backup · PLAN-A Work 연결 · (개발용) Mock 서버.
+ * 설정 — 저장 위치 · Backup · PLAN-A Work 연결 · (개발용) Mock 서버 · 앱 정보(버전 · 업데이트 확인).
  * 섹션마다 흰 카드 한 장(머리: 아이콘·제목·설명 / 몸: 줄 단위 항목) — 메모 칸과 같은 선·그림자·모서리.
- * 로그는 앱이 계속 남기지만(문제 확인용) 설정 화면에는 보이지 않는다.
+ * 로그는 앱이 계속 남기지만(문제 확인용) 설정 화면에는 보이지 않는다. 실행 환경(staging/production)도 보이지 않는다.
  */
 import { useState } from 'react';
 import {
@@ -23,11 +23,13 @@ import {
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import BackupOutlinedIcon from '@mui/icons-material/BackupOutlined';
 import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import { getName, getVersion } from '@tauri-apps/api/app';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AppInfo, LocationInspection } from '../../domain/types';
+import type { AppInfo, LocationInspection, UpdateInfo } from '../../domain/types';
 import { keys, refreshMemo, useSyncOverview } from '../../services/queries';
-import { attachmentService, errorMessage, mockServerService, storageService, syncService } from '../../tauri/api';
+import { attachmentService, errorMessage, mockServerService, storageService, syncService, updateService } from '../../tauri/api';
 import { useAppUi } from '../../app/AppUi';
 import {
   MEMO_CARD,
@@ -93,6 +95,62 @@ function SettingsRow({ children, actions }: { children?: React.ReactNode; action
       {children && <Box sx={{ flex: '1 1 240px', minWidth: 0 }}>{children}</Box>}
       {actions && <Stack direction="row" spacing={1} sx={{ flexShrink: 0, ml: 'auto' }}>{actions}</Stack>}
     </Box>
+  );
+}
+
+/** 앱 정보 — 이름·현재 버전(실행 중인 앱에서 읽음) · [업데이트 확인]. */
+function AboutSection({ open }: { open: boolean }) {
+  const ui = useAppUi();
+  const name = useQuery({ queryKey: ['app', 'name'], queryFn: getName, enabled: open, staleTime: Infinity });
+  const version = useQuery({ queryKey: ['app', 'version'], queryFn: getVersion, enabled: open, staleTime: Infinity });
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<{ kind: 'latest' | 'available' | 'error'; text: string; info?: UpdateInfo } | null>(null);
+
+  const check = async () => {
+    setChecking(true);
+    setResult(null);
+    try {
+      const found = await updateService.check();
+      setResult(
+        found
+          ? { kind: 'available', text: `새 버전 ${found.version} 이 있습니다.`, info: found }
+          : { kind: 'latest', text: '최신 버전을 사용 중입니다.' },
+      );
+    } catch (failure) {
+      setResult({ kind: 'error', text: errorMessage(failure, '업데이트를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.') });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <SettingsSection icon={<InfoOutlinedIcon />} title="앱 정보">
+      <SettingsRow
+        actions={
+          <Button size="small" variant="outlined" onClick={() => void check()} disabled={checking} data-testid="update-check">
+            {checking ? '확인 중…' : '업데이트 확인'}
+          </Button>
+        }
+      >
+        <RowLabel title={name.data ?? 'PLAN-A Memo'} detail={<span data-testid="app-version">현재 버전 {version.data ?? '…'}</span>} />
+      </SettingsRow>
+      {result && (
+        <Box sx={{ px: 2, pb: 1.5 }} data-testid="update-check-result" data-kind={result.kind}>
+          <Alert
+            severity={result.kind === 'error' ? 'warning' : result.kind === 'available' ? 'info' : 'success'}
+            action={
+              result.info ? (
+                <Button size="small" color="inherit" onClick={() => ui.openUpdate(result.info!)}>
+                  자세히
+                </Button>
+              ) : undefined
+            }
+          >
+            {result.text}
+          </Alert>
+        </Box>
+      )}
+    </SettingsSection>
   );
 }
 
@@ -410,6 +468,8 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
             </Box>
           )}
         </SettingsSection>
+
+        <AboutSection open={open} />
       </DialogContent>
       <DialogActions sx={{ borderTop: '1px solid', borderColor: MEMO_CARD_BORDER }}>
         <Button variant="outlined" onClick={onClose}>닫기</Button>

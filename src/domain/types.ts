@@ -178,6 +178,31 @@ export interface AppInfo {
   today: string;
 }
 
+/** 앱 업데이트(Tauri Updater) — Rust update.rs 와 같은 모양 */
+export interface UpdateInfo {
+  currentVersion: string;
+  version: string;
+  /** 릴리스 노트(배포된 latest.json 의 notes) */
+  notes: string | null;
+  date: string | null;
+}
+
+export interface UpdateStatus {
+  /** 이 빌드에 업데이트 서버가 설정돼 있는가 */
+  enabled: boolean;
+  currentVersion: string;
+  checking: boolean;
+  installing: boolean;
+  lastCheckedAt: string | null;
+  available: UpdateInfo | null;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+  phase: 'downloading' | 'verifying' | 'installing';
+}
+
 export interface LocationInspection {
   path: string;
   resolvedPath: string;

@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PLAN-A Memo",
   "mainBinaryName": "PLAN-A Memo",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "identifier": "com.plana.memo",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -40,7 +40,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "PLAN-A",
     "shortDescription": "PLAN-A Memo",
     "longDescription": "PLAN-A Work 개인 메모장과 같은 화면의 Windows 로컬 메모 프로그램",
@@ -53,19 +55,36 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false,
-        "languages": ["Korean", "English"],
-        "startMenuFolder": "PLAN-A Memo"
+        "languages": [
+          "Korean",
+          "English"
+        ],
+        "startMenuFolder": "PLAN-A Memo",
+        "installerHooks": "windows/installer-hooks.nsh"
       }
     }
   },
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["plana-memo"]
+        "schemes": [
+          "plana-memo"
+        ]
+      }
+    },
+    "updater": {
+      "pubkey": "",
+      "endpoints": [],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

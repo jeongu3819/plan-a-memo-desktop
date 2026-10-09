@@ -118,7 +118,7 @@ pub fn parse_target(target: &str) -> AppResult<CallbackParams> {
     }
     let get = |name: &str| parsed.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.to_string());
     if get("error").is_some() {
-        return Err(AppError::new("auth_denied", "로그인이 취소되었거나 거절되었습니다."));
+        return Err(AppError::new("auth_denied", "계정 연결이 취소되었습니다(브라우저에서 취소·거절)."));
     }
     match (get("code"), get("state")) {
         (Some(code), Some(state)) if !code.is_empty() && !state.is_empty() && code.len() <= 256 && state.len() <= 256 => {

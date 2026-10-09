@@ -21,7 +21,7 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 | first-link-compare | (Mock) 같은 날짜에 이 PC·Web 모두 내용 → 연결해도 덮지 않고 첫 연결 비교(base_version=0), [나중에 선택] 후에도 양쪽 그대로 |
 | linked-list-rename-notice | (Mock) 연결된 List 이름 변경 → 이 PC 에만(서버 API 없음, 보낼 것 없음) |
 | storage-move | 저장 위치 변경 후 같은 메모 |
-| deep-link | `plana-memo://open` → 두 번째 창 없이 기존 창(single instance) |
+| deep-link | `plana-memo-dev://open` → 두 번째 창 없이 기존 창(single instance) |
 | device-revoke | (Mock) Web 에서 이 PC 해제 → 같은 기기 재연결은 `device_revoked` 로 거절(자동 재활성화 없음), 메모·Outbox 유지 → [새 기기로 등록] → 이전 연결은 보존·멈춤 |
 | logout | (Mock) 로그아웃 → 연결은 '이 PC 에만', 메모 유지 |
 
@@ -29,7 +29,9 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
   credential 은 Windows 자격 증명 관리자의 `PLAN-A Memo (development-e2e)` 항목만 쓰고 시작·끝에 지운다.
   사용자의 실제 설정·메모·운영 credential 은 건드리지 않는다.
 * 스크린샷: `e2e/output/` (저장소에 넣지 않음). `PLANA_E2E_KEEP=1` 이면 임시 저장소를 남긴다.
-* 개발 실행 파일은 실행될 때 `plana-memo://` 를 HKCU 에 등록한다(deep-link 단계). 운영 설치본은 Installer 가 등록한다.
+* 개발·E2E 빌드는 식별자 `com.plana.memo.dev`·scheme `plana-memo-dev://`(`src-tauri/tauri.dev.conf.json`)를 쓴다 — 실행 중인 운영 설치본과
+  single-instance·앱 설정·`plana-memo://` 등록이 섞이지 않는다(예전에는 운영본이 켜져 있으면 E2E 앱이 바로 종료되고, deep-link 단계가 운영 등록을 덮었다).
+* 설치·업데이트·제거 E2E 는 `npm run e2e:installer`(`e2e/installer.mjs` — 별도 테스트 앱 'PLAN-A Memo InstTest').
 
 ## 실제 PLAN-A Work 서버로(통합 E2E)
 

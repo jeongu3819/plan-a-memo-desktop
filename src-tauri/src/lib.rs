@@ -11,6 +11,7 @@ pub mod memo;
 pub mod state;
 pub mod storage;
 pub mod sync;
+pub mod update;
 pub mod util;
 
 use std::time::Duration;
@@ -41,10 +42,11 @@ fn serve_attachment(app: &tauri::AppHandle, path: &str) -> Response<Vec<u8>> {
     }
 }
 
-/// `plana-memo://` — 창을 앞으로 가져오기만 한다. 로그인 callback 은 memo-sync-v1 Contract 대로
-/// 127.0.0.1 loopback 으로만 받는다(deep link 로 온 code·서버 주소는 어떤 것도 믿지 않는다).
+/// `plana-memo://`(staging: `plana-memo-staging://`) — 창을 앞으로 가져오기만 한다. 로그인 callback 은 memo-sync-v1
+/// Contract 대로 127.0.0.1 loopback 으로만 받는다(deep link 로 온 code·서버 주소는 어떤 것도 믿지 않는다).
 fn handle_deep_links(app: &tauri::AppHandle, urls: Vec<String>) {
-    if urls.iter().any(|url| url.starts_with("plana-memo://")) {
+    let prefix = format!("{}://", app.state::<AppState>().env.deep_link_scheme);
+    if urls.iter().any(|url| url.starts_with(&prefix)) {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.show();
@@ -138,6 +140,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 서명 공개키·엔드포인트는 빌드 환경별로 update.rs 가 넣는다(tauri.conf.json 에는 빈 값).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_asynchronous_uri_scheme_protocol("attachment", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let path = request.uri().path().to_string();
@@ -151,7 +155,14 @@ pub fn run() {
                 _ => app.path().app_config_dir()?,
             };
             let log_dir = app.path().app_log_dir()?;
-            log::info!("PLAN-A Memo {} starting (env={:?})", env!("CARGO_PKG_VERSION"), env.env);
+            let version = app.package_info().version.to_string();
+            log::info!(
+                "PLAN-A Memo {version} starting (env={:?}, id={}, updates={})",
+                env.env,
+                app.config().identifier,
+                if env.update.enabled() { env.update.channel } else { "off" }
+            );
+            app.manage(update::UpdateState::new(env.update.clone(), version));
             let state = AppState::new(env, config_dir, log_dir);
             state.open_configured();
             app.manage(state);
@@ -173,11 +184,15 @@ pub fn run() {
             }
 
             spawn_sync_scheduler(app.handle().clone());
+            update::spawn_auto_check(app.handle().clone());
             watch_window_state(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            commands::update_status,
+            commands::update_check,
+            commands::update_install,
             commands::storage_status,
             commands::storage_inspect,
             commands::storage_initialize,

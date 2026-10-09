@@ -13,17 +13,45 @@ use async_trait::async_trait;
 
 use super::contract::*;
 
+/// 연결 단계에서 무엇이 실패했는가 — 화면 안내와 진단 로그를 원인별로 나눈다(모두 '다시 시도' 대상).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetFailure {
+    /// 서버 이름을 찾지 못함(DNS — 주소 없음·오타·DNS 서버 문제)
+    Dns,
+    /// HTTPS 인증서·보안 연결 실패(인증서 오류·보안 프로그램/프록시 가로채기·PC 시각)
+    Tls,
+    /// 응답 없음(연결·응답 시간 초과)
+    Timeout,
+}
+
+impl NetFailure {
+    pub fn label(&self) -> &'static str {
+        match self {
+            NetFailure::Dns => "dns",
+            NetFailure::Tls => "tls",
+            NetFailure::Timeout => "timeout",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TransportError {
-    /// 네트워크 단절·시간 초과·DNS — 나중에 그대로 다시 시도한다.
+    /// 네트워크 단절·연결 거부 — 나중에 그대로 다시 시도한다.
     #[error("PLAN-A Work 에 연결할 수 없습니다(오프라인).")]
     Offline,
+    /// DNS·TLS·시간 초과 — 오프라인처럼 다시 시도하되, 안내는 원인별로 한다.
+    #[error("PLAN-A Work 에 연결할 수 없습니다({}).", .0.label())]
+    Network(NetFailure),
     /// 401 — Desktop credential 만료·폐기. 브라우저로 다시 연결해야 한다.
     #[error("PLAN-A Work 연결이 만료되었습니다. 다시 로그인해주세요.")]
     AuthRequired,
     /// 서버 Desktop Sync 기능이 꺼져 있다(404 'Memo sync unavailable') 또는 설정 안 됨(503).
     #[error("PLAN-A Work 에서 Desktop 연결을 아직 사용할 수 없습니다.")]
     Unavailable,
+    /// 404 + FastAPI 기본 detail('Not Found') — 서버에 memo-sync-v1 경로 자체가 없다(미배포 Backend).
+    /// Contract 의 404 는 모두 구체적인 detail('Device not found' 등)을 준다.
+    #[error("PLAN-A Work 서버에 Desktop 연결 기능이 없습니다(미배포).")]
+    EndpointMissing,
     #[error("서버에서 찾을 수 없습니다.")]
     NotFound,
     #[error("권한이 없습니다.")]
@@ -51,7 +79,7 @@ impl TransportError {
     }
     /// 그대로 다시 보내도 되는 오류인가(요청 내용을 바꾸지 않는다).
     pub fn is_transient(&self) -> bool {
-        matches!(self, TransportError::Offline | TransportError::RateLimited | TransportError::Server(_))
+        matches!(self, TransportError::Offline | TransportError::Network(_) | TransportError::RateLimited | TransportError::Server(_))
     }
 }
 

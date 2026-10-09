@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::AppEnv;
 use crate::error::{AppError, AppResult};
 use crate::sync::contract::{AuthStartRequest, AuthStartResponse, ExchangeRequest, ExchangeResponse};
-use crate::sync::transport::{TResult, TransportError};
+use crate::sync::transport::{NetFailure, TResult, TransportError};
 
 // ── 서버 Auth API(실제: sync::http::PlanAWorkAuthApi, 개발·테스트: sync::mock::MockSyncTransport) ──
 
@@ -352,7 +352,18 @@ impl DesktopAuth {
             redirect_uri: redirect_uri.to_string(),
             device_id: device_id.clone(),
         };
-        let response = self.api.start(&body).await.map_err(|e| auth_error(&e, "로그인을 시작하지 못했습니다."))?;
+        let response = self.api.start(&body).await.map_err(|e| match e {
+            // auth/start 는 로그인 전 요청이라 credential 이 없다 — 401 은 '세션 만료' 가 아니라 서버가 이 경로를
+            // 인증 없이 받지 않는 설정이다(예: 전역 인증 미들웨어가 memo-sync native 경로를 막음).
+            TransportError::AuthRequired => {
+                log::warn!("desktop auth failed: auth/start answered 401 (server requires a web session for native auth)");
+                AppError::new(
+                    "server_auth_config",
+                    "PLAN-A Work 서버가 Desktop 계정 연결 요청을 받지 않고 있습니다(서버 인증 설정). 관리자에게 문의해주세요.",
+                )
+            }
+            other => self.auth_error(&other, "로그인을 시작하지 못했습니다."),
+        })?;
         if !namespace_allowed(self.env, &response.namespace) {
             return Err(AppError::new("auth_wrong_environment", "이 PLAN-A Memo 와 다른 환경의 PLAN-A Work 서버입니다."));
         }
@@ -414,7 +425,7 @@ impl DesktopAuth {
                 }
                 return Err(device_revoked_error());
             }
-            Err(error) => return Err(auth_error(&error, "로그인을 마치지 못했습니다.")),
+            Err(error) => return Err(self.auth_error(&error, "로그인을 마치지 못했습니다.")),
         };
         if response.token_type != "Bearer" || !response.access_token.starts_with("pms_") {
             return Err(AppError::new("auth_invalid_response", "서버 응답이 Desktop credential 형식이 아닙니다."));
@@ -472,6 +483,14 @@ impl DesktopAuth {
         }
     }
 
+    /// 서버 오류 → 화면 안내(원인별). 진단 로그에는 원인 분류만(토큰·code·verifier 없음).
+    fn auth_error(&self, error: &TransportError, fallback: &str) -> AppError {
+        let host = self.api.web_origin().and_then(|o| url::Url::parse(&o).ok()?.host_str().map(str::to_string));
+        let mapped = auth_error(error, fallback, host.as_deref());
+        log::warn!("desktop auth failed: {}", mapped.code());
+        mapped
+    }
+
     pub fn pending_authorization_id(&self) -> Option<String> {
         self.pending.lock().unwrap().as_ref().map(|p| p.authorization_id.clone())
     }
@@ -524,13 +543,39 @@ fn device_revoked_error() -> AppError {
     AppError::new("device_revoked", DEVICE_REVOKED_MESSAGE)
 }
 
-fn auth_error(error: &TransportError, fallback: &str) -> AppError {
+/// 계정 연결 실패 안내 — 모든 실패를 '인터넷 연결 확인' 으로 뭉치지 않는다.
+/// `host` 는 이 빌드가 연결하는 PLAN-A Work 주소(비밀이 아니다 — 서버 주소 문제를 알아보게).
+pub fn auth_error(error: &TransportError, fallback: &str, host: Option<&str>) -> AppError {
     match error {
-        TransportError::Offline => AppError::new("offline", "PLAN-A Work 에 연결할 수 없습니다. 인터넷 연결을 확인해주세요."),
-        TransportError::Unavailable => AppError::new("sync_unavailable", "PLAN-A Work 에서 Desktop 연결을 아직 사용할 수 없습니다."),
-        TransportError::AuthRequired => {
-            AppError::new("auth_code_invalid", "로그인 코드가 만료되었거나 이미 사용되었습니다. 다시 로그인해주세요.")
+        TransportError::Offline => {
+            AppError::new("server_unreachable", "PLAN-A Work 서버에 연결할 수 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해주세요.")
         }
+        TransportError::Network(NetFailure::Dns) => AppError::new(
+            "server_not_found",
+            format!(
+                "PLAN-A Work 서버{}를 찾을 수 없습니다. 인터넷이 연결돼 있는데도 계속되면 서버 주소 설정 문제일 수 있으니 관리자에게 알려주세요.",
+                host.map(|h| format!("({h})")).unwrap_or_default()
+            ),
+        ),
+        TransportError::Network(NetFailure::Tls) => AppError::new(
+            "server_tls",
+            "PLAN-A Work 서버와 안전한 연결(HTTPS 인증서)을 확인하지 못했습니다. PC 의 날짜·시간과 보안 프로그램·프록시 설정을 확인해주세요.",
+        ),
+        TransportError::Network(NetFailure::Timeout) => {
+            AppError::new("server_timeout", "PLAN-A Work 서버가 응답하지 않습니다. 잠시 후 다시 시도해주세요.")
+        }
+        TransportError::EndpointMissing => AppError::new(
+            "server_feature_missing",
+            "PLAN-A Work 서버에 Desktop 계정 연결 기능이 아직 준비되지 않았습니다. 잠시 후 다시 시도하거나 관리자에게 문의해주세요.",
+        ),
+        TransportError::Unavailable => AppError::new("sync_unavailable", "PLAN-A Work 에서 Desktop 연결을 아직 사용할 수 없습니다."),
+        TransportError::Server(detail) => {
+            AppError::new("server_error", format!("일시적인 서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요. ({detail})"))
+        }
+        TransportError::AuthRequired => {
+            AppError::new("auth_code_invalid", "로그인 세션이 만료되었거나 이미 사용된 요청입니다. 다시 연결해주세요.")
+        }
+        TransportError::Forbidden => AppError::new("auth_forbidden", "이 PLAN-A Work 계정으로는 이 PC 를 연결할 수 없습니다(권한 없음)."),
         TransportError::NotFound => AppError::new("auth_device_missing", "이 PC 의 기기 등록을 찾을 수 없습니다. 새로 로그인해주세요."),
         TransportError::Conflict { code } if code == "device_revoked" => device_revoked_error(),
         TransportError::RateLimited => AppError::new("rate_limited", "로그인 시도가 너무 많습니다. 잠시 뒤 다시 시도해주세요."),

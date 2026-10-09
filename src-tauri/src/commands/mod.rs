@@ -25,7 +25,8 @@ type Cmd<T> = Result<T, AppError>;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
-    pub version: &'static str,
+    /// 실행 중인 앱 버전(tauri.conf.json 의 version — Updater 가 비교하는 값과 같다)
+    pub version: String,
     pub env: crate::config::AppEnv,
     pub storage: StorageStatus,
     pub sync_transport: &'static str,
@@ -34,15 +35,34 @@ pub struct AppInfo {
 }
 
 #[tauri::command]
-pub async fn app_info(state: State<'_, AppState>) -> Cmd<AppInfo> {
+pub async fn app_info(state: State<'_, AppState>, app: AppHandle) -> Cmd<AppInfo> {
     Ok(AppInfo {
-        version: env!("CARGO_PKG_VERSION"),
+        version: app.package_info().version.to_string(),
         env: state.env.env,
         storage: state.status(),
         sync_transport: state.sync.engine.transport.name(),
         real_sync_configured: state.env.real_sync_configured(),
         today: chrono::Local::now().format("%Y-%m-%d").to_string(),
     })
+}
+
+// ── 앱 업데이트 ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn update_status(updates: State<'_, crate::update::UpdateState>) -> Cmd<crate::update::UpdateStatus> {
+    Ok(updates.status())
+}
+
+/// 설정의 [업데이트 확인] — 새 버전이 있으면 정보를, 최신이면 None.
+#[tauri::command]
+pub async fn update_check(updates: State<'_, crate::update::UpdateState>, app: AppHandle) -> Cmd<Option<crate::update::UpdateInfo>> {
+    updates.check(&app, true).await
+}
+
+/// [업데이트 설치] — 화면이 남은 입력을 저장한 뒤 부른다. 성공하면 설치 프로그램이 뜨고 앱이 종료된다.
+#[tauri::command]
+pub async fn update_install(updates: State<'_, crate::update::UpdateState>, app: AppHandle) -> Cmd<()> {
+    updates.install(&app).await
 }
 
 #[tauri::command]

@@ -35,17 +35,22 @@ fn user_agent() -> String {
 impl HttpClient {
     /// `origin` 예: https://planawork.com (끝의 / 없이). 검증은 config 에서 끝났다.
     pub fn new(origin: &str) -> Result<Self, TransportError> {
-        let build = |timeout: u64| {
+        Self::with_timeouts(origin, Duration::from_secs(10), Duration::from_secs(30))
+    }
+
+    /// 시간 제한을 정해서 만든다(테스트에서 '응답 없음' 을 빨리 재현할 때). 업로드는 `total` 의 4배.
+    pub fn with_timeouts(origin: &str, connect: Duration, total: Duration) -> Result<Self, TransportError> {
+        let build = |timeout: Duration| {
             reqwest::Client::builder()
                 .user_agent(user_agent())
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(timeout))
+                .connect_timeout(connect)
+                .timeout(timeout)
                 .redirect(reqwest::redirect::Policy::none())
                 .https_only(origin.starts_with("https://"))
                 .build()
                 .map_err(|_| TransportError::Server("HTTP client".into()))
         };
-        Ok(HttpClient { origin: origin.trim_end_matches('/').to_string(), client: build(30)?, upload_client: build(120)? })
+        Ok(HttpClient { origin: origin.trim_end_matches('/').to_string(), client: build(total)?, upload_client: build(total * 4)? })
     }
 
     pub fn origin(&self) -> &str {
@@ -57,12 +62,12 @@ impl HttpClient {
     }
 
     async fn send<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder, label: &str) -> TResult<T> {
-        let response = request.send().await.map_err(network_error)?;
+        let response = request.send().await.map_err(|e| self.network_failure(e, label))?;
         let status = response.status();
-        let bytes = response.bytes().await.map_err(network_error)?;
+        let bytes = response.bytes().await.map_err(|e| self.network_failure(e, label))?;
         if !status.is_success() {
             let error = map_status(status, &bytes);
-            log::info!("memo-sync {label}: HTTP {}", status.as_u16());
+            log::info!("memo-sync {label}: HTTP {} ({})", status.as_u16(), error_kind(&error));
             return Err(error);
         }
         serde_json::from_slice(&bytes).map_err(|_| {
@@ -90,11 +95,69 @@ impl HttpClient {
     }
 }
 
-fn network_error(error: reqwest::Error) -> TransportError {
-    if error.is_timeout() || error.is_connect() || error.is_request() || error.is_body() {
+impl HttpClient {
+    /// 연결 실패를 원인별로 나누고, 진단 로그에는 서버 host 와 원인만 남긴다(경로 query·본문·토큰 없음).
+    fn network_failure(&self, error: reqwest::Error, label: &str) -> TransportError {
+        let mapped = network_error(&error);
+        let host = url::Url::parse(&self.origin).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+        log::warn!("memo-sync {label}: network failure host={host} kind={}", error_kind(&mapped));
+        mapped
+    }
+}
+
+/// 진단 로그용 짧은 분류(사용자 데이터 없음).
+pub fn error_kind(error: &TransportError) -> &'static str {
+    match error {
+        TransportError::Offline => "offline",
+        TransportError::Network(kind) => kind.label(),
+        TransportError::AuthRequired => "auth_required",
+        TransportError::Unavailable => "unavailable",
+        TransportError::EndpointMissing => "endpoint_missing",
+        TransportError::NotFound => "not_found",
+        TransportError::Forbidden => "forbidden",
+        TransportError::Conflict { .. } => "conflict",
+        TransportError::Rejected { .. } => "rejected",
+        TransportError::RateLimited => "rate_limited",
+        TransportError::Server(_) => "server",
+    }
+}
+
+/// reqwest 오류 → 원인. hyper/rustls 는 원인을 오류 사슬의 문장으로만 알려 주므로 사슬 전체를 본다.
+pub fn network_error(error: &reqwest::Error) -> TransportError {
+    if error.is_timeout() {
+        return TransportError::Network(NetFailure::Timeout);
+    }
+    let mut chain = String::new();
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = source {
+        chain.push_str(&current.to_string().to_ascii_lowercase());
+        chain.push('\n');
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            if io.kind() == std::io::ErrorKind::TimedOut {
+                return TransportError::Network(NetFailure::Timeout);
+            }
+        }
+        source = current.source();
+    }
+    classify_network_chain(&chain).unwrap_or(if error.is_connect() || error.is_request() || error.is_body() {
         TransportError::Offline
     } else {
         TransportError::Server("네트워크".into())
+    })
+}
+
+/// 오류 사슬 문장(소문자)으로 DNS·TLS·시간 초과를 가린다. 그 밖은 None(= 연결 실패/오프라인).
+pub fn classify_network_chain(chain: &str) -> Option<TransportError> {
+    const DNS: [&str; 5] = ["dns error", "failed to lookup address", "no such host", "name or service not known", "nodename nor servname"];
+    const TLS: [&str; 6] = ["certificate", "invalid peer", "tls handshake", "handshake failure", "rustls", "invalidcontenttype"];
+    if DNS.iter().any(|m| chain.contains(m)) {
+        Some(TransportError::Network(NetFailure::Dns))
+    } else if TLS.iter().any(|m| chain.contains(m)) {
+        Some(TransportError::Network(NetFailure::Tls))
+    } else if chain.contains("timed out") || chain.contains("timeout") {
+        Some(TransportError::Network(NetFailure::Timeout))
+    } else {
+        None
     }
 }
 
@@ -106,6 +169,8 @@ pub fn map_status(status: StatusCode, body: &[u8]) -> TransportError {
         401 => TransportError::AuthRequired,
         403 => TransportError::Forbidden,
         404 if message == "Memo sync unavailable" => TransportError::Unavailable,
+        // FastAPI 기본 404(라우트 없음)·프록시의 HTML 404 — Contract 의 404 는 언제나 구체적인 detail 을 준다.
+        404 if parsed.code.is_none() && (message == "Not Found" || parsed.message.is_none()) => TransportError::EndpointMissing,
         404 => TransportError::NotFound,
         409 => TransportError::Conflict { code: parsed.code.or(parsed.message).unwrap_or_else(|| "conflict".into()) },
         413 | 422 => TransportError::Rejected {
@@ -224,9 +289,9 @@ impl SyncTransport for PlanAWorkSyncTransport {
             .bearer_auth(&ctx.access_token)
             .send()
             .await
-            .map_err(network_error)?;
+            .map_err(|e| network_error(&e))?;
         let status = response.status();
-        let bytes = response.bytes().await.map_err(network_error)?;
+        let bytes = response.bytes().await.map_err(|e| network_error(&e))?;
         if !status.is_success() {
             log::info!("memo-sync download: HTTP {}", status.as_u16());
             return Err(map_status(status, &bytes));

@@ -1,7 +1,7 @@
 {
   "name": "plan-a-memo-desktop",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "PLAN-A Memo — Windows local-first memo app (Tauri 2 + React + SQLite)",
   "scripts": {
@@ -14,11 +14,14 @@
     "test": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "tauri:build": "tauri build",
-    "dist": "tauri build && node scripts/copy-installer.mjs",
-    "e2e:build": "tauri build --debug --no-bundle",
-    "e2e": "node e2e/run.mjs"
+    "dist": "node scripts/dist.mjs",
+    "e2e:build": "tauri build --debug --no-bundle --config src-tauri/tauri.dev.conf.json",
+    "e2e": "node e2e/run.mjs",
+    "dist:staging": "node scripts/dist.mjs staging",
+    "dist:production": "node scripts/dist.mjs production",
+    "e2e:installer": "node e2e/installer.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

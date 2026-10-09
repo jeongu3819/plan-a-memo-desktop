@@ -93,7 +93,7 @@ impl AppState {
     }
 
     pub fn status(&self) -> StorageStatus {
-        let default_path = default_storage_dir().map(|p| p.display().to_string());
+        let default_path = default_storage_dir(self.env.env).map(|p| p.display().to_string());
         if let Ok(storage) = self.storage() {
             return StorageStatus { state: "ready", path: Some(storage.paths.root.display().to_string()), default_path, message: None };
         }

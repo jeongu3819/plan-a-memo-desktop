@@ -7,7 +7,7 @@ import { Box, CircularProgress, Typography } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { AppInfo, SyncReport } from '../domain/types';
+import type { AppInfo, SyncReport, UpdateInfo } from '../domain/types';
 import { appService, isTauri } from '../tauri/api';
 import { keys, refreshMemo } from '../services/queries';
 import { localDayString } from '../vendor/plan-a-work/utils/personalMemoDates';
@@ -19,6 +19,7 @@ import SettingsDialog from '../features/settings/SettingsDialog';
 import AccountDialog from '../features/auth/AccountDialog';
 import ConflictDialog from '../features/sync/ConflictDialog';
 import ExportDialog from '../features/export/ExportDialog';
+import UpdateDialog from '../features/update/UpdateDialog';
 import { AppUiContext, type AppUi } from './AppUi';
 
 /** 자정이 지나면 '오늘' 이 바뀐다(창을 켜 둔 채 날짜가 넘어가도 Today 배지가 맞게). */
@@ -38,6 +39,7 @@ function Shell({ info, onStorageChanged }: { info: AppInfo; onStorageChanged: ()
   const [account, setAccount] = useState<{ reason?: string; onConnected?: () => void } | null>(null);
   const [conflicts, setConflicts] = useState<{ documentId?: string } | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
   const ui: AppUi = useMemo(
     () => ({
@@ -45,6 +47,7 @@ function Shell({ info, onStorageChanged }: { info: AppInfo; onStorageChanged: ()
       openAccount: (reason, onConnected) => setAccount({ reason, onConnected }),
       openConflicts: documentId => setConflicts({ documentId }),
       openExport: () => setExporting(true),
+      openUpdate: info => setUpdate(info),
     }),
     [],
   );
@@ -74,6 +77,10 @@ function Shell({ info, onStorageChanged }: { info: AppInfo; onStorageChanged: ()
       }),
       listen<{ message: string }>('auth://error', event => notify({ message: event.payload.message, variant: 'error' })),
       listen('storage://changed', () => onStorageChanged()),
+      // 자동 확인에서 새 버전을 처음 봤을 때 — 알리기만 한다(설치는 사용자가 고를 때만).
+      listen<UpdateInfo>('update://available', event =>
+        notify({ message: `새 버전 ${event.payload.version} 이 있습니다.`, actionLabel: '자세히', onAction: () => setUpdate(event.payload) }),
+      ),
     ];
     return () => unlisten.forEach(p => void p.then(fn => fn()));
   }, [queryClient, notify, onStorageChanged]);
@@ -93,6 +100,7 @@ function Shell({ info, onStorageChanged }: { info: AppInfo; onStorageChanged: ()
       <AccountDialog open={!!account} reason={account?.reason} onClose={() => setAccount(null)} onConnected={account?.onConnected} />
       <ConflictDialog open={!!conflicts} documentId={conflicts?.documentId} onClose={() => setConflicts(null)} />
       <ExportDialog open={exporting} onClose={() => setExporting(false)} />
+      <UpdateDialog info={update} onClose={() => setUpdate(null)} />
     </AppUiContext.Provider>
   );
 }

@@ -251,7 +251,7 @@ step('deep-link', async () => {
       .split('\n')
       .filter(l => l.includes('PLAN-A Memo.exe')).length;
   const before = count();
-  execFileSync('cmd', ['/c', 'start', '', 'plana-memo://open'], { stdio: 'ignore' });
+  execFileSync('cmd', ['/c', 'start', '', 'plana-memo-dev://open'], { stdio: 'ignore' });
   await sleep(4000);
   assert.equal(count(), before, '두 번째 창을 띄우지 않고 기존 창으로(single instance)');
   assert.ok(await app.invoke('app_info'), '기존 앱은 계속 응답');

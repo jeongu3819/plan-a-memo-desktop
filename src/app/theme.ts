@@ -41,7 +41,12 @@ export const appTheme = createTheme(planAiTheme, {
     },
     MuiDialog: {
       styleOverrides: {
-        root: { '& .MuiBackdrop-root:not(.MuiBackdrop-invisible)': { backdropFilter: 'blur(2px)' } },
+        // 창 제목 표시줄(TitleBar) 아래부터 덮는다 — Dialog 가 열려 있어도 창 이동·최소화·닫기는 그대로(기본 제목 표시줄과 같다).
+        root: {
+          top: 'var(--title-bar-height, 0px)',
+          '& .MuiBackdrop-root': { top: 'var(--title-bar-height, 0px)' },
+          '& .MuiBackdrop-root:not(.MuiBackdrop-invisible)': { backdropFilter: 'blur(2px)' },
+        },
         paper: {
           borderRadius: 14,
           border: `1px solid ${LINE}`,

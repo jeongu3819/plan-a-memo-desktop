@@ -282,7 +282,7 @@ export default function MemoWorkspace() {
   );
 
   return (
-    <Box data-testid="personal-memo-workspace" sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: MEMO_SURFACE }}>
+    <Box data-testid="personal-memo-workspace" sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: MEMO_SURFACE }}>
       <GlobalStyles styles={{ [`::highlight(${MEMO_SEARCH_HIGHLIGHT})`]: { backgroundColor: 'rgba(250, 204, 21, 0.55)', color: 'inherit' } }} />
       {/* 노트 표지 — 오늘 날짜(serif) + 인사말, 오른쪽에 이동·찾기 조작(Web 메모 창 머리와 같다). */}
       <Box

@@ -83,10 +83,18 @@ body {
   overscroll-behavior: none;
 }
 
+/* 창 = 제목 표시줄(TitleBar) + 화면. 화면은 남은 높이를 모두 쓴다. */
 #root {
   width: 100%;
   height: 100vh;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#app-content {
+  flex: 1;
+  min-height: 0;
 }
 
 ::selection {

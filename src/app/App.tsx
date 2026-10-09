@@ -107,7 +107,7 @@ function Shell({ info, onStorageChanged }: { info: AppInfo; onStorageChanged: ()
 
 function BrowserOnly() {
   return (
-    <Box sx={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: MEMO_SURFACE, p: 4 }}>
+    <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: MEMO_SURFACE, p: 4 }}>
       <Typography sx={{ maxWidth: 520, textAlign: 'center', color: 'text.secondary' }}>
         PLAN-A Memo 는 Windows 앱에서 실행됩니다. 개발 중에는 <b>npm run tauri dev</b> 로 실행해주세요.
         (브라우저만으로는 로컬 저장소에 접근하지 않습니다.)
@@ -123,7 +123,7 @@ export default function App() {
   if (!isTauri()) return <BrowserOnly />;
   if (info.isPending) {
     return (
-      <Box sx={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: MEMO_SURFACE }}>
+      <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: MEMO_SURFACE }}>
         <CircularProgress size={24} />
       </Box>
     );

@@ -13,6 +13,7 @@ pub mod storage;
 pub mod sync;
 pub mod update;
 pub mod util;
+pub mod window_frame;
 
 use std::time::Duration;
 
@@ -55,11 +56,17 @@ fn handle_deep_links(app: &tauri::AppHandle, urls: Vec<String>) {
     }
 }
 
+/// 창 상태 파일에 저장·복원하는 항목 — 제목 표시줄(decorations)은 빼고 늘 tauri.conf.json 값(false, 앱이 그린다)을 쓴다.
+/// 예전 버전이 저장한 `decorations: true` 가 복원되면 Windows 기본 제목 표시줄이 다시 생겨 두 줄이 된다.
+fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
+    tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::DECORATIONS
+}
+
 /// 창 위치·크기를 움직임이 멈춘 뒤 1초에 한 번 저장한다(강제 종료돼도 마지막 위치가 남게).
 /// 이동·크기 이벤트마다 쓰지 않는다 — 메모 저장(SQLite)과 무관한 작은 JSON 파일 한 번.
 fn watch_window_state(app: &tauri::AppHandle) {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+    use tauri_plugin_window_state::AppHandleExt;
     let Some(window) = app.get_webview_window("main") else { return };
     let generation = std::sync::Arc::new(AtomicU64::new(0));
     let handle = app.clone();
@@ -71,7 +78,7 @@ fn watch_window_state(app: &tauri::AppHandle) {
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(1000)).await;
                 if generation.load(Ordering::SeqCst) == mine {
-                    if let Err(error) = handle.save_window_state(StateFlags::all()) {
+                    if let Err(error) = handle.save_window_state(window_state_flags()) {
                         log::warn!("window state save failed: {error}");
                     }
                 }
@@ -139,7 +146,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(window_state_flags()).build())
         // 서명 공개키·엔드포인트는 빌드 환경별로 update.rs 가 넣는다(tauri.conf.json 에는 빈 값).
         .plugin(tauri_plugin_updater::Builder::new().build())
         .register_asynchronous_uri_scheme_protocol("attachment", |ctx, request, responder| {
@@ -190,6 +197,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            window_frame::window_system_menu,
             commands::update_status,
             commands::update_check,
             commands::update_install,

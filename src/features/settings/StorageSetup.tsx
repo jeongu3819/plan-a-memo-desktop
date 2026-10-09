@@ -38,7 +38,7 @@ export default function StorageSetup({ status, onReady }: { status: StorageStatu
   };
 
   return (
-    <Box sx={{ height: '100vh', bgcolor: MEMO_SURFACE, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
+    <Box sx={{ height: '100%', bgcolor: MEMO_SURFACE, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
       <Paper data-testid="storage-setup" sx={{ maxWidth: 560, width: '100%', p: 4, borderRadius: '14px', border: '1px solid', borderColor: MEMO_CARD_BORDER, boxShadow: '0 12px 32px -8px rgba(28, 25, 23, 0.10), 0 1px 3px rgba(28, 25, 23, 0.04)' }}>
         <Typography sx={{ fontFamily: MEMO_NOTE_SERIF, fontSize: '1.7rem', color: MEMO_NOTE_DATE, mb: 1 }}>PLAN-A Memo</Typography>
         {missing ? (

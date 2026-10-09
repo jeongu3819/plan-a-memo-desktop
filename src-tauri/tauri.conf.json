@@ -17,12 +17,13 @@
         "label": "main",
         "title": "PLAN-A Memo",
         "width": 1100,
-        "height": 780,
+        "height": 812,
         "minWidth": 850,
-        "minHeight": 620,
+        "minHeight": 652,
         "center": true,
         "resizable": true,
-        "decorations": true,
+        "decorations": false,
+        "shadow": true,
         "dragDropEnabled": false,
         "visible": true
       }

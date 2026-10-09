@@ -1,5 +1,6 @@
 /**
- * 설정 — 저장 위치 · Backup · PLAN-A Work 연결 · (개발용) Mock 서버 · 앱 정보(버전 · 업데이트 확인).
+ * 설정 — 저장 위치 · Backup(이미지 정리) · 내보내기 · PLAN-A Work 연결 · (개발용) Mock 서버 · 앱 정보(버전 · 업데이트 확인).
+ * Backup(앱 데이터 보존·복구)과 내보내기(사용자가 읽고 옮길 ZIP·TXT·CSV 파일)는 다른 일이라 카드를 나눈다.
  * 섹션마다 흰 카드 한 장(머리: 아이콘·제목·설명 / 몸: 줄 단위 항목) — 메모 칸과 같은 선·그림자·모서리.
  * 로그는 앱이 계속 남기지만(문제 확인용) 설정 화면에는 보이지 않는다. 실행 환경(staging/production)도 보이지 않는다.
  */
@@ -22,6 +23,7 @@ import {
 } from '@mui/material';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import BackupOutlinedIcon from '@mui/icons-material/BackupOutlined';
+import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { getName, getVersion } from '@tauri-apps/api/app';
@@ -405,6 +407,18 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
           </SettingsRow>
           <SettingsRow actions={<Button size="small" variant="outlined" onClick={cleanupImages}>쓰지 않는 이미지 정리</Button>}>
             <RowLabel title="이미지 정리" detail="메모·History·비교 화면·Backup 어디에서도 쓰지 않고 7일 넘은 이미지만 지웁니다." />
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection icon={<FileDownloadOutlinedIcon />} title="내보내기" description="메모를 파일로 저장할 수 있습니다.">
+          <SettingsRow
+            actions={
+              <Button size="small" variant="outlined" onClick={ui.openExport} data-testid="settings-export">
+                메모 내보내기
+              </Button>
+            }
+          >
+            <RowLabel title="ZIP · TXT · CSV" detail="기간·Next 포함 여부를 고르고 저장할 위치를 정합니다." />
           </SettingsRow>
         </SettingsSection>
 

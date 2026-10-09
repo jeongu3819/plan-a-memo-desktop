@@ -2,20 +2,21 @@
  * PLAN-A Memo 메인 화면 — Web 개인 메모 창(PersonalMemoWorkspaceDialog + Workspace)을 창 전체로.
  *
  *   ┌ October 7, 2026                       [동기화 문제 시만] ⚙
- *   │ 오늘도 좋은 하루예요~!         저장상태 · ‹ 이번 주 › · 오늘 · 🔍 · List · 내보내기
- *   └ 주간(2×4) ↔ 날짜 상세 ↔ List(찾아보기)를 같은 자리에서 전환
+ *   │ 오늘도 좋은 하루예요~!         저장상태 · ‹ 이번 주 › · 오늘 · 🔍
+ *   └ 주간(2×4) ↔ 날짜 상세 ↔ 검색·List(찾아보기)를 같은 자리에서 전환
+ *
+ * 검색 아이콘 하나가 찾아보기 화면(검색 · 즐겨찾기 · Next List · 지난 날짜 · History)의 입구다 — 예전 'List' 버튼과
+ * 같은 화면이라 따로 두지 않는다. 내보내기는 설정 안으로 옮겼다(SettingsDialog '내보내기').
  */
 import { useState } from 'react';
 import { Box, Button, ButtonBase, Chip, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import SearchIcon from '@mui/icons-material/Search';
-import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import CheckIcon from '@mui/icons-material/Check';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
-import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import {
   addDays,
   dayLabelWithYear,
@@ -64,7 +65,7 @@ type View =
     }
   | { kind: 'browse'; monday: string; focusSearch?: boolean };
 
-/** 머리 줄의 보조 버튼(오늘 · List) — 이동 묶음(32px)과 같은 높이·모서리. */
+/** 머리 줄의 보조 버튼(오늘 · 검색) — 이동 묶음(32px)과 같은 높이·모서리. */
 const HEADER_BUTTON_SX = { height: 32, px: 1.5, minWidth: 0, fontSize: '0.78rem', borderRadius: '8px', borderColor: MEMO_CARD_BORDER, boxShadow: MEMO_CARD_SHADOW } as const;
 const HEADER_BUTTON_ACTIVE_SX = {
   bgcolor: 'rgba(37, 99, 235, 0.08)', color: 'primary.main', borderColor: 'rgba(37, 99, 235, 0.35)',
@@ -165,30 +166,28 @@ export default function MemoWorkspace() {
     }
   };
 
+  // 찾아보기 화면에서 다시 누르면 검색창으로 돌아간다(나가기는 왼쪽 '메모장').
   const browseControls = (
-    <>
-      <Tooltip title="메모 전체 검색">
-        <IconButton size="small" aria-label="메모 검색" data-testid="memo-search-open" onClick={() => openBrowse(true)} sx={{ ml: 0.25 }}>
-          <SearchIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<ViewListOutlinedIcon sx={{ fontSize: 16 }} />}
+    <Tooltip title="검색 · List">
+      <IconButton
+        aria-label="메모 검색 · List"
         aria-pressed={isBrowse}
-        data-testid="memo-browse-open"
-        onClick={() => (isBrowse ? leaveBrowse() : openBrowse(false))}
-        sx={{ ...HEADER_BUTTON_SX, ...(isBrowse ? HEADER_BUTTON_ACTIVE_SX : {}) }}
+        data-testid="memo-search-open"
+        onClick={() => openBrowse(true)}
+        sx={{
+          border: '1px solid',
+          ...HEADER_BUTTON_SX,
+          width: 32,
+          px: 0,
+          bgcolor: MEMO_CARD,
+          color: MEMO_SECTION_TITLE,
+          '&:hover': { bgcolor: 'action.hover' },
+          ...(isBrowse ? HEADER_BUTTON_ACTIVE_SX : {}),
+        }}
       >
-        List
-      </Button>
-      <Tooltip title="내보내기">
-        <IconButton size="small" aria-label="내보내기" onClick={ui.openExport}>
-          <FileDownloadOutlinedIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
-    </>
+        <SearchIcon sx={{ fontSize: 18 }} />
+      </IconButton>
+    </Tooltip>
   );
 
   const navControls = isBrowse ? (
@@ -308,7 +307,8 @@ export default function MemoWorkspace() {
           </Typography>
         </Box>
         <Box sx={{ ml: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.5, minWidth: 0 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mr: -1, minHeight: 32 }}>
+          {/* 설정 아이콘 중심을 아래 줄 검색 버튼(32px) 중심과 맞춘다(40px 버튼 → 오른쪽으로 4px). */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mr: -0.5, minHeight: 32 }}>
             <SyncProblems />
             <Tooltip title="설정">
               <IconButton aria-label="설정" data-testid="open-settings" onClick={ui.openSettings}>

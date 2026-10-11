@@ -154,13 +154,31 @@ Reconnection supplies the persisted `device_id` in auth/start. Browser consent
 must authenticate that same owner; exchange rotates the credential in place and
 preserves existing links/cursors **only for a non-revoked device**, including
 one whose credential merely expired. Explicit Web revoke and native logout are
-terminal for that device ID: consent/exchange return 409 `device_revoked`, even
-if consent was issued just before revocation. Old credentials return 401.
+terminal for that device ID. Same-owner browser consent still returns 200 with
+the normal `code` + original `state` loopback callback, including when already
+revoked. The code is not a credential and does not reactivate the device.
+After state verification, Desktop exchanges it with PKCE: exchange returns
+409 `{"detail":{"code":"device_revoked"}}`, even if revocation happened
+after consent. This verified terminal denial consumes the code (replay: 401);
+an invalid verifier/redirect does not consume it. No error query parameter,
+token, device status or user identity is added to the loopback URL. Old
+credentials return 401. Desktop must stop waiting/retrying and display the
+terminal revocation result; v0.2.2 already handles this exchange error.
 After explaining the revocation to the user, a fresh explicit browser login may
 omit device_id to register a NEW device. Do not automatically retry without the
 old ID. Old links/cursors are never inherited; the user must relink chosen units.
 Local data/history/outbox must remain preserved, and old link-generation requests
 must not be blindly replayed with the new credential.
+
+An anonymous browser keeps `/memo-desktop/authorize?request=<authorization_id>`
+through `/login?return_to=<encoded path>`, provider `/start?next=<encoded path>`,
+the server-side OAuth transaction, and `/login/success?next=<encoded path>`.
+Only that exact local path with one 43-character base64url request ID is allowed
+as the additional OAuth destination (no fragment, extra query or redirect URL).
+The public approval page is only a UI shell: request/consent APIs still require
+the ordinary Web session, active owner and CSRF/origin checks. This does not
+enable disabled login providers. Complete enrollment separately before testing
+an existing-account Desktop login; enrollment is not a bypass for consent.
 
 Loopback + PKCE follows [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252.html).
 Custom URI was considered; Tauri's Windows deep-link handling requires process

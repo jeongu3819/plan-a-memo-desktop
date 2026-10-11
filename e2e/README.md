@@ -29,6 +29,7 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 | carryover | 지난주 같은 요일 미완료 안내 → 고른 항목만 복사(원본 그대로·새 id·미완료·같은 구역), 재요청 중복 없음, 재실행 후 다시 안내 없음, 보조 메뉴 재진입, 건너뛰기 유지 |
 | reminder-setup | 알림 설정 화면 → 작업 스케줄러 등록(시각·창 없는 실행 인자), 모두 완료 → 예약 삭제, 미완료 → 다시 예약, 알림 끄기 |
 | reminder-click-opens-day | `plana-memo-dev://open?date=…`(알림을 눌렀을 때와 같은 주소) → 그 날짜 상세 |
+| shared-v2 | (Mock) memo-sync-v2 공통 관리: Web 복사 → Desktop 표시·다시 권하지 않음, 화면에서 남은 항목 복사 → 서버 한 번(중복 없음), Desktop 알림 설정 → 서버, Web 설정 → Desktop·작업 스케줄러, Web 확인 → Desktop 확인·예약 제외, 동시 수정 → 알림 화면에서 선택 |
 
 * **격리**: `PLANA_CONFIG_DIR`(development 빌드에서만 읽음)로 앱 설정을 임시 폴더에 두고, 저장 위치도 임시 폴더다.
   credential 은 Windows 자격 증명 관리자의 `PLAN-A Memo (development-e2e)` 항목만 쓰고 시작·끝에 지운다.

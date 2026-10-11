@@ -39,12 +39,15 @@ pub struct AppState {
     pub reminders: Arc<crate::reminders::runtime::ReminderRuntime>,
     /// 알림·링크로 열어 달라고 온 날짜(화면이 준비되면 가져간다)
     pub pending_open: Mutex<Option<String>>,
+    /// 연결된 날짜 알림을 눌렀다(확인) — 저장소가 열리기 전에 온 token 은 여기 두었다가 처리한다
+    pub pending_acks: Mutex<Vec<String>>,
 }
 
 /// (Sync Transport, Auth API, 개발용 Mock 서버, Credential Manager 서비스 이름)
 type Adapters = (Arc<dyn SyncTransport>, Arc<dyn AuthApi>, Option<Arc<MockSyncTransport>>, String);
 
-fn credential_store(service_suffix: &str) -> Arc<dyn CredentialStore> {
+/// 환경별 Windows Credential Manager 항목(작업 스케줄러가 실행한 알림 프로세스도 같은 항목을 읽는다).
+pub fn credential_store(service_suffix: &str) -> Arc<dyn CredentialStore> {
     #[cfg(windows)]
     {
         Arc::new(crate::auth::WindowsCredentialStore::new(service_suffix))
@@ -87,6 +90,7 @@ impl AppState {
             log_dir,
             reminders: Arc::new(crate::reminders::runtime::ReminderRuntime::new()),
             pending_open: Mutex::new(None),
+            pending_acks: Mutex::new(Vec::new()),
         }
     }
 

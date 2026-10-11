@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use super::contract::*;
 use super::link::{self, insert_version, InflightPush, LinkRow, OutboxPayload};
+use super::management;
 use super::mapper;
 use super::transport::*;
 use crate::attachments;
@@ -40,19 +41,24 @@ pub struct SyncReport {
     pub unavailable: bool,
     pub notices: Vec<String>,
     pub changed_documents: Vec<String>,
+    /// memo-sync-v2 공통 관리 상태(복사·안내·알림 설정·확인)가 바뀌었다 — 알림 예약을 다시 맞춘다
+    pub management_changed: bool,
     pub finished_at: String,
 }
 
 impl SyncReport {
     pub fn changed(&self) -> bool {
-        self.pushed + self.pulled + self.conflicts + self.failed > 0 || !self.changed_documents.is_empty() || !self.notices.is_empty()
+        self.pushed + self.pulled + self.conflicts + self.failed > 0
+            || !self.changed_documents.is_empty()
+            || !self.notices.is_empty()
+            || self.management_changed
     }
-    fn notice(&mut self, text: &str) {
+    pub(crate) fn notice(&mut self, text: &str) {
         if !self.notices.iter().any(|n| n == text) {
             self.notices.push(text.to_string());
         }
     }
-    fn touched(&mut self, doc_id: &str) {
+    pub(crate) fn touched(&mut self, doc_id: &str) {
         if !self.changed_documents.iter().any(|d| d == doc_id) {
             self.changed_documents.push(doc_id.to_string());
         }
@@ -338,6 +344,13 @@ impl SyncEngine {
             Ok(())
         })?;
 
+        // memo-sync-v2 — 지금 계정을 남기고(알림 프로세스·화면이 읽는다), 연결된 날짜가 있을 때만 서버 지원 여부를 확인한다.
+        let management = self.management_ready(storage, &ctx, force).await?;
+        if management {
+            // 복사 명령은 같은 날짜의 본문 Push 보다 먼저(v2 Contract — 오프라인 복사 재전송 순서).
+            self.management_outbox_phase(storage, &ctx, force, &mut report).await?;
+        }
+
         let mut attempted = std::collections::HashSet::new();
         let stop = self.outbox_phase(storage, &ctx, force, &mut attempted, &mut report).await?;
         if !stop {
@@ -349,12 +362,38 @@ impl SyncEngine {
                     let stop = self.outbox_phase(storage, &ctx, force, &mut attempted, &mut report).await?;
                     if !stop {
                         self.ack_phase(storage, &ctx, &mut report).await?;
+                        if management && !report.offline && !report.auth_required {
+                            // 원본 Push 로 서버 id 가 생겨 보낼 수 있게 된 복사 등 + 다른 곳의 관리 변경 받기.
+                            self.management_outbox_phase(storage, &ctx, false, &mut report).await?;
+                            self.management_pull_phase(storage, &ctx, &mut report).await?;
+                        }
                     }
                 }
             }
         }
         report.finished_at = now();
         Ok(report)
+    }
+
+    /// v2 공통 관리를 이번 실행에서 다룰까 — 연결된 DAY 나 보낼 관리 명령이 있고, 서버가 지원할 때만.
+    async fn management_ready(&self, storage: &Storage, ctx: &SyncContext, force: bool) -> AppResult<bool> {
+        let needed = storage.with_conn(|c| {
+            if !management::has_schema(c) {
+                return Ok(false);
+            }
+            management::set_active_account(c, Some(&ctx.account_key))?;
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM documents d JOIN sync_links l ON l.document_id = d.id
+                                WHERE d.kind = 'DAY' AND d.sync_enabled = 1 AND l.account_key = ?1)
+                     OR EXISTS(SELECT 1 FROM management_outbox WHERE account_key = ?1 AND status = 'pending')",
+                [&ctx.account_key],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        if !needed {
+            return Ok(false);
+        }
+        Ok(self.management_capability(storage, ctx, force).await? == management::Capability::Available)
     }
 
     /// 전역으로 멈춰야 하는 오류인가(true = 이번 실행 중단).
@@ -480,8 +519,11 @@ impl SyncEngine {
                 // 서버 문서·List 를 찾을 수 없다(다른 계정 소유이거나 정리됨) — 연결을 끝내고 로컬은 보존.
                 return self.end_link(storage, &entry.document_id, report);
             }
-            TransportError::Conflict { code } if code == "item_moved_or_not_owned" || code == "client_key_in_use" => {
+            TransportError::Conflict { code }
+                if code == "item_moved_or_not_owned" || code == "client_key_in_use" || code == "copy_mapping_required" =>
+            {
                 // 다른 위치로 이미 옮겨진 항목을 오래된 요청이 가져오려 했다 — 최신을 다시 받는다(바로 재전송하지 않는다).
+                // copy_mapping_required(v2): 공통 복사의 임시 key 가 본문에 남아 있다 — 정식 복사본 id 로 맞춘 뒤 다시 보낸다.
                 storage.with_conn(|c| {
                     let tx = c.transaction()?;
                     clear_inflight(&tx, entry.id)?;
@@ -624,6 +666,13 @@ impl SyncEngine {
             tx.commit()?;
             Ok(())
         })?;
+        // 연결이 끝나기 전에 이 날짜로 공통 복사를 했다 — link generation 이 생겼으니 복사 명령을 먼저 보내고, 비교는 다음 실행에서.
+        if storage.with_conn(|c| {
+            let doc = repo::doc_by_id(c, &doc.id)?.ok_or_else(|| AppError::not_found("문서"))?;
+            management::push_blocked(c, &doc)
+        })? {
+            return Ok(());
+        }
         let pulled = self.transport.document(ctx, &linked.document_id).await?;
         self.download_attachments(storage, ctx, &pulled.document.attachments).await?;
         let first = self.first_link_compare(storage, ctx, &doc.id, doc.local_revision, &pulled, report)?;
@@ -745,6 +794,10 @@ impl SyncEngine {
             }
             if doc.has_conflict {
                 return Ok(None); // 사용자가 고를 때까지 보내지 않는다
+            }
+            if management::push_blocked(c, &doc)? {
+                // 이 날짜의 공통 복사 명령을 먼저 보내고 결과를 맞춘 뒤에 본문을 보낸다(복사본이 따로 하나 더 생기지 않게).
+                return Ok(None);
             }
             let link = link_of(c, &doc.id)?;
             let server_digest = link.as_ref().and_then(|l| l.server_digest.clone());
@@ -1119,6 +1172,42 @@ impl SyncEngine {
             return Ok(());
         }
         self.download_attachments(storage, ctx, &server.attachments).await?;
+        // memo-sync-v2 — 이 날짜의 공통 복사 명령과 순서를 맞춘다.
+        let gate = storage.with_conn(|c| {
+            let doc = repo::doc_by_id(c, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
+            match (&doc.memo_date, doc.has_conflict) {
+                (Some(date), false) => management::carry_gate(c, &ctx.account_key, date),
+                _ => Ok(management::CarryGate::Clear),
+            }
+        })?;
+        match gate {
+            management::CarryGate::Wait => return Ok(()), // 복사 명령을 먼저 보낸 뒤 다시 받는다(remote_pending 유지)
+            management::CarryGate::Reconcile(done) => {
+                let outcome = storage.with_conn(|c| {
+                    let tx = c.transaction()?;
+                    let doc = repo::doc_by_id(&tx, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
+                    let outcome = management::reconcile_carries(&tx, &ctx.account_key, &doc, server, &done)?;
+                    tx.execute(
+                        "UPDATE sync_links SET link_id = ?2, remote_pending = 0 WHERE document_id = ?1",
+                        params![doc_id, pulled.link_id],
+                    )?;
+                    settle_status(&tx, doc_id)?;
+                    tx.commit()?;
+                    Ok(outcome)
+                })?;
+                report.touched(doc_id);
+                report.management_changed = true;
+                if outcome.changed {
+                    report.pulled += 1;
+                }
+                if outcome.reviews > 0 {
+                    report.notice(management::NOTICE_CARRY_REVIEW);
+                }
+                self.ack_document(storage, ctx, doc_id, report).await;
+                return Ok(());
+            }
+            management::CarryGate::Clear => {}
+        }
         let applied = storage.with_conn(|c| {
             let tx = c.transaction()?;
             let doc = repo::doc_by_id(&tx, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
@@ -1625,6 +1714,11 @@ pub fn end_account_links(conn: &mut Connection, account_key: &str) -> AppResult<
     }
     tx.execute("DELETE FROM sync_outbox WHERE op = 'UNLINK' AND (account_key = ?1 OR account_key LIKE ?1 || '#device:%')", [account_key])?;
     tx.execute("DELETE FROM sync_state WHERE key LIKE ?1", [format!("weblink|{account_key}|%")])?;
+    // memo-sync-v2 — 폐기된 기기로는 공통 관리 명령을 보낼 수 없다(복사본·알림 예약은 이 PC 에 그대로).
+    management::drop_account_ops(&tx, account_key, "logout")?;
+    if management::has_schema(&tx) && management::active_account(&tx)?.as_deref() == Some(account_key) {
+        management::set_active_account(&tx, None)?;
+    }
     tx.commit()?;
     Ok(ids.len())
 }

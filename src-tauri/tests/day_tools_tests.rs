@@ -68,7 +68,8 @@ fn v2_database_upgrades_to_v3_with_backup_and_keeps_memos() {
         .unwrap();
     }
     let (storage, report) = Storage::open(&paths.root, false).unwrap();
-    assert_eq!(report.applied_migrations, vec![3]);
+    // v3(day_tools) 다음 v4(memo_sync_v2 — 새 테이블만)까지 한 번에 적용된다.
+    assert_eq!(report.applied_migrations, vec![3, 4]);
     let backup = report.backup_before_migration.expect("migration 전 자동 Backup");
     assert!(backup.contains("pre-migration-v3"));
     assert!(backup::list(&storage.paths).iter().any(|b| b.file_name.contains("pre-migration-v3")));
@@ -269,10 +270,19 @@ fn carryover_into_linked_day_queues_only_that_day() {
     })
     .unwrap();
     s.with_conn(|c| Ok(c.execute("DELETE FROM sync_outbox", [])?)).unwrap();
+    // memo-sync-v2: 연결된 날짜는 서버가 공통 관리를 지원하는지 확인하기 전에는 복사하지 않는다(인계서 §6).
+    let blocked = s.with_conn(|c| carryover::import(c, &s.paths, "2026-10-10", std::slice::from_ref(&a.id), "2026-10-10"));
+    assert_eq!(blocked.unwrap_err().code(), "carry_unavailable");
+    s.with_conn(|c| {
+        plan_a_memo_lib::sync::management::set_active_account(c, Some("local:test|1"))?;
+        plan_a_memo_lib::sync::management::set_capability(c, "local:test|1", true)
+    })
+    .unwrap();
     s.with_conn(|c| carryover::import(c, &s.paths, "2026-10-10", std::slice::from_ref(&a.id), "2026-10-10")).unwrap();
     let target = s.with_conn(|c| repo::doc_for_location(c, &day("2026-10-10"))).unwrap().unwrap();
     let source = s.with_conn(|c| repo::doc_for_location(c, &day("2026-10-03"))).unwrap().unwrap();
     assert_eq!(count(&s, &format!("SELECT COUNT(*) FROM sync_outbox WHERE document_id = '{}'", target.id)), 1);
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM management_outbox WHERE kind = 'carry' AND memo_date = '2026-10-10'"), 1, "공통 복사 명령");
     assert_eq!(count(&s, &format!("SELECT COUNT(*) FROM sync_outbox WHERE document_id = '{}'", source.id)), 0);
     assert!(!source.sync_enabled, "복사 때문에 지난주를 연결하지 않는다");
     assert_eq!(source.sync_status, "local_only");

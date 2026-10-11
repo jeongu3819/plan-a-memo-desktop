@@ -126,7 +126,7 @@ pub fn manifest_from_items(items: &[WireItem]) -> Vec<WireAttachment> {
     names.into_iter().map(|name| WireAttachment { name, size: None, url: None, sha256: None }).collect()
 }
 
-fn to_server_html(conn: &Connection, account_key: &str, html: &str) -> AppResult<String> {
+pub(crate) fn to_server_html(conn: &Connection, account_key: &str, html: &str) -> AppResult<String> {
     let mut out = html.to_string();
     for id in crate::memo::text::attachment_ids(html) {
         let name = server_name_for(conn, account_key, &id)?
@@ -137,7 +137,7 @@ fn to_server_html(conn: &Connection, account_key: &str, html: &str) -> AppResult
     Ok(out)
 }
 
-fn to_local_html(conn: &Connection, account_key: &str, html: &str) -> AppResult<String> {
+pub(crate) fn to_local_html(conn: &Connection, account_key: &str, html: &str) -> AppResult<String> {
     let mut out = html.to_string();
     for name in image_names(html) {
         let local = local_attachment_for(conn, account_key, &name)?
@@ -183,9 +183,20 @@ pub struct PushPlan {
 /// 로컬 문서 → Push 항목(문서 전체). 새 항목의 client_key 는 같은 transaction 에서 sync_item_map 에 남긴다
 /// — 응답을 잃어도 같은 key 로 다시 보낸다.
 pub fn build_push(conn: &Connection, doc: &DocumentInfo, account_key: &str) -> AppResult<PushPlan> {
+    let plan = build_push_keyed(conn, doc, account_key)?;
+    Ok(PushPlan { deleted: plan.deleted, items: plan.items.into_iter().map(|(_, item)| item).collect() })
+}
+
+/// `build_push` 와 같되 항목마다 로컬 item id 를 함께 돌려준다(공통 복사 결과 비교용).
+pub struct KeyedPushPlan {
+    pub deleted: bool,
+    pub items: Vec<(String, PushItem)>,
+}
+
+pub fn build_push_keyed(conn: &Connection, doc: &DocumentInfo, account_key: &str) -> AppResult<KeyedPushPlan> {
     let snapshot = repo::build_snapshot(conn, doc, false)?;
     if snapshot.deleted {
-        return Ok(PushPlan { deleted: true, items: Vec::new() });
+        return Ok(KeyedPushPlan { deleted: true, items: Vec::new() });
     }
     let rows: HashMap<String, MapRow> = map_rows(conn, &doc.id, account_key)?.into_iter().map(|r| (r.item_id.clone(), r)).collect();
     let mut per_section: HashMap<String, i64> = HashMap::new();
@@ -213,16 +224,19 @@ pub fn build_push(conn: &Connection, doc: &DocumentInfo, account_key: &str) -> A
                 (None, None, Some(key))
             }
         };
-        items.push(PushItem {
-            id,
-            item_version,
-            client_key,
-            section,
-            kind: item.kind.clone(),
-            content,
-            completed: item.kind == "checklist" && item.completed,
-            sort_order: *order,
-        });
+        items.push((
+            item.item_key.clone(),
+            PushItem {
+                id,
+                item_version,
+                client_key,
+                section,
+                kind: item.kind.clone(),
+                content,
+                completed: item.kind == "checklist" && item.completed,
+                sort_order: *order,
+            },
+        ));
         *order += 1;
     }
     if items.len() > MAX_ITEMS {
@@ -231,7 +245,7 @@ pub fn build_push(conn: &Connection, doc: &DocumentInfo, account_key: &str) -> A
     if total > MAX_DOCUMENT_BYTES {
         return Err(AppError::new("sync_too_large", "한 날짜/List 의 내용이 PLAN-A Work 최대 크기(2MB)를 넘습니다."));
     }
-    Ok(PushPlan { deleted: false, items })
+    Ok(KeyedPushPlan { deleted: false, items })
 }
 
 /// 서버가 받아 준(또는 내려준) 문서로 이 문서의 매핑을 다시 쓴다.
@@ -263,7 +277,7 @@ pub fn adopt_server_ids(conn: &Connection, doc_id: &str, account_key: &str, serv
     Ok(())
 }
 
-fn write_map(
+pub(crate) fn write_map(
     conn: &Connection,
     doc_id: &str,
     item_id: &str,

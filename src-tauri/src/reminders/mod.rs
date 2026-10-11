@@ -10,6 +10,10 @@
 //! 한 번 실행한다(StartWhenAvailable). 같은 알림을 두 곳(작업 · 실행 중인 앱)이 두 번 띄우지 않게 처리 전에 DB 에서 '선점' 한다.
 //!
 //! 시각은 모두 사용자 PC 의 로컬 시각('YYYY-MM-DDTHH:MM')이다. 저장할 때 이미 지난 시각은 소급해서 알리지 않는다(expired).
+//!
+//! PLAN-A Work 와 연결된 DAY(memo-sync-v2 를 지원하는 서버)는 알림 설정·발생(occurrence)·확인이 서버 공통 상태다
+//! (`sync::management`). 그 날짜의 `day_reminders` 행은 서버 설정으로 다시 쓰고, 다른 곳에서 확인·취소된 발생은 띄우지 않는다.
+//! 다른 계정으로 연결된 날짜의 공통 알림은 지금 계정으로 띄우지 않는다. Local-only 날짜는 지금처럼 이 PC 의 설정만 쓴다.
 
 pub mod os;
 pub mod runtime;
@@ -40,6 +44,10 @@ pub struct ReminderFire {
     /// pending | delivered | skipped | expired | missed
     pub status: String,
     pub handled_at: Option<String>,
+    /// 연결된 날짜 — 이 발생을 (어느 기기에서든) 확인했다(서버 공통 상태 또는 이 PC 에서 확인해 보내는 중)
+    pub acknowledged: bool,
+    /// 연결된 날짜 — 서버 발생 상태(scheduled · published · acknowledged · cancelled · missed)
+    pub shared_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -101,47 +109,80 @@ pub fn get(conn: &Connection, date: &str) -> AppResult<Option<DayReminder>> {
         .query_map([date], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
         .collect::<Result<_, _>>()?;
     let Some(first) = rows.first() else { return Ok(None) };
+    let shared = crate::sync::management::fire_states(conn, date)?;
     Ok(Some(DayReminder {
         date: date.to_string(),
         time: first.1.clone(),
         offsets: rows.iter().map(|r| r.0).collect(),
         fires: rows
             .into_iter()
-            .map(|(offset_days, _, fire_at, status, handled_at)| ReminderFire { offset_days, fire_at, status, handled_at })
+            .map(|(offset_days, _, fire_at, status, handled_at)| {
+                let state = shared.get(&offset_days);
+                ReminderFire {
+                    offset_days,
+                    fire_at,
+                    status,
+                    handled_at,
+                    acknowledged: state.map(|s| s.1).unwrap_or(false),
+                    shared_state: state.map(|s| s.0.clone()),
+                }
+            })
             .collect(),
     }))
 }
 
-/// 알림 설정을 저장한다(빈 `offsets` = 알림 끄기). 이미 지난 시각은 'expired' 로 저장해 소급해서 알리지 않는다.
-/// 같은 시각이 그대로면 이미 띄운·처리한 상태를 유지한다(다시 저장해도 두 번 알리지 않게).
-pub fn set(conn: &mut Connection, date: &str, offsets: &[i64], time: &str, now_local: NaiveDateTime) -> AppResult<Option<DayReminder>> {
+pub fn validate_rule(date: &str, offsets: &[i64], time: &str) -> AppResult<(NaiveDate, NaiveTime)> {
     let day = parse_date(date)?;
     let at = parse_time(time)?;
     if offsets.iter().any(|o| !OFFSETS.contains(o)) {
         return Err(AppError::validation("알 수 없는 미리 알림입니다(1주 전 · 2일 전)."));
     }
-    let tx = conn.transaction()?;
-    let previous: Vec<(i64, String, String, Option<String>)> = tx
+    Ok((day, at))
+}
+
+/// 예약할 알림 하나 — (미리 알림 일, 알릴 로컬 시각, 이미 닫힌 발생인가(다른 곳에서 확인·취소 — 띄우지 않음)).
+pub type ScheduleEntry = (i64, NaiveDateTime, bool);
+
+/// 그 날짜의 예약 행을 `entries` 로 바꾼다(호출자의 transaction 안에서). 이미 지난 시각은 'expired'.
+/// 같은 시각이 그대로면 이미 띄운·처리한 상태를 유지한다(다시 저장해도 두 번 알리지 않게).
+pub fn write_schedule(conn: &Connection, date: &str, time: &str, entries: &[ScheduleEntry], now_local: NaiveDateTime) -> AppResult<()> {
+    let previous: Vec<(i64, String, String, Option<String>)> = conn
         .prepare("SELECT offset_days, fire_at, status, handled_at FROM day_reminders WHERE memo_date = ?1")?
         .query_map([date], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<Result<_, _>>()?;
-    tx.execute("DELETE FROM day_reminders WHERE memo_date = ?1", [date])?;
+    conn.execute("DELETE FROM day_reminders WHERE memo_date = ?1", [date])?;
     let ts = now();
-    for offset in OFFSETS.iter().filter(|o| offsets.contains(o)) {
-        let when = fire_at(day, *offset, at);
-        let fire = format_fire(when);
-        let kept = previous.iter().find(|p| p.0 == *offset && p.1 == fire && p.2 != "pending");
+    for offset in OFFSETS {
+        let Some((_, when, closed)) = entries.iter().find(|e| e.0 == offset) else { continue };
+        let fire = format_fire(*when);
+        let kept = previous.iter().find(|p| p.0 == offset && p.1 == fire && p.2 != "pending");
         let (status, handled) = match kept {
             Some((_, _, status, handled)) => (status.clone(), handled.clone()),
-            None if when <= now_local => ("expired".to_string(), Some(ts.clone())),
+            None if *closed => ("skipped".to_string(), Some(ts.clone())),
+            None if *when <= now_local => ("expired".to_string(), Some(ts.clone())),
             None => ("pending".to_string(), None),
         };
-        tx.execute(
+        conn.execute(
             "INSERT INTO day_reminders (memo_date, offset_days, remind_time, fire_at, status, handled_at, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
             params![date, offset, time, fire, status, handled, ts],
         )?;
     }
+    Ok(())
+}
+
+/// 이 PC 의 시각 규칙으로 만든 예약(1주 전·2일 전 · 그 날짜의 `time`).
+pub fn local_entries(day: NaiveDate, offsets: &[i64], at: NaiveTime) -> Vec<ScheduleEntry> {
+    OFFSETS.iter().filter(|o| offsets.contains(o)).map(|o| (*o, fire_at(day, *o, at), false)).collect()
+}
+
+/// 알림 설정을 저장한다(빈 `offsets` = 알림 끄기). 이미 지난 시각은 'expired' 로 저장해 소급해서 알리지 않는다.
+/// 같은 시각이 그대로면 이미 띄운·처리한 상태를 유지한다(다시 저장해도 두 번 알리지 않게).
+/// (이 PC 에만 있는 날짜용 — 연결된 날짜는 `sync::management::propose_rule`)
+pub fn set(conn: &mut Connection, date: &str, offsets: &[i64], time: &str, now_local: NaiveDateTime) -> AppResult<Option<DayReminder>> {
+    let (day, at) = validate_rule(date, offsets, time)?;
+    let tx = conn.transaction()?;
+    write_schedule(&tx, date, time, &local_entries(day, offsets, at), now_local)?;
     tx.commit()?;
     get(conn, date)
 }
@@ -159,14 +200,18 @@ pub fn open_count(conn: &Connection, date: &str) -> AppResult<i64> {
 /// OS 에 예약할 시각 — 앞으로 올 'pending' 알림 중 그 날짜에 아직 할 일이 남은 것(가까운 순, 중복 없이).
 /// 모두 완료한 날짜의 알림은 예약에서 빠진다(다시 미완료가 생기면 다시 들어간다).
 pub fn upcoming_triggers(conn: &Connection, now_local: NaiveDateTime) -> AppResult<Vec<NaiveDateTime>> {
-    let rows: Vec<(String, String)> = conn
-        .prepare("SELECT memo_date, fire_at FROM day_reminders WHERE status = 'pending' AND fire_at > ?1 ORDER BY fire_at")?
-        .query_map([format_fire(now_local)], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let rows: Vec<(String, i64, String)> = conn
+        .prepare("SELECT memo_date, offset_days, fire_at FROM day_reminders WHERE status = 'pending' AND fire_at > ?1 ORDER BY fire_at")?
+        .query_map([format_fire(now_local)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;
     let mut triggers: Vec<NaiveDateTime> = Vec::new();
-    for (date, fire) in rows {
+    for (date, offset, fire) in rows {
         let Some(at) = parse_fire(&fire) else { continue };
         if triggers.contains(&at) || open_count(conn, &date)? == 0 {
+            continue;
+        }
+        // 다른 계정의 공통 알림 · 다른 곳에서 이미 확인·취소된 발생은 예약하지 않는다.
+        if crate::sync::management::reminder_suppressed(conn, &date, offset)? {
             continue;
         }
         triggers.push(at);
@@ -183,6 +228,17 @@ pub fn upcoming_triggers(conn: &Connection, now_local: NaiveDateTime) -> AppResu
 ///  * 완료하지 않은 체크리스트가 없으면 → skipped(띄우지 않음)
 ///  * 그 밖에는 날짜당 하나로 묶어 → delivered(제때) 또는 missed(놓친 알림 — 한 번만)
 pub fn claim_due(conn: &mut Connection, now_local: NaiveDateTime, grace_minutes: i64) -> AppResult<Vec<DueReminder>> {
+    Ok(claim_due_with_tokens(conn, now_local, grace_minutes)?.into_iter().map(|(due, _)| due).collect())
+}
+
+/// `claim_due` + 연결된 날짜의 알림이면 누를 때 쓸 일회용 token(그 알림이 알린 서버 발생 id 와 묶어 DB 에 남긴다).
+///  * 다른 계정으로 연결된 날짜의 공통 알림 → 띄우지 않는다(skipped)
+///  * 다른 곳(Web·다른 기기)에서 이미 확인·취소·놓침 처리된 발생 → 띄우지 않는다(skipped)
+pub fn claim_due_with_tokens(
+    conn: &mut Connection,
+    now_local: NaiveDateTime,
+    grace_minutes: i64,
+) -> AppResult<Vec<(DueReminder, Option<String>)>> {
     let cutoff = format_fire(now_local - chrono::Duration::minutes(grace_minutes));
     let today = now_local.date();
     let tx = conn.transaction()?;
@@ -191,11 +247,24 @@ pub fn claim_due(conn: &mut Connection, now_local: NaiveDateTime, grace_minutes:
         .query_map([cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;
     let ts = now();
-    let mut due: Vec<DueReminder> = Vec::new();
+    let mut due: Vec<(DueReminder, Option<String>)> = Vec::new();
     let mut dates: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
     dates.dedup();
     for date in dates {
-        let fires: Vec<&(String, i64, String)> = rows.iter().filter(|r| r.0 == date).collect();
+        let mut fires: Vec<&(String, i64, String)> = Vec::new();
+        for row in rows.iter().filter(|r| r.0 == date) {
+            if crate::sync::management::reminder_suppressed(&tx, &date, row.1)? {
+                tx.execute(
+                    "UPDATE day_reminders SET status = 'skipped', handled_at = ?3, updated_at = ?3 WHERE memo_date = ?1 AND offset_days = ?2 AND status = 'pending'",
+                    params![date, row.1, ts],
+                )?;
+            } else {
+                fires.push(row);
+            }
+        }
+        if fires.is_empty() {
+            continue;
+        }
         let latest = fires.iter().filter_map(|r| parse_fire(&r.2)).max().unwrap_or(now_local);
         let late = (now_local - latest).num_minutes() > LATE_MINUTES;
         let passed = parse_date(&date).map(|d| d < today).unwrap_or(true);
@@ -216,7 +285,9 @@ pub fn claim_due(conn: &mut Connection, now_local: NaiveDateTime, grace_minutes:
             )?;
         }
         if matches!(status, "delivered" | "missed") {
-            due.push(DueReminder { date, open_count: count, late });
+            let offsets: Vec<i64> = fires.iter().map(|f| f.1).collect();
+            let token = crate::sync::management::issue_toast_token(&tx, &date, &offsets)?;
+            due.push((DueReminder { date, open_count: count, late }, token));
         }
     }
     tx.commit()?;

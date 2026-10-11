@@ -550,6 +550,106 @@ step('reminder-click-opens-day', async () => {
   assert.equal(await app.invoke('app_take_pending_open'), null, '한 번 연 날짜는 비워진다');
 });
 
+// ── memo-sync-v2 공통 관리(Mock 서버 — 실제 PLAN-A Work 아님) ───────────────────────────────
+
+const v2 = input => app.invoke('mock_v2_web', { input });
+async function syncTimes(n = 3) {
+  for (let i = 0; i < n; i++) await app.invoke('sync_now');
+}
+
+step(
+  'shared-v2',
+  async () => {
+    // 로그인(새 기기) + 서버 v2 켜기
+    if (!(await app.invoke('auth_status')).loggedIn) {
+      await app.invoke('auth_login_begin', { reconnect: false });
+      await waitFor(async () => (await app.invoke('auth_status')).loggedIn, '로그인');
+    }
+    await app.invoke('sync_now'); // 새 기기 등록 정리(이전 기기 연결 보존)를 먼저 — 앱도 로그인 직후 자동으로 한다
+    await v2({ action: 'enable' });
+    const target = plusDays(today, 3);
+    const source = plusDays(target, -7);
+    await addItem(source, 'main', '공통 복사 A');
+    await addItem(source, 'main', '공통 복사 B');
+    await addItem(target, 'am', '대상 날짜');
+    await app.invoke('sync_link', { location: { kind: 'day', date: source } });
+    await app.invoke('sync_link', { location: { kind: 'day', date: target } });
+    await syncTimes();
+    assert.equal((await app.invoke('management_day', { date: target })).mode, 'shared');
+
+    // ① Web 에서 A 를 복사 → Desktop 에 보이고, 다시 권하지 않는다
+    const serverSource = await v2({ action: 'items', date: source });
+    const a = serverSource.find(i => i.content === '공통 복사 A');
+    await v2({ action: 'carry', date: target, sourceIds: [a.id] });
+    await syncTimes();
+    assert.equal((await dayOf(target)).items.filter(i => i.contentHtml === '공통 복사 A').length, 1, 'Web 복사본이 Desktop 에');
+    const fresh = await app.invoke('carryover_refresh', { date: target });
+    assert.deepEqual(fresh.items.map(i => i.contentHtml), ['공통 복사 B'], '이미 복사한 A 는 다시 권하지 않는다');
+
+    // ② Desktop(화면)에서 남은 B 가져오기 → 서버 공통 복사 1건, 중복 없음
+    await openDate(target);
+    await app.page.click('[data-testid="day-tools-menu"]');
+    await app.page.click('[data-testid="day-tools-carryover"]');
+    await app.page.locator('[data-testid="carryover-picker"]').waitFor();
+    assert.equal(await app.page.locator('[data-testid="carryover-option"]').count(), 1);
+    await app.shot('30-shared-carryover-picker');
+    await app.page.click('[data-testid="carryover-import"]');
+    await waitFor(async () => (await dayOf(target)).items.some(i => i.contentHtml === '공통 복사 B'), 'B 복사');
+    await syncTimes();
+    const serverTarget = (await v2({ action: 'items', date: target })).map(i => i.content);
+    assert.equal(serverTarget.filter(c => c === '공통 복사 A').length, 1);
+    assert.equal(serverTarget.filter(c => c === '공통 복사 B').length, 1, 'Desktop 복사도 서버에 한 번');
+    assert.equal((await dayOf(target)).items.length, 3, '대상 1 + 복사 2 — 중복 없음');
+    assert.equal((await dayOf(target)).document.syncStatus, 'synced');
+
+    // ③ 알림: Desktop 설정 → 서버, Web 변경 → Desktop(Windows 예약 갱신)
+    const r = plusDays(today, 20);
+    await addItem(r, 'main', '알림 날짜 할 일');
+    await app.invoke('sync_link', { location: { kind: 'day', date: r } });
+    await syncTimes();
+    await app.invoke('reminder_set', { date: r, offsets: [7, 2], time: '09:00' });
+    await syncTimes();
+    let state = await v2({ action: 'state', date: r });
+    assert.deepEqual(state.rule.days_before, [7, 2], 'Desktop 설정이 공통 설정으로');
+    await v2({ action: 'rule', date: r, offsets: [2], time: '18:30' });
+    await syncTimes();
+    const local = await app.invoke('reminder_get', { date: r });
+    assert.deepEqual([local.offsets, local.time], [[2], '18:30'], 'Web 설정이 Desktop 에');
+    const fire = local.fires[0].fireAt;
+    await waitFor(async () => (await app.invoke('reminder_status')).task?.triggers.includes(fire), 'Windows 예약도 새 시각으로');
+
+    // ④ Web 에서 확인 → Desktop 도 확인됨, 예약에서 빠진다
+    await v2({ action: 'clock', at: new Date(new Date(`${fire}:00`).getTime() + 60_000).toISOString() });
+    await v2({ action: 'ack', date: r, offset: 2 });
+    await syncTimes();
+    assert.equal((await app.invoke('reminder_get', { date: r })).fires[0].acknowledged, true);
+    await waitFor(async () => !(await app.invoke('reminder_status')).task?.triggers.includes(fire), '확인된 알림은 예약하지 않는다');
+    await v2({ action: 'clock', at: null });
+
+    // ⑤ 동시 수정 → 두 설정 보관 + 화면에서 선택
+    const c = plusDays(today, 22);
+    await addItem(c, 'main', '충돌 날짜');
+    await app.invoke('sync_link', { location: { kind: 'day', date: c } });
+    await syncTimes();
+    await app.invoke('mock_set_online', { online: false });
+    await app.invoke('reminder_set', { date: c, offsets: [7], time: '08:00' });
+    await v2({ action: 'rule', date: c, offsets: [2], time: '10:00' });
+    await app.invoke('mock_set_online', { online: true });
+    await syncTimes(2);
+    assert.ok((await app.invoke('management_day', { date: c })).reminderConflict, '충돌 보관');
+    await openDate(plusDays(c, -7));
+    await app.page.locator(`[data-testid="upcoming-card-${c}"] [data-testid="upcoming-reminder-button"]`).click();
+    await app.page.locator('[data-testid="reminder-conflict"]').waitFor();
+    await app.shot('31-shared-reminder-conflict');
+    await app.page.click('[data-testid="reminder-conflict-mine"]');
+    await syncTimes();
+    state = await v2({ action: 'state', date: c });
+    assert.deepEqual([state.rule.days_before, state.rule.local_time], [[7], '08:00'], '고른 설정(이 PC)이 공통 설정으로');
+    assert.equal((await app.invoke('management_day', { date: c })).reminderConflict, null);
+  },
+  { mockOnly: true },
+);
+
 const only = process.argv.slice(2);
 let failed = 0;
 clearE2eCredential();

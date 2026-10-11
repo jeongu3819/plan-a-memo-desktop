@@ -9,6 +9,7 @@ import type {
   CarryoverResult,
   DayReminder,
   DueReminder,
+  ManagementDay,
   ReminderOffset,
   ReminderSaved,
   ReminderStatus,
@@ -205,6 +206,14 @@ export const dayToolsService = {
   carryoverShown: (date: string) => call<void>('carryover_mark_shown', { date }),
   carryoverSkip: (date: string) => call<void>('carryover_skip', { date }),
   carryoverImport: (date: string, itemIds: string[]) => call<CarryoverResult>('carryover_import', { date, itemIds }),
+  /** 연결된 날짜 — PLAN-A Work 에 복사 후보(이미 복사한 원본 제외)를 다시 묻는다(오프라인이면 마지막 상태) */
+  carryoverRefresh: (date: string) => call<CarryoverInfo>('carryover_refresh', { date }),
+  /** 날짜의 공통 관리 요약(연결·서버 지원·알림 설정 충돌·복사본 선택 대기) */
+  management: (date: string) => call<ManagementDay>('management_day', { date }),
+  resolveCarryReview: (id: string, choice: 'local' | 'server') => call<string>('carry_review_resolve', { id, choice }),
+  resolveReminderConflict: (date: string, choice: 'server' | 'mine') => call<ReminderSaved>('reminder_conflict_resolve', { date, choice }),
+  /** 그 날짜의 알림을 사용자가 명시적으로 확인했다(놓친 알림 안내에서 열기 등) — 날짜를 열기만 한 것은 확인이 아니다 */
+  confirmReminder: (date: string) => call<number>('reminder_confirm', { date }),
   reminder: (date: string) => call<DayReminder | null>('reminder_get', { date }),
   setReminder: (date: string, offsets: ReminderOffset[], time: string) => call<ReminderSaved>('reminder_set', { date, offsets, time }),
   reminderStatus: () => call<ReminderStatus>('reminder_status'),

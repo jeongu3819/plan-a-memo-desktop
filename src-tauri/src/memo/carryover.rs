@@ -5,7 +5,10 @@
 //! * 이미지는 새 첨부로 복제한다 — 원본을 지우거나 정리해도 복사본의 이미지가 남는다.
 //! * (원본 id, 대상 날짜) 복사 관계를 남겨 같은 원본을 같은 날짜로 두 번 만들지 않는다(재클릭·재실행·재시도).
 //! * D 문서가 PLAN-A Work 와 연결돼 있으면 D 의 변경으로 Outbox 에 남는다(touch). D-7 은 연결하지 않는다.
-//! * 안내 상태(보였다·건너뛰었다·가져왔다)는 이 PC 의 메타데이터다 — 서버로 보내지 않는다.
+//! * D 가 Local-only 면 안내 상태(보였다·건너뛰었다·가져왔다)·복사 관계는 이 PC 의 메타데이터다 — 서버로 보내지 않는다.
+//! * D 가 연결돼 있고 서버가 memo-sync-v2 를 지원하면(`sync::management`) 복사·건너뛰기는 **서버 공통 복사 이력·안내 상태**로도
+//!   남는다 — Web 에서 이미 복사·건너뛴 항목은 다시 권하지 않고, 이 PC 의 복사는 Web 에서도 같은 복사로 보인다.
+//!   원본 D-7 이 Local-only 면 고른 항목의 내용만 보낸다(원본 날짜를 연결하거나 올리지 않는다).
 
 use chrono::{Datelike, NaiveDate};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -15,6 +18,7 @@ use super::repo::{self, touch};
 use super::{text, Location, MemoItem};
 use crate::error::{AppError, AppResult};
 use crate::storage::StoragePaths;
+use crate::sync::management::{self, DayScope};
 use crate::util::{new_id, now};
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +34,10 @@ pub struct CarryoverInfo {
     pub status: Option<String>,
     /// 가져올 수 있는 항목(이미 이 날짜로 복사한 원본은 빠진다)
     pub items: Vec<MemoItem>,
+    /// 연결된 날짜 — PLAN-A Work 와 복사 이력·안내를 함께 쓴다
+    pub shared: bool,
+    /// 연결된 날짜인데 지금은 가져올 수 없는 이유(서버 미지원·다른 계정 등) — 화면은 안내만 보인다
+    pub blocked: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,10 +74,25 @@ fn candidates(conn: &Connection, source: &str, target: &str) -> AppResult<Vec<Me
         .prepare("SELECT source_item_id FROM item_copies WHERE target_date = ?1")?
         .query_map([target], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
-    Ok(repo::items_of(conn, &doc.id)?
+    let mut items: Vec<MemoItem> = repo::items_of(conn, &doc.id)?
         .into_iter()
         .filter(|item| item.kind == "checklist" && !item.completed && !copied.contains(&item.id))
-        .collect())
+        .collect();
+    // 연결된 날짜 — 서버가 '이미 복사했다' 고 한 원본(Web·다른 기기에서 복사)은 다시 권하지 않는다.
+    // 서버 id 가 아직 없는 원본(이 PC 에서 새로 쓴 것)은 서버에서 복사될 수 없으므로 그대로 둔다. 제목·본문으로 비교하지 않는다.
+    if let Some(filter) = management::carry_filter(conn, target)? {
+        if let Some(allowed) = &filter.candidates {
+            let mut kept = Vec::new();
+            for item in items {
+                match management::source_server_id(conn, &filter.account_key, source, &item.id)? {
+                    Some(id) if !allowed.contains(&id) => {}
+                    _ => kept.push(item),
+                }
+            }
+            items = kept;
+        }
+    }
+    Ok(items)
 }
 
 fn status_of(conn: &Connection, target: &str) -> AppResult<Option<String>> {
@@ -93,17 +116,24 @@ pub fn get(conn: &Connection, target: &str, today: &str) -> AppResult<CarryoverI
     let source_day = target_day - chrono::Duration::days(7);
     let source = fmt(source_day);
     let available = source_day < today_day;
+    let scope = management::day_scope(conn, target)?;
+    let blocked = scope.blocked_reason().map(str::to_string);
     let items = if available { candidates(conn, &source, target)? } else { Vec::new() };
     let status = status_of(conn, target)?;
-    let decided = matches!(status.as_deref(), Some("skipped" | "imported"));
+    let filter = management::carry_filter(conn, target)?;
+    // 다른 곳(Web·다른 기기)에서 건너뛴 안내는 이 PC 에서도 다시 저절로 보이지 않는다.
+    let decided = matches!(status.as_deref(), Some("skipped" | "imported")) || filter.as_ref().is_some_and(|f| f.dismissed);
+    let server_auto = filter.as_ref().and_then(|f| f.server_auto_prompt).unwrap_or(true);
     let this_week = week_start(target_day) == week_start(today_day);
     Ok(CarryoverInfo {
         target_date: target.to_string(),
         source_date: source,
         available,
-        auto_prompt: available && this_week && !decided && !items.is_empty(),
+        auto_prompt: available && this_week && !decided && !items.is_empty() && server_auto && blocked.is_none(),
         status,
         items,
+        shared: scope.is_shared(),
+        blocked,
     })
 }
 
@@ -117,19 +147,28 @@ pub fn mark_shown(conn: &Connection, target: &str) -> AppResult<()> {
 }
 
 /// [이번에는 건너뛰기] — 이 날짜에는 다시 저절로 안내하지 않는다.
+/// 연결된 날짜면 PLAN-A Work 공통 안내 상태로도 보낸다(Web 에서도 다시 안내하지 않게).
 pub fn skip(conn: &Connection, target: &str) -> AppResult<()> {
     let source = source_date_of(target)?;
     if status_of(conn, target)?.as_deref() != Some("imported") {
         set_status(conn, target, &source, "skipped")?;
     }
+    if let DayScope::Shared { account_key, .. } = management::day_scope(conn, target)? {
+        management::enqueue_dismiss(conn, &account_key, target)?;
+    }
     Ok(())
 }
 
 /// 고른 항목만 복사한다. 같은 요청이 두 번 와도(재클릭·재시도) 한 번만 만든다.
+/// 연결된 날짜면 복사본마다 서버 공통 복사 명령을 같은 transaction 에 남긴다(오프라인이어도 복사본은 바로 보인다).
 pub fn import(conn: &mut Connection, paths: &StoragePaths, target: &str, item_ids: &[String], today: &str) -> AppResult<CarryoverResult> {
     let source = source_date_of(target)?;
     if parse(&source)? >= parse(today)? {
         return Err(AppError::validation("아직 지나지 않은 날짜의 할 일은 가져올 수 없습니다."));
+    }
+    let scope = management::day_scope(conn, target)?;
+    if let Some(reason) = scope.blocked_reason() {
+        return Err(AppError::new("carry_unavailable", reason));
     }
     let tx = conn.transaction()?;
     let eligible = candidates(&tx, &source, target)?;
@@ -168,6 +207,9 @@ pub fn import(conn: &mut Connection, paths: &StoragePaths, target: &str, item_id
             )?;
             let saved = repo::require_item(&tx, &new_item_id)?;
             repo::link_attachments(&tx, &saved)?;
+            if let DayScope::Shared { account_key, .. } = &scope {
+                management::enqueue_carry(&tx, account_key, &target_doc.id, target, &source, &item.id, &saved)?;
+            }
             created.push(saved);
         }
         touch(&tx, &target_doc.id)?;

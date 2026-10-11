@@ -54,6 +54,25 @@ fn handle_deep_links(app: &tauri::AppHandle, urls: Vec<String>) {
     if ours.is_empty() {
         return;
     }
+    // 연결된 날짜 알림을 눌렀다 — 그 알림의 발생을 확인한다(token 은 이 PC 가 알림을 띄울 때 만든 일회용 값만 통한다).
+    let tokens: Vec<String> = ours.iter().filter_map(|url| ack_token_of(url)).collect();
+    if !tokens.is_empty() {
+        match state.storage() {
+            Ok(storage) => {
+                if let Err(error) = state.reminders.confirm_tokens(&storage, &tokens) {
+                    log::warn!("reminder confirm failed: {}", error.code());
+                }
+                state.sync.poke();
+                state.reminders.poke();
+            }
+            // 저장소가 아직 열리지 않았다(앱이 막 켜짐) — 알림 worker 가 열린 뒤 처리한다.
+            Err(_) => {
+                if let Ok(mut pending) = state.pending_acks.lock() {
+                    pending.extend(tokens);
+                }
+            }
+        }
+    }
     if let Some(date) = ours.iter().rev().find_map(|url| open_day_of(url)) {
         if let Ok(mut pending) = state.pending_open.lock() {
             *pending = Some(date.clone());
@@ -76,6 +95,15 @@ fn open_day_of(raw: &str) -> Option<String> {
     url.query_pairs().find(|(k, _)| k == "date").map(|(_, v)| v.to_string()).filter(|d| util::is_date(d))
 }
 
+/// `<scheme>://open?date=…&ack=<32자리 hex>` → token(형식이 맞을 때만).
+fn ack_token_of(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    if url.host_str() != Some("open") {
+        return None;
+    }
+    url.query_pairs().find(|(k, _)| k == "ack").map(|(_, v)| v.to_string()).filter(|t| sync::management::valid_token(t))
+}
+
 /// 날짜 알림 — OS 예약 맞추기·작업이 놓친 알림 처리(30초마다, 메모가 바뀌면 곧바로).
 fn spawn_reminder_worker(app: tauri::AppHandle) {
     let runtime = app.state::<AppState>().reminders.clone();
@@ -83,6 +111,15 @@ fn spawn_reminder_worker(app: tauri::AppHandle) {
         tokio::time::sleep(Duration::from_secs(3)).await;
         loop {
             if let Ok(storage) = app.state::<AppState>().storage() {
+                // 저장소가 열리기 전에 눌린 알림(token) — 이제 확인을 남긴다.
+                let tokens: Vec<String> =
+                    app.state::<AppState>().pending_acks.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
+                if !tokens.is_empty() {
+                    if let Err(error) = runtime.confirm_tokens(&storage, &tokens) {
+                        log::warn!("reminder confirm failed: {}", error.code());
+                    }
+                    app.state::<AppState>().sync.poke();
+                }
                 let worker = runtime.clone();
                 match tauri::async_runtime::spawn_blocking(move || worker.tick(&storage)).await {
                     Ok(Ok(true)) => {
@@ -141,6 +178,10 @@ fn spawn_sync_scheduler(app: tauri::AppHandle) {
                 if let Ok(storage) = state.storage() {
                     match state.sync.run(&storage, false).await {
                         Ok(report) if report.changed() || report.offline || report.auth_required => {
+                            if report.management_changed || report.pulled > 0 {
+                                // 공통 알림 설정·확인 상태가 바뀌었다 — Windows 예약을 곧바로 맞춘다.
+                                state.reminders.poke();
+                            }
                             let _ = app.emit("sync://updated", &report);
                         }
                         Ok(_) => {}
@@ -313,6 +354,12 @@ pub fn run() {
             commands::carryover_mark_shown,
             commands::carryover_skip,
             commands::carryover_import,
+            commands::carryover_refresh,
+            commands::management_day,
+            commands::carry_review_resolve,
+            commands::reminder_conflict_resolve,
+            commands::reminder_confirm,
+            commands::mock_v2_web,
             commands::reminder_get,
             commands::reminder_set,
             commands::reminder_status,

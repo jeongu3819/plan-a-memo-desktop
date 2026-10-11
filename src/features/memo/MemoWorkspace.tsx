@@ -421,6 +421,8 @@ export default function MemoWorkspace() {
           items={missed}
           onOpen={date => {
             setMissed(current => current.filter(m => m.date !== date));
+            // 알림 안내에서 그 날짜를 연 것은 명시적 확인 — 연결된 날짜면 PLAN-A Work 에도 확인으로 남는다(날짜만 연 것과 다르다).
+            void dayToolsService.confirmReminder(date).catch(() => undefined);
             goToDate(date);
           }}
           onDismiss={() => setMissed([])}

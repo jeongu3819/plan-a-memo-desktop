@@ -18,8 +18,11 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use super::contract::*;
+use super::contract_v2::*;
 use super::transport::*;
 use crate::auth::AuthApi;
+
+pub mod v2;
 
 pub const MOCK_NAMESPACE: &str = "local:mock-server-01";
 pub const MOCK_USER: i64 = 1;
@@ -155,6 +158,8 @@ pub struct MockServerState {
     pub pins: BTreeSet<(String, String)>,
     pub devices: BTreeMap<String, MockDevice>,
     pub authorizations: BTreeMap<String, MockAuthorization>,
+    /// memo-sync-v2 공통 관리 상태(복사 출처·안내·알림 rule·발생·확인·변경 cursor)
+    pub mgmt: v2::MockManagement,
 }
 
 impl Default for MockServerState {
@@ -178,6 +183,7 @@ impl Default for MockServerState {
             pins: BTreeSet::new(),
             devices: BTreeMap::new(),
             authorizations: BTreeMap::new(),
+            mgmt: v2::MockManagement::default(),
         }
     }
 }
@@ -788,6 +794,7 @@ impl MockSyncTransport {
                 link.active = false;
                 let doc = link.document_id.clone();
                 s.emit(&doc, "unlinked", Some(vec![link_id.to_string()]));
+                s.v2_unlink_event(link_id);
             }
             true
         })
@@ -913,8 +920,12 @@ impl MockSyncTransport {
         if let Some(d) = s.devices.get_mut(device_id) {
             d.revoked = true;
         }
+        let ended: Vec<String> = s.links.iter().filter(|(_, l)| l.device_id == device_id && l.active).map(|(id, _)| id.clone()).collect();
         for link in s.links.values_mut().filter(|l| l.device_id == device_id) {
             link.active = false;
+        }
+        for link_id in ended {
+            s.v2_unlink_event(&link_id);
         }
     }
 
@@ -940,6 +951,7 @@ impl MockSyncTransport {
                     MockLink { document_id: doc_id.clone(), device_id: device_id.into(), active: true, ack_version: 0 },
                 );
                 s.emit(&doc_id, "linked", Some(vec![id.clone()]));
+                s.v2_link_event(owner, device_id, &id, unit, &doc_id);
                 id
             }
         };
@@ -1001,6 +1013,7 @@ impl SyncTransport for MockSyncTransport {
             if link.active {
                 s.links.get_mut(link_id).unwrap().active = false;
                 s.emit(&link.document_id, "unlinked", Some(vec![link_id.to_string()]));
+                s.v2_unlink_event(link_id);
             }
             Ok(())
         })
@@ -1244,6 +1257,52 @@ impl SyncTransport for MockSyncTransport {
             }
             base64::engine::general_purpose::STANDARD.decode(&image.data_b64).map_err(|_| TransportError::Server("mock".into()))
         })
+    }
+
+    // ── memo-sync-v2(공통 관리 상태) — mock/v2.rs ───────────────────────────
+
+    async fn v2_capabilities(&self, ctx: &SyncContext) -> TResult<Capabilities> {
+        self.v2_capabilities_impl(ctx)
+    }
+    async fn v2_state(&self, ctx: &SyncContext, day: &str, link_id: &str) -> TResult<ManagementState> {
+        self.v2_state_impl(ctx, day, link_id)
+    }
+    async fn v2_carry_candidates(
+        &self,
+        ctx: &SyncContext,
+        day: &str,
+        link_id: &str,
+        source_link_id: &str,
+        _timezone: &str,
+    ) -> TResult<CarryCandidates> {
+        self.v2_candidates_impl(ctx, day, link_id, source_link_id)
+    }
+    async fn v2_carry(&self, ctx: &SyncContext, day: &str, body: &CarryRequest) -> TResult<CarryResponse> {
+        self.v2_carry_impl(ctx, day, body)
+    }
+    async fn v2_local_copy(&self, ctx: &SyncContext, day: &str, body: &LocalCopyRequest) -> TResult<CarryResponse> {
+        self.v2_local_copy_impl(ctx, day, body)
+    }
+    async fn v2_dismiss(&self, ctx: &SyncContext, day: &str, body: &Command) -> TResult<DismissResponse> {
+        self.v2_dismiss_impl(ctx, day, body)
+    }
+    async fn v2_rule(&self, ctx: &SyncContext, day: &str, link_id: &str) -> TResult<RuleDto> {
+        self.v2_rule_impl(ctx, day, link_id)
+    }
+    async fn v2_put_rule(&self, ctx: &SyncContext, day: &str, body: &RulePut) -> TResult<RulePutResult> {
+        self.v2_put_rule_impl(ctx, day, body)
+    }
+    async fn v2_occurrences(&self, ctx: &SyncContext, day: &str, link_id: &str) -> TResult<OccurrencesResponse> {
+        self.v2_occurrences_impl(ctx, day, link_id)
+    }
+    async fn v2_ack(&self, ctx: &SyncContext, day: &str, occurrence_id: &str, body: &Command) -> TResult<OccurrenceAckResponse> {
+        self.v2_ack_impl(ctx, day, occurrence_id, body)
+    }
+    async fn v2_cancel(&self, ctx: &SyncContext, day: &str, occurrence_id: &str, body: &Command) -> TResult<OccurrenceCancelResponse> {
+        self.v2_cancel_impl(ctx, day, occurrence_id, body)
+    }
+    async fn v2_changes(&self, ctx: &SyncContext, cursor: Option<&str>) -> TResult<ManagementChanges> {
+        self.v2_changes_impl(ctx, cursor)
     }
 }
 

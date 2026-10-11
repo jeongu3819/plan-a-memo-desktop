@@ -3,6 +3,7 @@
 //! * 주소는 환경별 설정(`config::EnvConfig::server_origin`)에서만 온다. 응답·deep link 가 알려 준 주소로 바꾸지 않는다.
 //! * 인증은 Desktop 전용 Bearer credential 뿐이다. Cookie 를 저장하거나 보내지 않는다(cookie store 없음).
 //! * 요청·응답 본문, 토큰, code, verifier 를 로그에 남기지 않는다(경로와 상태 코드만).
+//! * memo-sync-v2(공통 관리 상태)는 같은 credential·같은 origin 의 `native/v2` 경로를 쓴다.
 
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::contract::*;
+use super::contract_v2::*;
 use super::transport::*;
 use crate::auth::AuthApi;
 
@@ -169,6 +171,8 @@ pub fn map_status(status: StatusCode, body: &[u8]) -> TransportError {
         401 => TransportError::AuthRequired,
         403 => TransportError::Forbidden,
         404 if message == "Memo sync unavailable" => TransportError::Unavailable,
+        // v2 기능이 꺼져 있다(MEMO_SYNC_V2_ENABLED=false) — 공통 관리 미지원. v1 은 그대로 쓴다.
+        404 if message == "Memo management v2 unavailable" => TransportError::Unavailable,
         // FastAPI 기본 404(라우트 없음)·프록시의 HTML 404 — Contract 의 404 는 언제나 구체적인 detail 을 준다.
         404 if parsed.code.is_none() && (message == "Not Found" || parsed.message.is_none()) => TransportError::EndpointMissing,
         404 => TransportError::NotFound,
@@ -298,6 +302,116 @@ impl SyncTransport for PlanAWorkSyncTransport {
         }
         Ok(bytes.to_vec())
     }
+
+    // ── memo-sync-v2 ────────────────────────────────────────────────────
+
+    async fn v2_capabilities(&self, ctx: &SyncContext) -> TResult<Capabilities> {
+        self.http.json::<(), _>(Method::GET, &v2_path("/capabilities", &[]), Some(&ctx.access_token), None, "v2/capabilities").await
+    }
+
+    async fn v2_state(&self, ctx: &SyncContext, day: &str, link_id: &str) -> TResult<ManagementState> {
+        let path = v2_path(&format!("/days/{}/state", segment(day)), &[("link_id", link_id)]);
+        self.http.json::<(), _>(Method::GET, &path, Some(&ctx.access_token), None, "v2/state").await
+    }
+
+    async fn v2_carry_candidates(
+        &self,
+        ctx: &SyncContext,
+        day: &str,
+        link_id: &str,
+        source_link_id: &str,
+        timezone: &str,
+    ) -> TResult<CarryCandidates> {
+        let path = v2_path(
+            &format!("/days/{}/carry", segment(day)),
+            &[("link_id", link_id), ("source_link_id", source_link_id), ("timezone", timezone)],
+        );
+        self.http.json::<(), _>(Method::GET, &path, Some(&ctx.access_token), None, "v2/carry-candidates").await
+    }
+
+    async fn v2_carry(&self, ctx: &SyncContext, day: &str, body: &CarryRequest) -> TResult<CarryResponse> {
+        let path = v2_path(&format!("/days/{}/carry", segment(day)), &[]);
+        self.http.json(Method::POST, &path, Some(&ctx.access_token), Some(body), "v2/carry").await
+    }
+
+    async fn v2_local_copy(&self, ctx: &SyncContext, day: &str, body: &LocalCopyRequest) -> TResult<CarryResponse> {
+        let path = v2_path(&format!("/days/{}/carry/local-source", segment(day)), &[]);
+        self.http.json(Method::POST, &path, Some(&ctx.access_token), Some(body), "v2/carry-local").await
+    }
+
+    async fn v2_dismiss(&self, ctx: &SyncContext, day: &str, body: &Command) -> TResult<DismissResponse> {
+        let path = v2_path(&format!("/days/{}/carry/dismiss", segment(day)), &[]);
+        self.http.json(Method::POST, &path, Some(&ctx.access_token), Some(body), "v2/dismiss").await
+    }
+
+    async fn v2_rule(&self, ctx: &SyncContext, day: &str, link_id: &str) -> TResult<RuleDto> {
+        let path = v2_path(&format!("/days/{}/reminder", segment(day)), &[("link_id", link_id)]);
+        self.http.json::<(), _>(Method::GET, &path, Some(&ctx.access_token), None, "v2/reminder").await
+    }
+
+    async fn v2_put_rule(&self, ctx: &SyncContext, day: &str, body: &RulePut) -> TResult<RulePutResult> {
+        let path = v2_path(&format!("/days/{}/reminder", segment(day)), &[]);
+        let request = self
+            .http
+            .client
+            .request(Method::PUT, self.http.url(&path))
+            .header("Accept", "application/json")
+            .bearer_auth(&ctx.access_token)
+            .json(body);
+        let response = request.send().await.map_err(|e| self.http.network_failure(e, "v2/reminder-put"))?;
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|e| self.http.network_failure(e, "v2/reminder-put"))?;
+        if status == StatusCode::CONFLICT {
+            // 다른 곳에서 먼저 바뀌었다 — 서버 현재값과 보낸 제안을 그대로 돌려준다(자동으로 고르지 않는다).
+            if let Some((current, proposed)) = parse_rule_conflict(&bytes) {
+                log::info!("memo-sync v2/reminder-put: HTTP 409 (reminder_changed)");
+                return Ok(RulePutResult::Changed { current, proposed });
+            }
+        }
+        if !status.is_success() {
+            let error = map_status(status, &bytes);
+            log::info!("memo-sync v2/reminder-put: HTTP {} ({})", status.as_u16(), error_kind(&error));
+            return Err(error);
+        }
+        serde_json::from_slice(&bytes).map(RulePutResult::Saved).map_err(|_| {
+            log::warn!("memo-sync v2/reminder-put: unexpected response shape");
+            TransportError::Server("응답 형식이 Contract 와 다릅니다".into())
+        })
+    }
+
+    async fn v2_occurrences(&self, ctx: &SyncContext, day: &str, link_id: &str) -> TResult<OccurrencesResponse> {
+        let path = v2_path(&format!("/days/{}/occurrences", segment(day)), &[("link_id", link_id)]);
+        self.http.json::<(), _>(Method::GET, &path, Some(&ctx.access_token), None, "v2/occurrences").await
+    }
+
+    async fn v2_ack(&self, ctx: &SyncContext, day: &str, occurrence_id: &str, body: &Command) -> TResult<OccurrenceAckResponse> {
+        let path = v2_path(&format!("/days/{}/occurrences/{}/ack", segment(day), segment(occurrence_id)), &[]);
+        self.http.json(Method::POST, &path, Some(&ctx.access_token), Some(body), "v2/ack").await
+    }
+
+    async fn v2_cancel(&self, ctx: &SyncContext, day: &str, occurrence_id: &str, body: &Command) -> TResult<OccurrenceCancelResponse> {
+        let path = v2_path(&format!("/days/{}/occurrences/{}/cancel", segment(day), segment(occurrence_id)), &[]);
+        self.http.json(Method::POST, &path, Some(&ctx.access_token), Some(body), "v2/cancel").await
+    }
+
+    async fn v2_changes(&self, ctx: &SyncContext, cursor: Option<&str>) -> TResult<ManagementChanges> {
+        let path = match cursor {
+            Some(cursor) => v2_path("/changes", &[("cursor", cursor)]),
+            None => v2_path("/changes", &[]),
+        };
+        self.http.json::<(), _>(Method::GET, &path, Some(&ctx.access_token), None, "v2/changes").await
+    }
+}
+
+/// `native/v2` 아래 경로 + query(값은 인코딩).
+fn v2_path(path: &str, query: &[(&str, &str)]) -> String {
+    let mut out = format!("{V2_PREFIX}{path}");
+    if !query.is_empty() {
+        let encoded: String = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(query.iter()).finish();
+        out.push('?');
+        out.push_str(&encoded);
+    }
+    out
 }
 
 /// 실제 서버 Auth API(native/auth/start · exchange · logout).
@@ -340,6 +454,9 @@ mod tests {
         let s = |code: u16| StatusCode::from_u16(code).unwrap();
         assert_eq!(map_status(s(401), br#"{"detail":"Desktop credential expired or revoked"}"#), TransportError::AuthRequired);
         assert_eq!(map_status(s(404), br#"{"detail":"Memo sync unavailable"}"#), TransportError::Unavailable);
+        assert_eq!(map_status(s(404), br#"{"detail":"Memo management v2 unavailable"}"#), TransportError::Unavailable);
+        assert_eq!(map_status(s(404), br#"{"detail":"Linked DAY not found"}"#), TransportError::NotFound);
+        assert!(map_status(s(409), br#"{"detail":{"code":"occurrence_not_due"}}"#).is_conflict("occurrence_not_due"));
         assert_eq!(map_status(s(404), br#"{"detail":"Document not found"}"#), TransportError::NotFound);
         assert!(map_status(s(409), br#"{"detail":{"code":"link_inactive"}}"#).is_conflict("link_inactive"));
         assert!(map_status(s(409), br#"{"detail":{"code":"item_moved_or_not_owned"}}"#).is_conflict("item_moved_or_not_owned"));
@@ -367,6 +484,10 @@ mod tests {
         assert_eq!(http.url("/changes"), "https://staging.planawork.com/api/memo-sync/native/changes");
         // 경로 조각은 인코딩한다(서버 id 에 / 나 ? 가 섞여도 다른 경로가 되지 않게)
         assert_eq!(segment("a/b?c"), "a%2Fb%3Fc");
+        assert_eq!(
+            http.url(&v2_path("/days/2026-10-10/carry", &[("link_id", "l 1"), ("source_link_id", "s&2")])),
+            "https://staging.planawork.com/api/memo-sync/native/v2/days/2026-10-10/carry?link_id=l+1&source_link_id=s%262"
+        );
         assert!(!format!("{http:?}").contains("Bearer"));
     }
 }

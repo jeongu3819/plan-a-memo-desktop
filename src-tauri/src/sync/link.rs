@@ -136,6 +136,10 @@ pub fn disable_link(conn: &Connection, doc_id: &str) -> AppResult<DocumentInfo> 
 /// 로컬 연결 상태만 정리한다(서버가 이미 끊었거나, 사용자가 해제했을 때 공통).
 pub fn end_local_link(conn: &Connection, doc_id: &str) -> AppResult<()> {
     let doc = repo::doc_by_id(conn, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
+    // memo-sync-v2 — 끝난 link generation 으로 공통 관리 명령(복사·알림 설정·확인)을 보내지 않는다(로컬 내용·예약은 그대로).
+    if let (Some(date), Some(account)) = (doc.memo_date.as_deref(), link_row(conn, doc_id)?.and_then(|l| l.account_key)) {
+        super::management::drop_day_ops(conn, &account, date, "unlinked")?;
+    }
     let open: Option<(String, String)> = conn
         .query_row("SELECT id, remote_snapshot_json FROM conflicts WHERE document_id = ?1 AND status = 'open'", [doc_id], |r| {
             Ok((r.get(0)?, r.get(1)?))

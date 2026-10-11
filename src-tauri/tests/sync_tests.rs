@@ -1608,7 +1608,10 @@ async fn one_image_used_many_times_is_acked_once() {
 #[tokio::test]
 async fn carried_over_items_sync_as_new_items_of_the_linked_day_only() {
     use plan_a_memo_lib::memo::carryover;
-    let e = env_logged_in().await;
+    // memo-sync-v2: 연결된 날짜로의 복사는 서버 공통 복사(지원 서버)로 — v2 미지원 서버에서는 막힌다(sync_v2_tests).
+    let e = env();
+    e.mock.set_v2_enabled(true);
+    e.login(1, false).await;
     let source = add(&e.storage, day("2026-10-03"), "main", "보고서 작성");
     add(&e.storage, day("2026-10-10"), "am", "이번 주 회의");
     e.link(day("2026-10-10"));
@@ -1619,8 +1622,9 @@ async fn carried_over_items_sync_as_new_items_of_the_linked_day_only() {
     e.storage.with_conn(|c| carryover::import(c, &e.storage.paths, "2026-10-10", std::slice::from_ref(&source.id), "2026-10-10")).unwrap();
     assert_eq!(e.status(&day("2026-10-10")), "pending", "연결된 이번 주 DAY 의 변경으로 Outbox 에 남는다");
     let report = e.sync().await;
-    assert_eq!(report.pushed, 1);
     assert_eq!(report.conflicts, 0);
+    e.sync().await;
+    assert_eq!(e.status(&day("2026-10-10")), "synced");
     let after = e.mock.unit_items(1, &Unit::day("2026-10-10"));
     assert_eq!(after.len(), 2);
     let copied = after.iter().find(|(_, m)| m.content == "보고서 작성").expect("복사본이 서버의 이번 주 DAY 에");

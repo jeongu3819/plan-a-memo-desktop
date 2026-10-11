@@ -2859,6 +2859,7 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "hex",
+ "iana-time-zone",
  "keyring",
  "log",
  "rand 0.8.8",

@@ -392,3 +392,131 @@ async fn revoked_device_and_reference_errors_over_http() {
     );
     assert!(matches!(t.push(&ctx(), "d", &push).await.unwrap_err(), TransportError::Rejected { status: 413, code: None, .. }));
 }
+
+// ── memo-sync-v2(공통 관리 상태) — 같은 credential · native/v2 경로 ─────────────────────────
+
+#[tokio::test]
+async fn v2_routes_methods_query_and_bodies_follow_the_handoff() {
+    use plan_a_memo_lib::sync::contract_v2::*;
+    let rule = json!({"version":1,"timezone":"Asia/Seoul","local_time":"09:00","days_before":[7,2],"enabled":true,"deliveries":[]});
+    let occ_id = "a".repeat(64);
+    let (origin, log) = stub(vec![
+        (200, json!({"version":2,"namespace":"local:x","features":["carryover","reminder_rules","occurrences","shared_ack"],"content_sync":1,"management_sync":2,"local_only_upload":false}).to_string()),
+        (200, json!({"namespace":"local:x","day":"2026-10-24","management_revision":3,"prompt":{"source_date":"2026-10-17","dismissed":false,"copied_count":0},"copies":[],"local_source_copies":[],"rule":rule,"occurrences":[]}).to_string()),
+        (200, json!({"source_date":"2026-10-03","target_date":"2026-10-10","dismissed":false,"auto_prompt":true,"items":[{"id":101,"version":4,"content":"x"}]}).to_string()),
+        (200, json!({"mappings":[{"source_identity":"server:101","local_copy_key":"key-00000001","copied_item_id":208,"client_key":"carry-x","deleted":false,"moved":false}],"refresh_required":true}).to_string()),
+        (200, json!({"mappings":[{"source_identity":"local:dev:u","local_copy_key":"key-00000002","copied_item_id":209,"client_key":"k","deleted":false,"moved":false}],"refresh_required":true}).to_string()),
+        (200, json!({"dismissed":true}).to_string()),
+        (200, rule.to_string()),
+        (200, json!({"occurrences":[{"id":occ_id,"days_before":7,"scheduled_at":"2026-10-17T00:00:00Z","state":"scheduled","delivery_status":"pending","acknowledged_at":null}]}).to_string()),
+        (200, json!({"acknowledged":true,"occurrence_id":occ_id}).to_string()),
+        (200, json!({"cancelled":true,"occurrence_id":occ_id}).to_string()),
+        (200, json!({"events":[],"cursor":"abc:0","has_more":false}).to_string()),
+    ])
+    .await;
+    let t = PlanAWorkSyncTransport::new(HttpClient::new(&origin).unwrap());
+    let c = ctx();
+    assert!(t.v2_capabilities(&c).await.unwrap().supports_shared_management());
+    assert_eq!(t.v2_state(&c, "2026-10-24", "gen-1").await.unwrap().management_revision, 3);
+    assert_eq!(t.v2_carry_candidates(&c, "2026-10-10", "gen-1", "gen 0", "Asia/Seoul").await.unwrap().items[0].id, 101);
+    let carry = CarryRequest {
+        request_id: "8ae854ed-1265-4bab-82ed-684034c31fd0".into(),
+        link_id: "gen-1".into(),
+        source_link_id: "gen-0".into(),
+        items: vec![CarrySelection { id: 101, version: 4, local_copy_key: "key-00000001".into() }],
+    };
+    assert_eq!(t.v2_carry(&c, "2026-10-10", &carry).await.unwrap().mappings[0].copied_item_id, 208);
+    let local = LocalCopyRequest {
+        request_id: "req-00000002".into(),
+        link_id: "gen-1".into(),
+        source_date: "2026-10-03".into(),
+        local_source_id: "5b0a1f2e-3c4d-4e5f-8a9b-0c1d2e3f4a5b".into(),
+        local_copy_key: "key-00000002".into(),
+        item: LocalCopyItem { content: "<p>x</p>".into(), section: "am".into() },
+    };
+    t.v2_local_copy(&c, "2026-10-10", &local).await.unwrap();
+    let cmd = Command { request_id: "req-00000003".into(), link_id: "gen-1".into() };
+    assert!(t.v2_dismiss(&c, "2026-10-10", &cmd).await.unwrap().dismissed);
+    assert_eq!(t.v2_rule(&c, "2026-10-24", "gen-1").await.unwrap().days_before, vec![7, 2]);
+    assert_eq!(t.v2_occurrences(&c, "2026-10-24", "gen-1").await.unwrap().occurrences[0].days_before, 7);
+    assert!(t.v2_ack(&c, "2026-10-24", &occ_id, &cmd).await.unwrap().acknowledged);
+    assert!(t.v2_cancel(&c, "2026-10-24", &occ_id, &cmd).await.unwrap().cancelled);
+    assert!(!t.v2_changes(&c, Some("abc:0")).await.unwrap().has_more);
+
+    let log = log.lock().unwrap().clone();
+    let routes: Vec<(String, String)> = log.iter().map(|r| (r.method.clone(), r.target.clone())).collect();
+    let v2 = "/api/memo-sync/native/v2";
+    assert_eq!(
+        routes,
+        vec![
+            ("GET".to_string(), format!("{v2}/capabilities")),
+            ("GET".to_string(), format!("{v2}/days/2026-10-24/state?link_id=gen-1")),
+            ("GET".to_string(), format!("{v2}/days/2026-10-10/carry?link_id=gen-1&source_link_id=gen+0&timezone=Asia%2FSeoul")),
+            ("POST".to_string(), format!("{v2}/days/2026-10-10/carry")),
+            ("POST".to_string(), format!("{v2}/days/2026-10-10/carry/local-source")),
+            ("POST".to_string(), format!("{v2}/days/2026-10-10/carry/dismiss")),
+            ("GET".to_string(), format!("{v2}/days/2026-10-24/reminder?link_id=gen-1")),
+            ("GET".to_string(), format!("{v2}/days/2026-10-24/occurrences?link_id=gen-1")),
+            ("POST".to_string(), format!("{v2}/days/2026-10-24/occurrences/{occ_id}/ack")),
+            ("POST".to_string(), format!("{v2}/days/2026-10-24/occurrences/{occ_id}/cancel")),
+            ("GET".to_string(), format!("{v2}/changes?cursor=abc%3A0")),
+        ]
+    );
+    // 같은 memo 전용 Bearer credential — 쿠키·body user_id 없음
+    for r in &log {
+        assert_eq!(r.header("authorization").as_deref(), Some("Bearer pms_test-token"));
+        assert!(r.header("cookie").is_none());
+    }
+    // 본문은 인계서 예시 그대로(모르는 필드 없음)
+    assert_eq!(
+        log[3].json(),
+        json!({"request_id":"8ae854ed-1265-4bab-82ed-684034c31fd0","link_id":"gen-1","source_link_id":"gen-0",
+               "items":[{"id":101,"version":4,"local_copy_key":"key-00000001"}]})
+    );
+    assert_eq!(log[4].json()["item"], json!({"content":"<p>x</p>","section":"am"}));
+    assert_eq!(log[5].json(), json!({"request_id":"req-00000003","link_id":"gen-1"}));
+}
+
+#[tokio::test]
+async fn v2_rule_conflict_409_keeps_current_and_proposed_and_404_means_unavailable() {
+    use plan_a_memo_lib::sync::contract_v2::*;
+    let current = json!({"version":4,"timezone":"Asia/Seoul","local_time":"10:00","days_before":[2],"enabled":true,"deliveries":[]});
+    let (origin, log) = stub(vec![
+        (409, json!({"detail":{"code":"reminder_changed","current":current,"proposed":{"version":3,"timezone":"Asia/Seoul","local_time":"09:00","days_before":[7]}}}).to_string()),
+        (200, current.to_string()),
+        (409, json!({"detail":{"code":"request_id_reused"}}).to_string()),
+        (404, json!({"detail":"Memo management v2 unavailable"}).to_string()),
+        (404, json!({"detail":"Not Found"}).to_string()),
+        (409, json!({"detail":{"code":"occurrence_not_due"}}).to_string()),
+        (401, json!({"detail":"Desktop credential expired or revoked"}).to_string()),
+    ])
+    .await;
+    let t = PlanAWorkSyncTransport::new(HttpClient::new(&origin).unwrap());
+    let c = ctx();
+    let put = RulePut {
+        request_id: "req-00000010".into(),
+        link_id: "gen-1".into(),
+        rule: RuleWrite { version: 3, timezone: "Asia/Seoul".into(), local_time: "09:00".into(), days_before: vec![7] },
+    };
+    match t.v2_put_rule(&c, "2026-10-24", &put).await.unwrap() {
+        RulePutResult::Changed { current, proposed } => {
+            assert_eq!(current.version, 4);
+            assert_eq!(proposed["days_before"], json!([7]));
+        }
+        other => panic!("409 는 충돌 결과여야 한다: {other:?}"),
+    }
+    assert!(matches!(t.v2_put_rule(&c, "2026-10-24", &put).await.unwrap(), RulePutResult::Saved(r) if r.version == 4));
+    assert!(t.v2_put_rule(&c, "2026-10-24", &put).await.unwrap_err().is_conflict("request_id_reused"));
+    assert_eq!(t.v2_capabilities(&c).await.unwrap_err(), TransportError::Unavailable, "v2 기능 꺼짐");
+    assert_eq!(t.v2_capabilities(&c).await.unwrap_err(), TransportError::EndpointMissing, "v2 경로 미배포");
+    let cmd = Command { request_id: "req-00000011".into(), link_id: "gen-1".into() };
+    assert!(t.v2_ack(&c, "2026-10-24", "x", &cmd).await.unwrap_err().is_conflict("occurrence_not_due"));
+    assert_eq!(t.v2_changes(&c, None).await.unwrap_err(), TransportError::AuthRequired);
+    let log = log.lock().unwrap().clone();
+    assert_eq!(log[0].method, "PUT");
+    assert_eq!(
+        log[0].json()["rule"],
+        json!({"version":3,"timezone":"Asia/Seoul","local_time":"09:00","days_before":[7]}),
+        "enabled·deliveries 를 보내지 않는다"
+    );
+}

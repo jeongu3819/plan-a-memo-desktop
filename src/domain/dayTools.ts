@@ -81,6 +81,13 @@ export function formatFireAt(fireAt: string): string {
   return `${shortDate(date)}(${WEEKDAY_LABELS[weekdayOf(date)]}) ${koreanTime(time)}`;
 }
 
+/** 알림 설정 한 줄 — '1주 전 · 2일 전 · 오전 9:00' / '알림 없음'(공통 알림 설정 충돌 비교에 쓴다). */
+export function describeRule(offsets: ReminderOffset[], time: string | null): string {
+  if (!offsets.length) return '알림 없음';
+  const ordered = REMINDER_OFFSETS.filter(o => offsets.includes(o));
+  return `${ordered.map(o => REMINDER_OFFSET_LABELS[o]).join(' · ')} · ${koreanTime(time ?? DEFAULT_REMINDER_TIME)}`;
+}
+
 /** '10월 24일 토요일' */
 export function koreanLongDate(date: string): string {
   const [, m, d] = date.split('-').map(Number);

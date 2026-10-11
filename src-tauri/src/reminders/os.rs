@@ -156,6 +156,18 @@ pub fn open_day_uri(scheme: &str, date: &str) -> String {
     format!("{scheme}://open?date={date}")
 }
 
+/// 연결된 날짜의 알림 — 누르면 그 날짜를 열고, 그 알림이 알린 발생을 확인한다. 주소에는 서버 id 대신
+/// 이 PC 가 만든 일회용 token 만 넣는다(DB 의 reminder_toasts 와 짝 — 임의 주소로 다른 알림을 확인할 수 없다).
+pub fn open_day_uri_with_ack(scheme: &str, date: &str, token: Option<&str>) -> String {
+    match token {
+        Some(token) => format!("{scheme}://open?date={date}&ack={token}"),
+        None => open_day_uri(scheme, date),
+    }
+}
+
+/// 알림 그룹(이 앱이 띄운 날짜 알림).
+pub const TOAST_GROUP: &str = "plana-reminder";
+
 // ── Windows ─────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -232,9 +244,17 @@ mod imp {
         doc.LoadXml(&HSTRING::from(toast_xml(title, body, launch_uri))).map_err(fail)?;
         let toast = ToastNotification::CreateToastNotification(&doc).map_err(fail)?;
         let _ = toast.SetTag(&HSTRING::from(tag));
-        let _ = toast.SetGroup(&HSTRING::from("plana-reminder"));
+        let _ = toast.SetGroup(&HSTRING::from(TOAST_GROUP));
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid)).map_err(fail)?;
         notifier.Show(&toast).map_err(fail)
+    }
+
+    /// 이 앱이 띄운 알림(tag)을 알림 센터에서 거둔다 — 다른 곳에서 이미 확인된 알림. 화면에 막 떠 있는 배너는
+    /// Windows 가 곧바로 지우지 않을 수 있다(알림 센터 기록에서는 지워진다).
+    pub fn remove_toast(aumid: &str, tag: &str) -> AppResult<()> {
+        let fail = |e: windows::core::Error| AppError::new("reminder_toast", format!("Windows 알림을 거두지 못했습니다({})", e.message()));
+        let history = ToastNotificationManager::History().map_err(fail)?;
+        history.RemoveGroupedTagWithId(&HSTRING::from(tag), &HSTRING::from(TOAST_GROUP), &HSTRING::from(aumid)).map_err(fail)
     }
 
     fn hkcu_u32(path: &str, name: &str) -> Option<u32> {
@@ -290,12 +310,15 @@ mod imp {
     pub fn show_toast(_aumid: &str, _title: &str, _body: &str, _launch_uri: &str, _tag: &str) -> AppResult<()> {
         Err(AppError::new("reminder_unsupported", "이 운영체제에서는 알림을 지원하지 않습니다."))
     }
+    pub fn remove_toast(_aumid: &str, _tag: &str) -> AppResult<()> {
+        Ok(())
+    }
     pub fn notification_setting(_aumid: &str, _installed: bool) -> &'static str {
         "unsupported"
     }
 }
 
-pub use imp::{delete_task, notification_setting, register_task, show_toast, task_exists};
+pub use imp::{delete_task, notification_setting, register_task, remove_toast, show_toast, task_exists};
 
 #[cfg(test)]
 mod tests {

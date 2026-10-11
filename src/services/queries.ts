@@ -30,6 +30,7 @@ export const keys = {
   sameWeekday: (after: string, limit: number) => ['memo', 'same-weekday', after, limit] as const,
   carryover: (date: string) => ['memo', 'carryover', date] as const,
   reminder: (date: string) => ['memo', 'reminder', date] as const,
+  management: (date: string) => ['memo', 'management', date] as const,
   reminderStatus: ['reminder-status'] as const,
   sync: ['sync'] as const,
   syncOverview: ['sync', 'overview'] as const,
@@ -69,6 +70,10 @@ export const useCarryover = (date: string | null) =>
 
 export const useReminder = (date: string | null) =>
   useQuery({ queryKey: keys.reminder(date ?? ''), queryFn: () => dayToolsService.reminder(date!), enabled: !!date });
+
+/** 연결된 날짜의 공통 관리 요약(memo-sync-v2) — 'memo' 아래라 Sync·편집 뒤 함께 다시 읽는다. */
+export const useManagementDay = (date: string | null) =>
+  useQuery({ queryKey: keys.management(date ?? ''), queryFn: () => dayToolsService.management(date!), enabled: !!date });
 
 export const useReminderStatus = (enabled: boolean) =>
   useQuery({ queryKey: keys.reminderStatus, queryFn: dayToolsService.reminderStatus, enabled });

@@ -12,6 +12,7 @@
 use async_trait::async_trait;
 
 use super::contract::*;
+use super::contract_v2::*;
 
 /// 연결 단계에서 무엇이 실패했는가 — 화면 안내와 진단 로그를 원인별로 나눈다(모두 '다시 시도' 대상).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,4 +133,63 @@ pub trait SyncTransport: Send + Sync {
     async fn upload(&self, ctx: &SyncContext, request_id: &str, file_name: &str, mime: &str, bytes: Vec<u8>) -> TResult<UploadResponse>;
     /// GET native/attachments/{name}/download
     async fn download(&self, ctx: &SyncContext, name: &str) -> TResult<Vec<u8>>;
+
+    // ── memo-sync-v2(공통 관리 상태) — native/v2 ─────────────────────────────
+    // v2 를 모르는 Transport 는 '경로 없음'(= 공통 관리 미지원)으로 답한다. v1 동작은 바뀌지 않는다.
+
+    /// GET native/v2/capabilities
+    async fn v2_capabilities(&self, _ctx: &SyncContext) -> TResult<Capabilities> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// GET native/v2/days/{day}/state?link_id=
+    async fn v2_state(&self, _ctx: &SyncContext, _day: &str, _link_id: &str) -> TResult<ManagementState> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// GET native/v2/days/{day}/carry?link_id=&source_link_id=&timezone=
+    async fn v2_carry_candidates(
+        &self,
+        _ctx: &SyncContext,
+        _day: &str,
+        _link_id: &str,
+        _source_link_id: &str,
+        _timezone: &str,
+    ) -> TResult<CarryCandidates> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// POST native/v2/days/{day}/carry
+    async fn v2_carry(&self, _ctx: &SyncContext, _day: &str, _body: &CarryRequest) -> TResult<CarryResponse> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// POST native/v2/days/{day}/carry/local-source
+    async fn v2_local_copy(&self, _ctx: &SyncContext, _day: &str, _body: &LocalCopyRequest) -> TResult<CarryResponse> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// POST native/v2/days/{day}/carry/dismiss
+    async fn v2_dismiss(&self, _ctx: &SyncContext, _day: &str, _body: &Command) -> TResult<DismissResponse> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// GET native/v2/days/{day}/reminder?link_id=
+    async fn v2_rule(&self, _ctx: &SyncContext, _day: &str, _link_id: &str) -> TResult<RuleDto> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// PUT native/v2/days/{day}/reminder — 409 reminder_changed 는 오류가 아니라 `RulePutResult::Changed`.
+    async fn v2_put_rule(&self, _ctx: &SyncContext, _day: &str, _body: &RulePut) -> TResult<RulePutResult> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// GET native/v2/days/{day}/occurrences?link_id=
+    async fn v2_occurrences(&self, _ctx: &SyncContext, _day: &str, _link_id: &str) -> TResult<OccurrencesResponse> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// POST native/v2/days/{day}/occurrences/{id}/ack
+    async fn v2_ack(&self, _ctx: &SyncContext, _day: &str, _occurrence_id: &str, _body: &Command) -> TResult<OccurrenceAckResponse> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// POST native/v2/days/{day}/occurrences/{id}/cancel
+    async fn v2_cancel(&self, _ctx: &SyncContext, _day: &str, _occurrence_id: &str, _body: &Command) -> TResult<OccurrenceCancelResponse> {
+        Err(TransportError::EndpointMissing)
+    }
+    /// GET native/v2/changes?cursor= — v1 cursor 와 다른 cursor(서로 넘기지 않는다).
+    async fn v2_changes(&self, _ctx: &SyncContext, _cursor: Option<&str>) -> TResult<ManagementChanges> {
+        Err(TransportError::EndpointMissing)
+    }
 }

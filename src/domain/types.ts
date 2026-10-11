@@ -352,6 +352,10 @@ export interface CarryoverInfo {
   autoPrompt: boolean;
   status: 'shown' | 'skipped' | 'imported' | null;
   items: MemoItem[];
+  /** 연결된 날짜 — PLAN-A Work 와 복사 이력·안내를 함께 쓴다(memo-sync-v2) */
+  shared: boolean;
+  /** 연결된 날짜인데 지금은 가져올 수 없는 이유(서버 미지원·다른 계정·확인 중) */
+  blocked: string | null;
 }
 
 export interface CarryoverResult {
@@ -367,6 +371,10 @@ export interface ReminderFire {
   fireAt: string;
   status: 'pending' | 'delivered' | 'skipped' | 'expired' | 'missed';
   handledAt: string | null;
+  /** 연결된 날짜 — 이 알림을 (어느 기기에서든) 확인했다 */
+  acknowledged: boolean;
+  /** 연결된 날짜 — 서버 발생 상태 */
+  sharedState: 'scheduled' | 'published' | 'acknowledged' | 'cancelled' | 'missed' | null;
 }
 
 export interface DayReminder {
@@ -397,4 +405,34 @@ export interface DueReminder {
   date: string;
   openCount: number;
   late: boolean;
+}
+
+/** 연결된 날짜의 공통 관리(memo-sync-v2) 요약 */
+export type ManagementMode = 'local' | 'shared' | 'unavailable' | 'checking' | 'other_account';
+
+export interface ReminderConflict {
+  /** PLAN-A Work 현재 설정(서버 DTO 그대로 — snake_case) */
+  current: { version: number; timezone: string | null; local_time: string | null; days_before: ReminderOffset[] };
+  /** 이 PC 의 설정 */
+  proposed: { timezone: string; localTime: string; daysBefore: ReminderOffset[] };
+  /** 처음 연결할 때 양쪽이 달랐다 */
+  initial: boolean;
+}
+
+export interface CarryReview {
+  id: string;
+  date: string;
+  kind: 'both_changed' | 'server_removed' | 'duplicate' | 'copy_failed';
+  itemId: string;
+  localHtml: string | null;
+  serverHtml: string | null;
+}
+
+export interface ManagementDay {
+  mode: ManagementMode;
+  blockedReason: string | null;
+  reminderConflict: ReminderConflict | null;
+  /** 이 PC 의 알림 설정 변경을 PLAN-A Work 가 아직 확정하지 않았다 */
+  reminderPending: boolean;
+  reviews: CarryReview[];
 }

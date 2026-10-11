@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   dateWithYear,
+  describeRule,
   formatFireAt,
   koreanLongDate,
   koreanTime,
@@ -59,5 +60,17 @@ describe('알림 시각', () => {
     expect(koreanTime('18:30')).toBe('오후 6:30');
     expect(formatFireAt('2026-10-17T09:00')).toBe('10/17(토) 오전 9:00');
     expect(koreanLongDate('2026-10-24')).toBe('10월 24일 토요일');
+  });
+});
+
+describe('공통 알림 설정 비교 문구(memo-sync-v2 충돌)', () => {
+  it('선택한 미리 알림을 1주 전 → 2일 전 순서로, 시각은 한국어로', () => {
+    expect(describeRule([2, 7], '09:00')).toBe('1주 전 · 2일 전 · 오전 9:00');
+    expect(describeRule([2], '18:30')).toBe('2일 전 · 오후 6:30');
+    expect(describeRule([7], null)).toBe('1주 전 · 오전 9:00');
+  });
+
+  it('미리 알림이 없으면 시각과 관계없이 알림 없음', () => {
+    expect(describeRule([], '10:00')).toBe('알림 없음');
   });
 });

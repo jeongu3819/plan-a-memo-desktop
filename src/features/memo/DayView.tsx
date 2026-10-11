@@ -32,6 +32,7 @@ import { SECTION_LABELS } from './MemoMenu';
 import MemoRow from './MemoRow';
 import QuickInput from './QuickInput';
 import CarryoverNotice from './CarryoverNotice';
+import CarryReviews from './CarryReviews';
 import UpcomingWeekday from './UpcomingWeekday';
 
 const SECTIONS: MemoSection[] = ['main', 'am', 'pm'];
@@ -319,6 +320,7 @@ export default function DayView({
       </DndContext>
       {location.kind === 'day' && (
         <>
+          <CarryReviews date={location.date} />
           <CarryoverNotice date={location.date} manual={carryoverOpen} onCloseManual={() => setCarryoverOpen(false)} />
           <UpcomingWeekday date={location.date} onOpenDay={date => onOpenDay?.(date)} />
           <Menu anchorEl={toolsAnchor} open={!!toolsAnchor} onClose={() => setToolsAnchor(null)} data-personal-memo-overlay="true">

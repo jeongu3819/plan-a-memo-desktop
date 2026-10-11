@@ -19,7 +19,7 @@ use crate::memo::{
 use crate::reminders;
 use crate::state::{AppState, StorageStatus};
 use crate::storage::{self, backup, relocate, LocationInspection, Storage};
-use crate::sync::{self, engine, link, SyncOverview};
+use crate::sync::{self, engine, link, management, SyncOverview};
 
 type Cmd<T> = Result<T, AppError>;
 
@@ -439,6 +439,9 @@ pub async fn sync_unlink(state: State<'_, AppState>, location: Location) -> Cmd<
 pub async fn sync_now(state: State<'_, AppState>, app: AppHandle) -> Cmd<engine::SyncReport> {
     let storage = state.storage()?;
     let report = state.sync.run(&storage, true).await?;
+    if report.management_changed || report.pulled > 0 {
+        state.reminders.poke(); // 공통 알림 설정·확인 상태 → Windows 예약을 곧바로 맞춘다
+    }
     let _ = app.emit("sync://updated", &report);
     Ok(report)
 }
@@ -505,6 +508,15 @@ pub async fn auth_login_begin(state: State<'_, AppState>, app: AppHandle, reconn
         let state = handle.state::<AppState>();
         match outcome {
             Ok(()) => {
+                // 지금 계정 — 다른 계정의 공통 알림·복사 상태를 이 계정으로 쓰지 않게 바로 바꾼다(다음 Sync 를 기다리지 않는다).
+                if let (Some(session), Ok(storage)) = (state.auth.session_context(), state.storage()) {
+                    let _ = storage.with_conn(|c| {
+                        if management::has_schema(c) {
+                            management::set_active_account(c, Some(&session.account_key))?;
+                        }
+                        Ok(())
+                    });
+                }
                 let _ = handle.emit("auth://changed", &state.auth.status());
                 state.sync.poke();
             }
@@ -661,6 +673,72 @@ pub async fn mock_set_account(state: State<'_, AppState>, user_id: i64) -> Cmd<(
     Ok(())
 }
 
+/// 개발용 Mock 서버의 memo-sync-v2(공통 관리) — 'Web 에서' 한 일 흉내(실제 서버 아님).
+/// action: enable · disable · carry(date, sourceIds) · dismiss(date) · rule(date, offsets, time) · ack(date, offset) ·
+///         cancel(date, offset) · state(date) · items(date) · clock(at: RFC3339 | null)
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MockV2Action {
+    pub action: String,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub source_ids: Vec<i64>,
+    #[serde(default)]
+    pub offsets: Vec<i64>,
+    #[serde(default)]
+    pub time: Option<String>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub at: Option<String>,
+}
+
+#[tauri::command]
+pub async fn mock_v2_web(state: State<'_, AppState>, input: MockV2Action) -> Cmd<serde_json::Value> {
+    let m = mock(&state)?;
+    let owner = mock_account();
+    let date = || input.date.clone().ok_or_else(|| AppError::validation("date 가 필요합니다."));
+    let fail = |e: crate::sync::transport::TransportError| AppError::new("mock_v2", e.to_string());
+    let value = match input.action.as_str() {
+        "enable" | "disable" => {
+            m.set_v2_enabled(input.action == "enable");
+            serde_json::json!({"enabled": input.action == "enable"})
+        }
+        "carry" => serde_json::json!(m.web_v2_carry(owner, &date()?, &input.source_ids).map_err(fail)?),
+        "dismiss" => {
+            m.web_v2_dismiss(owner, &date()?);
+            serde_json::json!({"dismissed": true})
+        }
+        "rule" => serde_json::to_value(
+            m.web_v2_set_rule(owner, &date()?, &input.offsets, input.time.as_deref().unwrap_or(reminders::DEFAULT_TIME)).map_err(fail)?,
+        )?,
+        "ack" => {
+            m.web_v2_ack(owner, &date()?, input.offset.unwrap_or(7)).map_err(fail)?;
+            serde_json::json!({"acknowledged": true})
+        }
+        "cancel" => {
+            m.web_v2_cancel(owner, &date()?, input.offset.unwrap_or(7)).map_err(fail)?;
+            serde_json::json!({"cancelled": true})
+        }
+        "state" => serde_json::to_value(m.v2_state_of(owner, &date()?))?,
+        // 서버(Web)에 보이는 그 날짜의 항목 [서버 id, 본문]
+        "items" => serde_json::json!(m
+            .unit_items(owner, &crate::sync::mock::Unit::day(&date()?))
+            .into_iter()
+            .map(|(id, memo)| serde_json::json!({"id": id, "content": memo.content}))
+            .collect::<Vec<_>>()),
+        "clock" => {
+            let at = input.at.as_deref().map(|v| chrono::DateTime::parse_from_rfc3339(v).map(|t| t.with_timezone(&chrono::Utc)));
+            m.set_v2_clock(at.transpose().map_err(|_| AppError::validation("시각 형식"))?);
+            serde_json::json!({"clock": input.at})
+        }
+        other => return Err(AppError::validation(format!("알 수 없는 action: {other}"))),
+    };
+    state.sync.poke();
+    Ok(value)
+}
+
 // ── 날짜 상세 도구: 다가오는 같은 요일 · 지난 미완료 가져오기 · 날짜별 알림 ───────────────
 
 /// 이 PC 의 오늘(로컬) — 화면이 보낸 값을 믿지 않는다.
@@ -685,7 +763,54 @@ pub async fn carryover_mark_shown(state: State<'_, AppState>, date: String) -> C
 
 #[tauri::command]
 pub async fn carryover_skip(state: State<'_, AppState>, date: String) -> Cmd<()> {
-    state.storage()?.with_conn(|c| carryover::skip(c, &date))
+    state.storage()?.with_conn(|c| carryover::skip(c, &date))?;
+    state.sync.poke(); // 연결된 날짜면 서버 공통 안내 상태로 보낸다
+    Ok(())
+}
+
+/// 연결된 날짜 — PLAN-A Work 에 복사 후보(이미 복사한 원본 제외)를 다시 묻고 화면 데이터를 돌려준다.
+/// 오프라인·서버 오류여도 실패하지 않는다(마지막으로 아는 상태로 보인다).
+#[tauri::command]
+pub async fn carryover_refresh(state: State<'_, AppState>, date: String) -> Cmd<carryover::CarryoverInfo> {
+    let storage = state.storage()?;
+    if let Err(error) = state.sync.engine.refresh_carry(&storage, &date).await {
+        log::info!("carry candidates refresh skipped: {}", error.code());
+    }
+    storage.with_conn(|c| carryover::get(c, &date, &local_today()))
+}
+
+/// 날짜 하나의 공통 관리 요약 — 연결/서버 지원 여부·알림 설정 충돌·복사본 선택 대기.
+#[tauri::command]
+pub async fn management_day(state: State<'_, AppState>, date: String) -> Cmd<management::ManagementDayView> {
+    state.storage()?.with_conn(|c| management::day_view(c, &date))
+}
+
+/// 복사본 선택(이 PC / PLAN-A Work) — 고르지 않은 쪽은 History 에 남는다.
+#[tauri::command]
+pub async fn carry_review_resolve(state: State<'_, AppState>, id: String, choice: management::ReviewChoice) -> Cmd<String> {
+    let date = state.storage()?.with_conn(|c| management::resolve_review(c, &id, choice))?;
+    state.sync.poke();
+    Ok(date)
+}
+
+/// 알림 설정 충돌 선택 — PLAN-A Work 설정 사용 / 이 PC 설정 유지(서버 최신 version 위에 다시 보낸다).
+#[tauri::command]
+pub async fn reminder_conflict_resolve(state: State<'_, AppState>, date: String, choice: management::RuleChoice) -> Cmd<ReminderSaved> {
+    let storage = state.storage()?;
+    storage.with_conn(|c| management::resolve_rule_conflict(c, &date, choice, reminders::local_now()))?;
+    state.sync.poke();
+    reminder_saved(&state, storage, &date).await
+}
+
+/// 그 날짜의 알림을 사용자가 명시적으로 확인했다(놓친 알림 안내에서 그 날짜를 열었다 등). 날짜를 열기만 한 것은 확인이 아니다.
+#[tauri::command]
+pub async fn reminder_confirm(state: State<'_, AppState>, date: String) -> Cmd<usize> {
+    let n = state.storage()?.with_conn(|c| management::confirm_date(c, &date, chrono::Utc::now()))?;
+    if n > 0 {
+        state.sync.poke();
+        state.reminders.poke();
+    }
+    Ok(n)
 }
 
 #[tauri::command]
@@ -718,10 +843,24 @@ pub async fn reminder_get(state: State<'_, AppState>, date: String) -> Cmd<Optio
     state.storage()?.with_conn(|c| reminders::get(c, &date))
 }
 
+/// 날짜 알림 저장. 연결된 날짜(서버 v2 지원)면 PLAN-A Work 공통 알림 설정으로도 보낸다(이 PC 예약은 바로 바뀐다 —
+/// 오프라인이어도). 연결된 날짜인데 서버가 공통 관리를 지원하지 않거나 다른 계정이면 바꾸지 않는다(안내).
 #[tauri::command]
 pub async fn reminder_set(state: State<'_, AppState>, date: String, offsets: Vec<i64>, time: String) -> Cmd<ReminderSaved> {
     let storage = state.storage()?;
-    let reminder = storage.with_conn(|c| reminders::set(c, &date, &offsets, &time, reminders::local_now()))?;
+    storage.with_conn(|c| match management::day_scope(c, &date)? {
+        management::DayScope::Local => reminders::set(c, &date, &offsets, &time, reminders::local_now()).map(|_| ()),
+        management::DayScope::Shared { account_key, .. } => {
+            management::propose_rule(c, &account_key, &date, &offsets, &time, reminders::local_now())
+        }
+        blocked => Err(AppError::new("reminder_unavailable", blocked.blocked_reason().unwrap_or_default())),
+    })?;
+    state.sync.poke();
+    reminder_saved(&state, storage, &date).await
+}
+
+async fn reminder_saved(state: &State<'_, AppState>, storage: std::sync::Arc<Storage>, date: &str) -> Cmd<ReminderSaved> {
+    let reminder = storage.with_conn(|c| reminders::get(c, date))?;
     let runtime = state.reminders.clone();
     let task = tauri::async_runtime::spawn_blocking(move || runtime.sync_now(&storage))
         .await

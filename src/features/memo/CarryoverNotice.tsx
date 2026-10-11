@@ -5,6 +5,8 @@
  * · [항목 선택] → 가져올 항목을 고른다. 여기 체크박스는 **가져올 항목 선택**이다(완료 체크가 아니다 — 원본의 완료 상태를 바꾸지 않는다).
  * · [이번에는 건너뛰기] 는 이 날짜에 다시 저절로 안내하지 않는다(앱을 다시 열어도). 날짜 메뉴 '지난 미완료 가져오기' 로 언제든 다시 연다.
  * · 원본은 그대로 남고, 복사본은 새 메모·미완료·같은 구역의 맨 뒤. 같은 원본은 같은 날짜로 한 번만 복사된다(Rust 가 보장).
+ * · PLAN-A Work 와 연결된 날짜는 복사·건너뛰기를 Web 과 함께 쓴다(memo-sync-v2) — Web 에서 이미 복사·건너뛴 항목은 다시 권하지
+ *   않는다. 화면은 같고, 열 때 PLAN-A Work 에 최신 후보를 한 번 묻는다(오프라인이면 마지막으로 아는 상태).
  */
 import { useEffect, useRef, useState } from 'react';
 import { Box, Button, Checkbox, CircularProgress, Typography } from '@mui/material';
@@ -13,7 +15,7 @@ import type { MemoSection } from '../../domain/types';
 import { weekdayName } from '../../domain/dayTools';
 import { shortDate } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import { MEMO_MUTED, MEMO_SECTION_TITLE } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
-import { refreshMemo, useCarryover } from '../../services/queries';
+import { keys, refreshMemo, useCarryover } from '../../services/queries';
 import { textOf } from '../../services/text';
 import { dayToolsService, errorMessage } from '../../tauri/api';
 import { usePersonalMemo } from './MemoProvider';
@@ -46,11 +48,37 @@ export default function CarryoverNotice({ date, manual, onCloseManual }: { date:
     setDismissed(false);
   }, [date, manual]);
 
+  // 연결된 날짜 — 열 때 PLAN-A Work 에 최신 복사 후보를 묻는다(Web 에서 방금 복사한 항목을 다시 권하지 않게).
+  const shared = !!data?.shared;
+  useEffect(() => {
+    if (!shared || !(manual || picking)) return undefined;
+    let alive = true;
+    void dayToolsService
+      .carryoverRefresh(date)
+      .then(fresh => {
+        if (alive) queryClient.setQueryData(keys.carryover(date), fresh);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [shared, manual, picking, date, queryClient]);
+
   // 고르기를 열 때 한 번만 모두 고른 상태로(다른 메모 저장으로 다시 읽어도 사용자가 고른 것을 되돌리지 않는다).
   useEffect(() => {
     if (picking && data) setSelected(data.items.map(i => i.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [picking, !!data]);
+
+  // 다른 곳(Web)에서 이미 복사돼 후보에서 빠진 항목은 고른 목록에서도 뺀다(남은 선택은 그대로).
+  const itemKey = data?.items.map(i => i.id).join(',') ?? '';
+  useEffect(() => {
+    const ids = itemKey ? itemKey.split(',') : [];
+    setSelected(current => {
+      const next = current.filter(id => ids.includes(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [itemKey]);
 
   if (!visible || !data) return null;
   const name = weekdayName(date);
@@ -100,6 +128,16 @@ export default function CarryoverNotice({ date, manual, onCloseManual }: { date:
     px: 1.75,
     py: 1,
   } as const;
+
+  if (data.blocked) {
+    // 연결된 날짜인데 지금은 공통 복사를 쓸 수 없다(서버 미지원·다른 계정·확인 중) — 이유만 안내(보조 메뉴로 열었을 때).
+    return (
+      <Box data-testid="carryover-notice" data-blocked="true" sx={{ ...frame, display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Typography sx={{ fontSize: '0.8rem', color: MEMO_SECTION_TITLE, flex: 1 }}>{data.blocked}</Typography>
+        <Button size="small" onClick={close}>닫기</Button>
+      </Box>
+    );
+  }
 
   if (!data.available || count === 0) {
     // 보조 메뉴로 직접 열었을 때만 보인다.

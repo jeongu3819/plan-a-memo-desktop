@@ -3,6 +3,9 @@
  *   미리 알림: □ 1주 전  □ 2일 전 (하나·둘 다·없음) · 알림 시각(기본 오전 9:00) · 실제 알림 예정 시각 미리 보기.
  *   그 날짜에만 적용(매주 반복 없음). 이미 지난 시각은 소급해서 알리지 않는다. 알림 내용(완료하지 않은 체크리스트 수)은
  *   알릴 시각에 센다 — 모두 완료하면 알리지 않는다.
+ *
+ * PLAN-A Work 와 연결된 날짜(memo-sync-v2)는 같은 화면에서 **공통 알림 설정**을 바꾼다 — Web 과 따로 설정하지 않는다.
+ * 양쪽이 동시에 다르게 바꿨으면 두 설정을 보여 주고 고르게 한다(자동으로 덮어쓰지 않는다). 확인한 알림은 '확인함' 으로 보인다.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -22,6 +25,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { ReminderOffset, ReminderStatus } from '../../domain/types';
 import {
   DEFAULT_REMINDER_TIME,
+  describeRule,
   formatFireAt,
   koreanLongDate,
   localMinuteString,
@@ -30,7 +34,7 @@ import {
   reminderPreview,
 } from '../../domain/dayTools';
 import { MEMO_MUTED } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
-import { keys, useReminder, useReminderStatus } from '../../services/queries';
+import { keys, useManagementDay, useReminder, useReminderStatus } from '../../services/queries';
 import { dayToolsService, errorMessage } from '../../tauri/api';
 import { usePersonalMemo } from '../memo/MemoProvider';
 
@@ -56,12 +60,12 @@ export function reminderProblem(status: ReminderStatus | undefined): string | nu
   if (status.task?.error) return `알림 예약에 실패했습니다 — ${status.task.error} 앱이 켜져 있는 동안에는 알림이 표시됩니다.`;
   return null;
 }
-
 export default function ReminderDialog({ date, onClose }: { date: string | null; onClose: () => void }) {
   const { today, notify } = usePersonalMemo();
   const queryClient = useQueryClient();
   const reminder = useReminder(date);
   const status = useReminderStatus(!!date);
+  const management = useManagementDay(date);
   const [offsets, setOffsets] = useState<ReminderOffset[]>([]);
   const [time, setTime] = useState(DEFAULT_REMINDER_TIME);
   const [saving, setSaving] = useState(false);
@@ -83,13 +87,38 @@ export default function ReminderDialog({ date, onClose }: { date: string | null;
   const existing = !!reminder.data;
   const problem = reminderProblem(status.data);
   const validTime = /^\d{2}:\d{2}$/.test(time);
+  const mode = management.data?.mode ?? 'local';
+  const blocked = management.data?.blockedReason ?? null;
+  const conflict = management.data?.reminderConflict ?? null;
+  const acknowledged = reminder.data?.fires.filter(f => f.acknowledged) ?? [];
+
+  const applySaved = (saved: Awaited<ReturnType<typeof dayToolsService.setReminder>>) => {
+    queryClient.setQueryData(keys.reminder(date), saved.reminder);
+    queryClient.setQueryData(keys.reminderStatus, saved.status);
+    void queryClient.invalidateQueries({ queryKey: keys.management(date) });
+  };
+
+  const resolveConflict = async (choice: 'server' | 'mine') => {
+    setSaving(true);
+    try {
+      applySaved(await dayToolsService.resolveReminderConflict(date, choice));
+      notify({
+        message: choice === 'server' ? 'PLAN-A Work 의 알림 설정을 사용합니다.' : '이 PC 의 알림 설정을 PLAN-A Work 에도 저장합니다.',
+        variant: 'success',
+      });
+      onClose();
+    } catch (error) {
+      notify({ message: errorMessage(error, '알림 설정을 고르지 못했습니다.'), variant: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const save = async (nextOffsets: ReminderOffset[]) => {
     setSaving(true);
     try {
       const saved = await dayToolsService.setReminder(date, nextOffsets, validTime ? time : DEFAULT_REMINDER_TIME);
-      queryClient.setQueryData(keys.reminder(date), saved.reminder);
-      queryClient.setQueryData(keys.reminderStatus, saved.status);
+      applySaved(saved);
       const pending = saved.reminder?.fires.filter(f => f.status === 'pending') ?? [];
       if (saved.status.task?.error) {
         notify({ message: `알림 설정은 저장했지만 Windows 예약에 실패했습니다. ${saved.status.task.error}`, variant: 'error' });
@@ -117,7 +146,35 @@ export default function ReminderDialog({ date, onClose }: { date: string | null;
       <DialogContent>
         <Typography sx={{ fontSize: '0.8rem', color: MEMO_MUTED, mb: 1.5 }}>
           이 날짜에만 알립니다(매주 반복하지 않음). 알릴 때 완료하지 않은 체크리스트 수를 알려 드리고, 모두 완료했으면 알리지 않습니다.
+          {mode === 'shared' && ' PLAN-A Work 와 함께 쓰는 알림이라 Web 에서도 같은 설정이 보입니다.'}
         </Typography>
+        {conflict && (
+          <Alert severity="warning" data-testid="reminder-conflict" sx={{ mb: 1.5, fontSize: '0.8rem' }}>
+            <Typography sx={{ fontSize: '0.8rem', fontWeight: 700 }}>
+              {conflict.initial ? '이 PC 와 PLAN-A Work 의 알림 설정이 서로 다릅니다.' : '그 사이 PLAN-A Work 에서 알림 설정이 바뀌었습니다.'}
+            </Typography>
+            <Typography sx={{ fontSize: '0.8rem' }}>PLAN-A Work: {describeRule(conflict.current.days_before, conflict.current.local_time)}</Typography>
+            <Typography sx={{ fontSize: '0.8rem' }}>이 PC: {describeRule(conflict.proposed.daysBefore, conflict.proposed.localTime)}</Typography>
+            <Box sx={{ display: 'flex', gap: 0.5, mt: 0.75 }}>
+              <Button size="small" variant="outlined" disabled={saving} onClick={() => void resolveConflict('server')} data-testid="reminder-conflict-server">
+                PLAN-A Work 설정 사용
+              </Button>
+              <Button size="small" disabled={saving} onClick={() => void resolveConflict('mine')} data-testid="reminder-conflict-mine">
+                이 PC 설정 유지
+              </Button>
+            </Box>
+          </Alert>
+        )}
+        {blocked && (
+          <Alert severity="info" data-testid="reminder-blocked" sx={{ mb: 1.5, fontSize: '0.8rem' }}>
+            {blocked}
+          </Alert>
+        )}
+        {acknowledged.length > 0 && (
+          <Typography data-testid="reminder-acknowledged" sx={{ fontSize: '0.78rem', color: MEMO_MUTED, mb: 1 }}>
+            확인함: {acknowledged.map(f => REMINDER_OFFSET_LABELS[f.offsetDays]).join(' · ')} — 다시 알리지 않습니다.
+          </Typography>
+        )}
         {pastDay ? (
           <Alert severity="info" sx={{ fontSize: '0.8rem' }}>오늘과 지난 날짜에는 미리 알림을 설정할 수 없습니다.</Alert>
         ) : (
@@ -172,7 +229,7 @@ export default function ReminderDialog({ date, onClose }: { date: string | null;
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        {existing && (
+        {existing && !blocked && (
           <Button color="inherit" disabled={saving} onClick={() => void save([])} sx={{ mr: 'auto' }}>
             알림 끄기
           </Button>
@@ -180,7 +237,7 @@ export default function ReminderDialog({ date, onClose }: { date: string | null;
         <Button onClick={onClose}>취소</Button>
         <Button
           variant="contained"
-          disabled={saving || pastDay || !validTime || (!existing && offsets.length === 0)}
+          disabled={saving || pastDay || !validTime || !!blocked || (!existing && offsets.length === 0)}
           onClick={() => void save(offsets)}
           data-testid="reminder-save"
         >

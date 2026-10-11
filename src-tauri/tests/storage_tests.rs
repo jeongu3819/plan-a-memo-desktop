@@ -252,7 +252,7 @@ fn upgrade_from_v1_database_keeps_everything_and_backs_up_first() {
         .unwrap();
     }
     let (storage, report) = Storage::open(&root, false).unwrap();
-    assert_eq!(report.applied_migrations, vec![2, 3], "v1 → 최신(v2 memo-sync-v1, v3 날짜 도구) 차례로");
+    assert_eq!(report.applied_migrations, vec![2, 3, 4], "v1 → 최신(v2 memo-sync-v1, v3 날짜 도구, v4 memo-sync-v2) 차례로");
     assert!(report.backup_before_migration.is_some(), "migration 전 Backup");
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM memo_items WHERE content_html = '<b>회의</b>'"), 1);
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM conflicts WHERE id = 'c1' AND status = 'open'"), 1, "충돌 기록 보존(테이블 교체)");

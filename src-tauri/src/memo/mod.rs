@@ -4,6 +4,7 @@
 //! 모든 쓰기는 transaction 안에서 [로컬 데이터 변경 + 문서 revision + (연결된 문서면) Outbox] 를
 //! 함께 commit 한다 — 하나만 저장되고 다른 하나가 빠지는 일이 없다.
 
+pub mod carryover;
 pub mod export;
 pub mod history;
 pub mod repo;

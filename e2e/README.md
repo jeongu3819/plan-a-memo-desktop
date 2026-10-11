@@ -24,6 +24,11 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 | deep-link | `plana-memo-dev://open` → 두 번째 창 없이 기존 창(single instance) |
 | device-revoke | (Mock) Web 에서 이 PC 해제 → 같은 기기 재연결은 `device_revoked` 로 거절(자동 재활성화 없음), 메모·Outbox 유지 → [새 기기로 등록] → 이전 연결은 보존·멈춤 |
 | logout | (Mock) 로그아웃 → 연결은 '이 PC 에만', 메모 유지 |
+| header-today | 상단 [검색] [오늘] [설정] 순서·높이·겹침 없음(850px), '이번 주' 없음, [오늘] → 오늘 날짜 상세(이미 오늘이면 다시 만들지 않음), ← 주간 |
+| upcoming-weekday | 다가오는 같은 요일 카드(+7·+14), 펼치기, 빈 날짜 한 줄 + [미리 작성], [더 보기], 카드에서 체크·편집·삭제 → **그 날짜 문서만** 변경 |
+| carryover | 지난주 같은 요일 미완료 안내 → 고른 항목만 복사(원본 그대로·새 id·미완료·같은 구역), 재요청 중복 없음, 재실행 후 다시 안내 없음, 보조 메뉴 재진입, 건너뛰기 유지 |
+| reminder-setup | 알림 설정 화면 → 작업 스케줄러 등록(시각·창 없는 실행 인자), 모두 완료 → 예약 삭제, 미완료 → 다시 예약, 알림 끄기 |
+| reminder-click-opens-day | `plana-memo-dev://open?date=…`(알림을 눌렀을 때와 같은 주소) → 그 날짜 상세 |
 
 * **격리**: `PLANA_CONFIG_DIR`(development 빌드에서만 읽음)로 앱 설정을 임시 폴더에 두고, 저장 위치도 임시 폴더다.
   credential 은 Windows 자격 증명 관리자의 `PLAN-A Memo (development-e2e)` 항목만 쓰고 시작·끝에 지운다.
@@ -31,6 +36,9 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 * 스크린샷: `e2e/output/` (저장소에 넣지 않음). `PLANA_E2E_KEEP=1` 이면 임시 저장소를 남긴다.
 * 개발·E2E 빌드는 식별자 `com.plana.memo.dev`·scheme `plana-memo-dev://`(`src-tauri/tauri.dev.conf.json`)를 쓴다 — 실행 중인 운영 설치본과
   single-instance·앱 설정·`plana-memo://` 등록이 섞이지 않는다(예전에는 운영본이 켜져 있으면 E2E 앱이 바로 종료되고, deep-link 단계가 운영 등록을 덮었다).
+* 창 크기: 실행 동안 개발 실행 파일의 창 상태 파일(`%APPDATA%com.plana.memo.dev.window-state.json`)을 치워 두고 끝나면 되돌린다.
+* 날짜 알림의 **OS 동작**(앱 종료 상태 알림·클릭·최소화·알림 꺼짐·놓친 알림·제거 시 작업 삭제)은 `node e2e/reminder-os.mjs` —
+  별도 테스트 앱 'PLAN-A Memo RemindTest' 를 release Installer 로 설치해 실제 작업 스케줄러·Windows 알림으로 확인한다(약 30분, 끝나면 제거·정리).
 * 설치·업데이트·제거 E2E 는 `npm run e2e:installer`(`e2e/installer.mjs` — 별도 테스트 앱 'PLAN-A Memo InstTest').
 
 ## 실제 PLAN-A Work 서버로(통합 E2E)

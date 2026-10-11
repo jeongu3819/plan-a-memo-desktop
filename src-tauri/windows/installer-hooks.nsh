@@ -8,6 +8,8 @@
 ;  * 제거 전: 설치 폴더의 파일을 지울 수 있는지 확인한다. 관리자 권한으로 설치했던 폴더라 못 지우면 안내하고
 ;    멈춘다 — 파일은 남았는데 '제거 완료' 가 뜨고 등록 정보만 지워지는 불일치를 막는다.
 ;  * 제거 후: 실행 파일이 남아 있으면(실행 중·권한) 위치를 알려 준다.
+;    날짜 알림용 작업 스케줄러 작업('PLAN-A Memo Reminders (<식별자>)' — 앱이 이 사용자 권한으로 등록)을 지운다
+;    (업데이트 때는 지우지 않는다 — 새 버전이 실행되면 다시 맞춘다).
 ;
 ; 메모 데이터(사용자 폴더의 'PLAN-A Memo')는 설치 폴더 밖에 있어 설치·업데이트·제거가 건드리지 않는다.
 ; 이 파일은 UTF-8(BOM) 이어야 한글 안내가 깨지지 않는다.
@@ -56,6 +58,12 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  ${If} $UpdateMode <> 1
+    ; 날짜 알림 작업(reminders/os.rs task_name) — 없으면 실패 코드만 돌려준다(무시).
+    nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /TN "PLAN-A Memo Reminders (${BUNDLEID})" /F'
+    Pop $R9
+    DetailPrint "PLAN-A Memo: reminder task cleanup ($R9)"
+  ${EndIf}
   ${If} $UpdateMode <> 1
   ${AndIf} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
     ${If} $LANGUAGE = 1042

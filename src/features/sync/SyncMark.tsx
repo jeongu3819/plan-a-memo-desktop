@@ -4,7 +4,7 @@
  *   SyncMark  : 주간 칸의 작은 표시(연결 안 됨이면 아무것도 그리지 않는다)
  *   LinkControl : 날짜 상세·Next List 의 [PLAN-A Work와 연결] / ✓ 연결됨(메뉴)
  */
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Box, Button, Chip, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
 import CloudDoneOutlinedIcon from '@mui/icons-material/CloudDoneOutlined';
 import CloudUploadOutlinedIcon from '@mui/icons-material/CloudUploadOutlined';
@@ -76,12 +76,15 @@ export function LinkControl({
   location,
   label,
   onOpenHistory,
+  tools = null,
 }: {
   document: DocumentInfo | null;
   location: Location;
   /** '10월 7일' · '앱 개발' */
   label: string;
   onOpenHistory: () => void;
+  /** History 옆 보조 메뉴(날짜 상세의 '이 날짜 메뉴') */
+  tools?: ReactNode;
 }) {
   const ui = useAppUi();
   const { notify } = usePersonalMemo();
@@ -169,6 +172,7 @@ export function LinkControl({
           History
         </Button>
       </Tooltip>
+      {tools}
       <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)} data-personal-memo-overlay="true">
         <MenuItem dense onClick={() => void syncNow()}>
           <ListItemIcon><SyncIcon fontSize="small" /></ListItemIcon>

@@ -87,6 +87,23 @@ Sync 때는 `plana-attachment://<server_attachment_id>` 로 바뀌어 전송된�
 | `sync_attachment_map` | 로컬 첨부 ↔ 서버 이미지 이름(계정별) · SHA-256 |
 | `conflicts` + `server_conflict_id` · `source`(desktop/web) · `account_key`, 상태 `resolved_elsewhere` · `closed` | 서버 비교와 연결 |
 
+## Migration v3 — 날짜 상세 도구 (`migrations/0003_day_tools.sql`)
+
+새 테이블만 추가한다(기존 테이블·데이터·Sync 단위 변경 없음). 적용 전 자동 Backup(`pre-migration-v3`), 실패하면 transaction 이
+통째로 되돌아가 기존 DB 그대로. 모두 **이 PC 의 메타데이터**다 — PLAN-A Work 로 보내지 않는다(서버 DTO 에 없음. 여러 기기 공유가
+필요하면 별도 Contract 확장).
+
+| 테이블 | 내용 |
+|---|---|
+| `carryover_prompts` | 지난주 같은 요일 미완료 안내 — 대상 날짜 · 원본 날짜 · 상태(`shown` 보임 · `skipped` 건너뜀 · `imported` 가져옴) |
+| `item_copies` | 복사 관계 — (원본 항목 id, 대상 날짜) 기본키 · 원본 날짜 · 새 항목 id · 복사 시각. 같은 원본을 같은 날짜로 두 번 만들지 않는다 |
+| `day_reminders` | 날짜 알림 — (대상 날짜, 미리 알림 7·2일) 기본키 · 알림 시각 HH:MM · 로컬 알림 시각 · 상태(`pending` · `delivered` · `skipped` · `expired` · `missed`) |
+
+OS 예약 상태(작업 스케줄러 작업 이름 · 등록한 시각 · 오류)는 `settings` 의 `reminder_task`(JSON)에 둔다.
+
+**지난 미완료 복사의 첨부**: 복사본의 이미지는 새 첨부(새 id·새 파일)로 복제한다 — 원본 메모를 지우거나 정리해도 복사본의 이미지가
+남고, 복사본이 원본 첨부의 주인 표시(`attachments.item_id`)를 가져가지 않는다.
+
 ## 쓰지 않는 이미지 정리
 
 설정 → Backup → [쓰지 않는 이미지 정리]. 먼저 개수·용량만 보여 주고 확인을 받는다. 지우는 조건(모두 만족):

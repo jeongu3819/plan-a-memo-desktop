@@ -42,6 +42,7 @@ npm run lint             # ESLint(React 에 SQL 금지 규칙 포함)
 npm run type-check
 npm run test:rust        # Rust — SQLite·Migration·Crash·위치 변경·Contract DTO·HTTP Adapter·Mock Sync·Auth·네트워크 오류 분류
 npm run e2e:installer    # 실제 Installer·Updater·제거(별도 테스트 앱 'PLAN-A Memo InstTest' — 10분 이상)
+node e2e/reminder-os.mjs   # 날짜 알림 OS 검증 — 설치한 테스트 앱 'PLAN-A Memo RemindTest' 로 작업 스케줄러·Windows 알림(약 30분)
 ```
 
 ## 빌드 · Installer

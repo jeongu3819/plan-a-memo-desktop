@@ -341,3 +341,60 @@ export interface CleanupReport {
   removed: number;
   dryRun: boolean;
 }
+
+/** 지난주 같은 요일의 미완료 체크리스트(Rust memo/carryover.rs) */
+export interface CarryoverInfo {
+  targetDate: string;
+  sourceDate: string;
+  /** 원본 날짜가 이미 지났는가 */
+  available: boolean;
+  /** 화면이 저절로 안내해도 되는가(이번 주 · 아직 결정 전 · 가져올 항목 있음) */
+  autoPrompt: boolean;
+  status: 'shown' | 'skipped' | 'imported' | null;
+  items: MemoItem[];
+}
+
+export interface CarryoverResult {
+  created: MemoItem[];
+  skipped: number;
+}
+
+/** 날짜별 알림(Rust reminders) — 시각은 이 PC 의 로컬 시각 'YYYY-MM-DDTHH:MM' */
+export type ReminderOffset = 7 | 2;
+
+export interface ReminderFire {
+  offsetDays: ReminderOffset;
+  fireAt: string;
+  status: 'pending' | 'delivered' | 'skipped' | 'expired' | 'missed';
+  handledAt: string | null;
+}
+
+export interface DayReminder {
+  date: string;
+  time: string;
+  offsets: ReminderOffset[];
+  fires: ReminderFire[];
+}
+
+export interface ReminderTaskState {
+  name: string;
+  triggers: string[];
+  registeredAt: string | null;
+  error: string | null;
+}
+
+export interface ReminderStatus {
+  notifications: 'enabled' | 'disabled_app' | 'disabled_user' | 'disabled_policy' | 'disabled_manifest' | 'unregistered' | 'unknown' | 'unsupported';
+  task: ReminderTaskState | null;
+}
+
+export interface ReminderSaved {
+  reminder: DayReminder | null;
+  status: ReminderStatus;
+}
+
+export interface DueReminder {
+  date: string;
+  openCount: number;
+  late: boolean;
+}

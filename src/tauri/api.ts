@@ -5,6 +5,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AppErrorBody,
+  CarryoverInfo,
+  CarryoverResult,
+  DayReminder,
+  DueReminder,
+  ReminderOffset,
+  ReminderSaved,
+  ReminderStatus,
   AppInfo,
   AttachmentInfo,
   LogoutResult,
@@ -188,4 +195,20 @@ export const mockServerService = {
   failUploads: (count: number) => call<void>('mock_fail_uploads', { count }),
   dropPushResponses: (count: number) => call<void>('mock_drop_push_responses', { count }),
   setAccount: (userId: number) => call<void>('mock_set_account', { userId }),
+};
+
+/** 날짜 상세 도구 — 다가오는 같은 요일 · 지난 미완료 가져오기(복사) · 날짜별 알림 */
+export const dayToolsService = {
+  /** `after` 보다 뒤의 같은 요일 중 메모가 있는 날짜(가까운 순) */
+  sameWeekdayDates: (after: string, limit: number) => call<string[]>('memo_same_weekday_dates', { after, limit }),
+  carryover: (date: string) => call<CarryoverInfo>('carryover_get', { date }),
+  carryoverShown: (date: string) => call<void>('carryover_mark_shown', { date }),
+  carryoverSkip: (date: string) => call<void>('carryover_skip', { date }),
+  carryoverImport: (date: string, itemIds: string[]) => call<CarryoverResult>('carryover_import', { date, itemIds }),
+  reminder: (date: string) => call<DayReminder | null>('reminder_get', { date }),
+  setReminder: (date: string, offsets: ReminderOffset[], time: string) => call<ReminderSaved>('reminder_set', { date, offsets, time }),
+  reminderStatus: () => call<ReminderStatus>('reminder_status'),
+  takeMissedReminders: () => call<DueReminder[]>('reminders_take_missed'),
+  /** 알림을 눌러 열어 달라고 온 날짜(한 번 가져가면 비워진다) */
+  takePendingOpen: () => call<string | null>('app_take_pending_open'),
 };

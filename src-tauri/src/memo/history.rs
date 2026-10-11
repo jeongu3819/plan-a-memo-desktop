@@ -35,6 +35,7 @@ pub fn reason_label(reason: &str) -> &'static str {
         "move" => "이동 전",
         "list_delete" => "List 삭제 전",
         "restore" => "복원 전",
+        "carryover" => "지난 미완료 가져오기 전",
         "remote_apply" => "PLAN-A Work 변경 반영 전",
         "remote_deleted" => "PLAN-A Work 에서 삭제됨",
         "conflict_local" => "충돌 — 선택하지 않은 Desktop 내용",

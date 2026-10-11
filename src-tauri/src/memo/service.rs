@@ -72,6 +72,24 @@ pub fn favorites(conn: &Connection) -> AppResult<Vec<LocatedItem>> {
     items.into_iter().map(|item| located(conn, item)).collect()
 }
 
+/// 날짜 상세의 '다가오는 ○요일 · 더 보기' — `after` 보다 뒤의 **같은 요일** 중 메모가 있는 날짜(가까운 순).
+/// 날짜 목록만 돌려준다(각 날짜의 내용은 화면이 그 날짜 문서로 따로 읽는다 — 날짜마다 독립된 DAY 문서).
+pub fn same_weekday_dates(conn: &Connection, after: &str, limit: i64) -> AppResult<Vec<String>> {
+    if !is_date(after) {
+        return Err(AppError::validation("날짜 형식이 올바르지 않습니다."));
+    }
+    let dates = conn
+        .prepare(
+            "SELECT d.memo_date FROM documents d
+              WHERE d.kind = 'DAY' AND d.memo_date > ?1 AND strftime('%w', d.memo_date) = strftime('%w', ?1)
+                AND EXISTS(SELECT 1 FROM memo_items i WHERE i.document_id = d.id AND i.deleted_at IS NULL)
+              ORDER BY d.memo_date LIMIT ?2",
+        )?
+        .query_map(params![after, limit.clamp(1, 50)], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(dates)
+}
+
 /// 메모가 있는 지난 날짜(List 화면) — 최신순.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

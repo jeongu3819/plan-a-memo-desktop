@@ -13,7 +13,10 @@ use crate::attachments::{self, AttachmentInfo};
 use crate::auth::loopback::{self, LoopbackListener};
 use crate::auth::{AuthProvider, AuthStatus, LoginStart, LogoutResult};
 use crate::error::{AppError, AppResult};
-use crate::memo::{export, history, repo, search, service, DayMemo, LocatedItem, Location, MemoItem, NextListInfo, NextListMemo, WeekMemo};
+use crate::memo::{
+    carryover, export, history, repo, search, service, DayMemo, LocatedItem, Location, MemoItem, NextListInfo, NextListMemo, WeekMemo,
+};
+use crate::reminders;
 use crate::state::{AppState, StorageStatus};
 use crate::storage::{self, backup, relocate, LocationInspection, Storage};
 use crate::sync::{self, engine, link, SyncOverview};
@@ -197,6 +200,7 @@ pub async fn memo_favorites(state: State<'_, AppState>) -> Cmd<Vec<LocatedItem>>
 fn write<T>(state: &State<'_, AppState>, f: impl FnOnce(&mut rusqlite::Connection) -> AppResult<T>) -> Cmd<T> {
     let value = state.storage()?.with_conn(f)?;
     state.sync.poke();
+    state.reminders.poke();
     Ok(value)
 }
 
@@ -655,4 +659,97 @@ pub async fn mock_set_account(state: State<'_, AppState>, user_id: i64) -> Cmd<(
     }
     MOCK_ACCOUNT.store(user_id, std::sync::atomic::Ordering::SeqCst);
     Ok(())
+}
+
+// ── 날짜 상세 도구: 다가오는 같은 요일 · 지난 미완료 가져오기 · 날짜별 알림 ───────────────
+
+/// 이 PC 의 오늘(로컬) — 화면이 보낸 값을 믿지 않는다.
+fn local_today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+#[tauri::command]
+pub async fn memo_same_weekday_dates(state: State<'_, AppState>, after: String, limit: i64) -> Cmd<Vec<String>> {
+    state.storage()?.with_conn(|c| service::same_weekday_dates(c, &after, limit))
+}
+
+#[tauri::command]
+pub async fn carryover_get(state: State<'_, AppState>, date: String) -> Cmd<carryover::CarryoverInfo> {
+    state.storage()?.with_conn(|c| carryover::get(c, &date, &local_today()))
+}
+
+#[tauri::command]
+pub async fn carryover_mark_shown(state: State<'_, AppState>, date: String) -> Cmd<()> {
+    state.storage()?.with_conn(|c| carryover::mark_shown(c, &date))
+}
+
+#[tauri::command]
+pub async fn carryover_skip(state: State<'_, AppState>, date: String) -> Cmd<()> {
+    state.storage()?.with_conn(|c| carryover::skip(c, &date))
+}
+
+#[tauri::command]
+pub async fn carryover_import(state: State<'_, AppState>, date: String, item_ids: Vec<String>) -> Cmd<carryover::CarryoverResult> {
+    let storage = state.storage()?;
+    let result = storage.with_conn(|c| carryover::import(c, &storage.paths, &date, &item_ids, &local_today()))?;
+    state.sync.poke();
+    state.reminders.poke();
+    Ok(result)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderStatus {
+    /// enabled | disabled_app | disabled_user | disabled_policy | disabled_manifest | unregistered(설치 안 한 실행 파일) | unknown | unsupported
+    pub notifications: &'static str,
+    /// 작업 스케줄러 등록 상태(마지막으로 맞춘 결과)
+    pub task: Option<reminders::TaskState>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderSaved {
+    pub reminder: Option<reminders::DayReminder>,
+    pub status: ReminderStatus,
+}
+
+#[tauri::command]
+pub async fn reminder_get(state: State<'_, AppState>, date: String) -> Cmd<Option<reminders::DayReminder>> {
+    state.storage()?.with_conn(|c| reminders::get(c, &date))
+}
+
+#[tauri::command]
+pub async fn reminder_set(state: State<'_, AppState>, date: String, offsets: Vec<i64>, time: String) -> Cmd<ReminderSaved> {
+    let storage = state.storage()?;
+    let reminder = storage.with_conn(|c| reminders::set(c, &date, &offsets, &time, reminders::local_now()))?;
+    let runtime = state.reminders.clone();
+    let task = tauri::async_runtime::spawn_blocking(move || runtime.sync_now(&storage))
+        .await
+        .map_err(|_| AppError::new("internal", "작업이 중단되었습니다."))??;
+    Ok(ReminderSaved { reminder, status: ReminderStatus { notifications: state.reminders.notification_setting(), task } })
+}
+
+#[tauri::command]
+pub async fn reminder_status(state: State<'_, AppState>) -> Cmd<ReminderStatus> {
+    let storage = state.storage()?;
+    let runtime = state.reminders.clone();
+    let (notifications, task) = tauri::async_runtime::spawn_blocking(move || {
+        let notifications = runtime.notification_setting();
+        runtime.task_state(&storage).map(|task| (notifications, task))
+    })
+    .await
+    .map_err(|_| AppError::new("internal", "작업이 중단되었습니다."))??;
+    Ok(ReminderStatus { notifications, task })
+}
+
+/// 앱을 다시 열 때 찾은 놓친 알림 — 한 번 가져가면 비워진다(같은 안내를 반복하지 않는다).
+#[tauri::command]
+pub async fn reminders_take_missed(state: State<'_, AppState>) -> Cmd<Vec<reminders::DueReminder>> {
+    Ok(state.reminders.take_missed())
+}
+
+/// 알림을 눌러(또는 링크로) 열어 달라고 온 날짜 — 한 번 가져가면 비워진다.
+#[tauri::command]
+pub async fn app_take_pending_open(state: State<'_, AppState>) -> Cmd<Option<String>> {
+    Ok(state.pending_open.lock().map_err(|_| AppError::new("internal", "상태 잠금 오류"))?.take())
 }

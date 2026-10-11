@@ -1604,3 +1604,33 @@ async fn one_image_used_many_times_is_acked_once() {
     assert_eq!(e.status(&day("2026-10-07")), "synced");
     assert_eq!(e.mock.link_status(&e.link_id(&day("2026-10-07"))).as_deref(), Some("synced"));
 }
+
+#[tokio::test]
+async fn carried_over_items_sync_as_new_items_of_the_linked_day_only() {
+    use plan_a_memo_lib::memo::carryover;
+    let e = env_logged_in().await;
+    let source = add(&e.storage, day("2026-10-03"), "main", "보고서 작성");
+    add(&e.storage, day("2026-10-10"), "am", "이번 주 회의");
+    e.link(day("2026-10-10"));
+    e.sync().await;
+    let before = e.mock.unit_items(1, &Unit::day("2026-10-10"));
+    assert_eq!(before.len(), 1);
+
+    e.storage.with_conn(|c| carryover::import(c, &e.storage.paths, "2026-10-10", std::slice::from_ref(&source.id), "2026-10-10")).unwrap();
+    assert_eq!(e.status(&day("2026-10-10")), "pending", "연결된 이번 주 DAY 의 변경으로 Outbox 에 남는다");
+    let report = e.sync().await;
+    assert_eq!(report.pushed, 1);
+    assert_eq!(report.conflicts, 0);
+    let after = e.mock.unit_items(1, &Unit::day("2026-10-10"));
+    assert_eq!(after.len(), 2);
+    let copied = after.iter().find(|(_, m)| m.content == "보고서 작성").expect("복사본이 서버의 이번 주 DAY 에");
+    assert_eq!(copied.1.section, "main");
+    assert!(!copied.1.completed);
+    let key = copied.1.client_key.clone().expect("새 항목은 새 client_key 로");
+    assert_ne!(key, source.id);
+    assert!(e.mock.unit_items(1, &Unit::day("2026-10-03")).is_empty(), "지난주는 연결하지 않고 올리지 않는다");
+    assert_eq!(texts(&e.storage, "2026-10-03"), vec!["보고서 작성"], "원본 그대로");
+    // 다시 동기화해도 같은 항목을 두 번 올리지 않는다
+    e.sync().await;
+    assert_eq!(e.mock.unit_items(1, &Unit::day("2026-10-10")).len(), 2);
+}

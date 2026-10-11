@@ -8,6 +8,7 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod memo;
+pub mod reminders;
 pub mod state;
 pub mod storage;
 pub mod sync;
@@ -43,17 +44,60 @@ fn serve_attachment(app: &tauri::AppHandle, path: &str) -> Response<Vec<u8>> {
     }
 }
 
-/// `plana-memo://`(staging: `plana-memo-staging://`) — 창을 앞으로 가져오기만 한다. 로그인 callback 은 memo-sync-v1
+/// `plana-memo://`(staging: `plana-memo-staging://`) — 창을 앞으로 가져온다. 로그인 callback 은 memo-sync-v1
 /// Contract 대로 127.0.0.1 loopback 으로만 받는다(deep link 로 온 code·서버 주소는 어떤 것도 믿지 않는다).
+/// 날짜 알림을 누르면 `<scheme>://open?date=YYYY-MM-DD` 로 온다 — 날짜 형식만 받아 그 날짜 상세를 연다(그 밖의 값은 무시).
 fn handle_deep_links(app: &tauri::AppHandle, urls: Vec<String>) {
-    let prefix = format!("{}://", app.state::<AppState>().env.deep_link_scheme);
-    if urls.iter().any(|url| url.starts_with(&prefix)) {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+    let state = app.state::<AppState>();
+    let prefix = format!("{}://", state.env.deep_link_scheme);
+    let ours: Vec<&String> = urls.iter().filter(|url| url.starts_with(&prefix)).collect();
+    if ours.is_empty() {
+        return;
     }
+    if let Some(date) = ours.iter().rev().find_map(|url| open_day_of(url)) {
+        if let Ok(mut pending) = state.pending_open.lock() {
+            *pending = Some(date.clone());
+        }
+        let _ = app.emit("app://open-day", date);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// `<scheme>://open?date=2026-10-24` → '2026-10-24'
+fn open_day_of(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    if url.host_str() != Some("open") {
+        return None;
+    }
+    url.query_pairs().find(|(k, _)| k == "date").map(|(_, v)| v.to_string()).filter(|d| util::is_date(d))
+}
+
+/// 날짜 알림 — OS 예약 맞추기·작업이 놓친 알림 처리(30초마다, 메모가 바뀌면 곧바로).
+fn spawn_reminder_worker(app: tauri::AppHandle) {
+    let runtime = app.state::<AppState>().reminders.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        loop {
+            if let Ok(storage) = app.state::<AppState>().storage() {
+                let worker = runtime.clone();
+                match tauri::async_runtime::spawn_blocking(move || worker.tick(&storage)).await {
+                    Ok(Ok(true)) => {
+                        let _ = app.emit("reminder://missed", ());
+                    }
+                    Ok(Err(error)) => log::warn!("reminder tick failed: {}", error.code()),
+                    _ => {}
+                }
+            }
+            tokio::select! {
+                _ = runtime.notify.notified() => tokio::time::sleep(Duration::from_millis(1500)).await,
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+            }
+        }
+    });
 }
 
 /// 창 상태 파일에 저장·복원하는 항목 — 제목 표시줄(decorations)은 빼고 늘 tauri.conf.json 값(false, 앱이 그린다)을 쓴다.
@@ -170,7 +214,15 @@ pub fn run() {
                 if env.update.enabled() { env.update.channel } else { "off" }
             );
             app.manage(update::UpdateState::new(env.update.clone(), version));
+            // E2E(PLANA_CONFIG_DIR) 실행은 알림 작업 이름을 따로 — 사용자의 개발·설치본 알림 작업과 섞이지 않게.
+            let isolation = (env.env == config::AppEnv::Development && std::env::var_os("PLANA_CONFIG_DIR").is_some())
+                .then(|| format!("e2e-{}", &util::sha256_hex(config_dir.to_string_lossy().as_bytes())[..8]));
             let state = AppState::new(env, config_dir, log_dir);
+            let identifier = app.config().identifier.clone();
+            if let Ok(exe) = std::env::current_exe() {
+                let name = reminders::os::task_name(&identifier, isolation.as_deref());
+                state.reminders.configure(name, exe, identifier, state.env.deep_link_scheme.to_string());
+            }
             state.open_configured();
             app.manage(state);
 
@@ -191,6 +243,7 @@ pub fn run() {
             }
 
             spawn_sync_scheduler(app.handle().clone());
+            spawn_reminder_worker(app.handle().clone());
             update::spawn_auto_check(app.handle().clone());
             watch_window_state(app.handle());
             Ok(())
@@ -255,6 +308,16 @@ pub fn run() {
             commands::mock_fail_uploads,
             commands::mock_drop_push_responses,
             commands::mock_set_account,
+            commands::memo_same_weekday_dates,
+            commands::carryover_get,
+            commands::carryover_mark_shown,
+            commands::carryover_skip,
+            commands::carryover_import,
+            commands::reminder_get,
+            commands::reminder_set,
+            commands::reminder_status,
+            commands::reminders_take_missed,
+            commands::app_take_pending_open,
         ])
         .run(tauri::generate_context!())
         .expect("PLAN-A Memo 실행 중 오류");

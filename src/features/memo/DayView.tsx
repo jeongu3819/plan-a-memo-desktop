@@ -2,9 +2,14 @@
  * 날짜 상세(메인/오전/오후) 또는 Next List — Web PersonalMemoDayView 와 같은 배치.
  *   넓으면 메인(위, 전체 폭) + 오전·오후(아래, 나란히). 구역 이동·순서 변경은 끌기와 메뉴 둘 다 된다.
  * 하루 전체(또는 List 전체)가 문서 1건이므로 연결 버튼도 화면 위에 하나만 있다.
+ *
+ * 날짜 상세에서는 구역이 내용만큼만 자란다(빈 구역은 낮은 입력칸) — 아래의 '지난 미완료 가져오기' 안내와
+ * '다가오는 ○요일'(다음 주·다다음 주 같은 요일 메모)이 일반적인 양에서 함께 보이게.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { Box, Button, CircularProgress, Typography } from '@mui/material';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Box, Button, CircularProgress, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
+import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
+import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import {
   closestCenter,
   DndContext,
@@ -26,6 +31,8 @@ import { usePersonalMemo } from './MemoProvider';
 import { SECTION_LABELS } from './MemoMenu';
 import MemoRow from './MemoRow';
 import QuickInput from './QuickInput';
+import CarryoverNotice from './CarryoverNotice';
+import UpcomingWeekday from './UpcomingWeekday';
 
 const SECTIONS: MemoSection[] = ['main', 'am', 'pm'];
 const SECTION_PLACEHOLDERS: Record<MemoSection, string> = {
@@ -59,6 +66,7 @@ function Section({
   minRows,
   autoFocus,
   area,
+  grow,
 }: {
   title: string | null;
   items: MemoItem[];
@@ -68,6 +76,8 @@ function Section({
   minRows: number;
   autoFocus: boolean;
   area: string;
+  /** Next List — 창 높이를 채운다. 날짜 상세는 내용만큼만. */
+  grow: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `section:${section}` });
   const checklist = items.filter(m => m.kind === 'checklist');
@@ -113,7 +123,14 @@ function Section({
         ))}
       </SortableContext>
       <Box sx={{ mt: items.length ? 1 : 0, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <QuickInput location={location} section={section} placeholder={hint} minRows={minRows} autoFocus={autoFocus} fill />
+        <QuickInput
+          location={location}
+          section={section}
+          placeholder={hint}
+          minRows={grow ? minRows : items.length ? 1 : minRows}
+          autoFocus={autoFocus}
+          fill={grow}
+        />
       </Box>
     </Box>
   );
@@ -125,14 +142,19 @@ export default function DayView({
   editItemId = null,
   highlight = null,
   listName = null,
+  onOpenDay,
 }: {
   location: Location;
   focusSection?: MemoSection | null;
   editItemId?: string | null;
   highlight?: { itemId: string; tokens: string[] } | null;
   listName?: string | null;
+  /** 다가오는 같은 요일 카드에서 그 날짜 상세로 */
+  onOpenDay?: (date: string) => void;
 }) {
   const { actions, setEditingId, openHistory } = usePersonalMemo();
+  const [toolsAnchor, setToolsAnchor] = useState<HTMLElement | null>(null);
+  const [carryoverOpen, setCarryoverOpen] = useState(false);
   const isNext = location.kind === 'next';
   const dayQuery = useDay(isNext ? null : location.date);
   const listQuery = useNextList(isNext ? location.listId : null, isNext);
@@ -223,11 +245,20 @@ export default function DayView({
   }
 
   const label = location.kind === 'day' ? koreanMonthDay(location.date) : listName || NEXT_LABEL;
+  const dayTools =
+    location.kind === 'day' ? (
+      <Tooltip title="이 날짜 메뉴">
+        <IconButton size="small" aria-label="이 날짜 메뉴" data-testid="day-tools-menu" onClick={event => setToolsAnchor(event.currentTarget)} sx={{ color: 'text.secondary' }}>
+          <MoreHorizIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
+    ) : null;
   return (
     <Box
       data-testid="personal-memo-day"
       sx={{
-        display: 'flex', flexDirection: 'column', gap: 1, flex: 1, minHeight: 0,
+        display: 'flex', flexDirection: 'column', gap: 1, minHeight: 0,
+        ...(isNext ? { flex: 1 } : { flex: '0 0 auto' }),
         '& [data-search-hit="true"]': {
           bgcolor: 'rgba(250, 204, 21, 0.16)',
           boxShadow: '0 0 0 2px rgba(234, 179, 8, 0.45)',
@@ -240,6 +271,7 @@ export default function DayView({
         location={location}
         label={label}
         onOpenHistory={() => openHistory(location, locationLabel(location, listName))}
+        tools={dayTools}
       />
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <Box
@@ -247,11 +279,11 @@ export default function DayView({
           data-testid="personal-memo-day-sections"
           sx={{
             display: 'grid',
-            flex: '1 1 0',
+            flex: isNext ? '1 1 0' : '0 0 auto',
             minHeight: 0,
             gap: { xs: 1.25, sm: 1.5 },
             gridTemplateColumns: isNext ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))',
-            gridTemplateRows: isNext ? 'minmax(min-content, 1fr)' : 'minmax(min-content, 1.1fr) minmax(min-content, 1fr)',
+            gridTemplateRows: isNext ? 'minmax(min-content, 1fr)' : 'auto auto',
             gridTemplateAreas: isNext ? '"main"' : '"main main" "am pm"',
           }}
         >
@@ -263,6 +295,7 @@ export default function DayView({
               location={location}
               section="next"
               minRows={6}
+              grow
               autoFocus={!!focusSection && !editItemId}
               hint="언젠가 할 일, 떠오른 아이디어를 적어두세요"
             />
@@ -275,7 +308,8 @@ export default function DayView({
                 items={bySection[section]}
                 location={location}
                 section={section}
-                minRows={section === 'main' ? 4 : 3}
+                minRows={2}
+                grow={false}
                 autoFocus={focusSection === section && !editItemId}
                 hint={SECTION_PLACEHOLDERS[section]}
               />
@@ -283,6 +317,25 @@ export default function DayView({
           )}
         </Box>
       </DndContext>
+      {location.kind === 'day' && (
+        <>
+          <CarryoverNotice date={location.date} manual={carryoverOpen} onCloseManual={() => setCarryoverOpen(false)} />
+          <UpcomingWeekday date={location.date} onOpenDay={date => onOpenDay?.(date)} />
+          <Menu anchorEl={toolsAnchor} open={!!toolsAnchor} onClose={() => setToolsAnchor(null)} data-personal-memo-overlay="true">
+            <MenuItem
+              dense
+              data-testid="day-tools-carryover"
+              onClick={() => {
+                setToolsAnchor(null);
+                setCarryoverOpen(true);
+              }}
+            >
+              <ListItemIcon><PlaylistAddIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary="지난 미완료 가져오기" secondary="지난주 같은 요일의 완료하지 않은 체크리스트" />
+            </MenuItem>
+          </Menu>
+        </>
+      )}
     </Box>
   );
 }

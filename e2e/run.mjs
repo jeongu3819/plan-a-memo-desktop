@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { App, clearE2eCredential, isMockRun } from './harness.mjs';
+import { App, clearE2eCredential, isMockRun, isolateWindowState } from './harness.mjs';
 
 const app = new App();
 const steps = [];
@@ -297,9 +297,263 @@ step(
   { mockOnly: true },
 );
 
+// ── 날짜 상세 도구: 상단 버튼 · 오늘 · 다가오는 같은 요일 · 지난 미완료 가져오기 · 날짜 알림(작업 스케줄러 등록) ──────
+
+const plusDays = (date, n) => {
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+};
+const weekdayIndex = date => (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7; // 0 = 월
+const dayOf = date => app.invoke('memo_day', { date });
+const addItem = (date, section, html, kind = 'checklist') =>
+  app.invoke('item_create', { input: { id: crypto.randomUUID(), location: { kind: 'day', date }, section, kind, contentHtml: html } });
+let reminderTask = null;
+
+async function openToday() {
+  await app.page.reload();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await app.page.click('[data-testid="memo-today"]');
+  await app.page.waitForSelector('[data-testid="upcoming-weekday"]', { timeout: 15000 });
+  await app.page.mouse.move(5, 300); // 머리 버튼 툴팁을 닫는다
+}
+
+async function openDate(date) {
+  await app.page.reload();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  execFileSync('cmd', ['/c', 'start', '', `plana-memo-dev://open?date=${date}`], { stdio: 'ignore' });
+  await waitFor(
+    async () => (await app.page.locator('[data-testid="upcoming-weekday"]').count()) > 0 && (await app.page.locator(`[data-testid="upcoming-card-${plusDays(date, 7)}"]`).count()) > 0,
+    `${date} 상세(링크)`,
+  );
+}
+
+step('header-today', async () => {
+  const page = app.page;
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  const order = async () =>
+    page.$$eval('[data-testid="memo-header-tools"] > *', nodes =>
+      nodes.map(n => n.getAttribute('data-testid') || n.querySelector('[data-testid]')?.getAttribute('data-testid')),
+    );
+  assert.deepEqual(await order(), ['memo-search-open', 'memo-today', 'open-settings'], '주간: 검색 → 오늘 → 설정');
+  assert.equal(await page.locator('[data-testid="open-settings"]').count(), 1, '설정 입구는 하나');
+  const headerText = await page.locator('[data-testid="memo-dialog-header"]').innerText();
+  assert.ok(!headerText.includes('이번 주'), "'이번 주' 버튼 없음");
+  // 같은 높이·세로 정렬
+  const boxes = await page.$$eval('[data-testid="memo-header-tools"] > *', nodes => nodes.map(n => n.getBoundingClientRect()).map(r => [Math.round(r.top), Math.round(r.height)]));
+  assert.ok(boxes.every(([top, h]) => h === boxes[0][1] && Math.abs(top - boxes[0][0]) <= 1), `도구 높이·정렬 ${JSON.stringify(boxes)}`);
+  await app.shot('20-header-week');
+  // [오늘] → 오늘 날짜 상세(메인·오전·오후 + 다가오는 같은 요일)
+  await page.click('[data-testid="memo-today"]');
+  await page.waitForSelector('[data-testid="memo-section-main"]');
+  await page.waitForSelector('[data-testid="upcoming-weekday"]');
+  assert.equal(await page.getAttribute('[data-testid="memo-today"]', 'aria-pressed'), 'true');
+  assert.deepEqual(await order(), ['memo-search-open', 'memo-today', 'open-settings'], '날짜 상세: 같은 순서');
+  assert.ok(await page.locator('[data-testid="memo-back-to-week"]').isVisible(), '← 주간 유지');
+  const names = ['월', '화', '수', '목', '금', '토', '일'];
+  assert.match(await page.locator('[data-testid="upcoming-weekday"] h2').innerText(), new RegExp(`다가오는 ${names[weekdayIndex(today)]}요일`));
+  // 이미 오늘이면 다시 눌러도 화면을 다시 만들지 않는다 — 쓰던 글은 기존 규칙대로(바깥을 누르면) 저장된다
+  await page.$eval('[data-testid="personal-memo-day"]', el => (el.dataset.e2eMark = 'same'));
+  const input = page.locator('[data-testid="memo-section-am"] [data-testid="personal-memo-quick-input"]');
+  await input.click();
+  await input.type('쓰는 중');
+  await page.click('[data-testid="memo-today"]');
+  assert.equal(await page.getAttribute('[data-testid="personal-memo-day"]', 'data-e2e-mark'), 'same', '같은 화면 유지(다시 만들지 않음)');
+  const typed = await waitFor(async () => (await day()).items.find(i => i.contentHtml === '쓰는 중'), '쓰던 글 저장(잃지 않음)');
+  await app.invoke('item_delete', { id: typed.id });
+  // 작은 창에서도 겹치지 않는다
+  const original = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  await page.setViewportSize({ width: 850, height: 620 }); // 창 최소 폭(tauri.conf minWidth 850)
+  const rects = await page.$$eval('[data-testid="personal-memo-view-header"] button', nodes => nodes.map(n => n.getBoundingClientRect().toJSON()));
+  for (let i = 0; i < rects.length; i++)
+    for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i];
+      const b = rects[j];
+      const overlap = a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+      assert.ok(!overlap, '머리 버튼끼리 겹치지 않는다');
+    }
+  await app.shot('21-today-detail-small');
+  await page.setViewportSize(original);
+  await app.shot('21-today-detail');
+  // [← 주간] → 오늘이 든 주
+  await page.click('[data-testid="memo-back-to-week"]');
+  await page.waitForSelector(`[data-testid="memo-cell-${today}"]`);
+});
+
+step('upcoming-weekday', async () => {
+  const page = app.page;
+  const d7 = plusDays(today, 7);
+  const d14 = plusDays(today, 14);
+  const d28 = plusDays(today, 28);
+  const a = await addItem(d7, 'main', '정기 점검');
+  await addItem(d7, 'am', '예약한 일정 확인');
+  await addItem(d7, 'pm', '준비물 미리 챙기기', 'text');
+  for (const n of [1, 2, 3, 4, 5]) await addItem(d7, 'pm', `추가 항목 ${n}`);
+  await addItem(d28, 'main', '4주 뒤 일정');
+  const todayRev = (await day()).document.localRevision;
+  await openToday();
+  const card7 = page.locator(`[data-testid="upcoming-card-${d7}"]`);
+  await card7.waitFor();
+  const text7 = await card7.innerText();
+  assert.ok(text7.includes('다음 주') && text7.includes('정기 점검') && text7.includes('예약한 일정 확인'), '다음 주 카드에 실제 내용');
+  assert.ok(text7.includes('나머지') && text7.includes('펼치기'), '많으면 일부만 + 펼치기');
+  await card7.locator('button:has-text("펼치기")').click();
+  assert.ok((await card7.innerText()).includes('추가 항목 5'), '펼치면 모두');
+  // 빈 다다음 주 — 작은 한 줄 + [미리 작성]
+  const card14 = page.locator(`[data-testid="upcoming-card-${d14}"]`);
+  assert.equal(await card14.getAttribute('data-empty'), 'true');
+  const h14 = (await card14.boundingBox()).height;
+  assert.ok(h14 < 60, `빈 날짜는 작게(${h14}px)`);
+  assert.equal(await page.locator(`[data-testid="upcoming-card-${d28}"]`).count(), 0, '더 먼 날짜는 [더 보기] 전에는 없다');
+  await card14.locator('[data-testid="upcoming-write"]').click();
+  const input14 = card14.locator('[data-testid="personal-memo-quick-input"]');
+  await input14.type('다음 달 계획 검토');
+  await page.keyboard.press('Control+Enter');
+  await waitFor(async () => (await dayOf(d14)).items.some(i => i.contentHtml === '다음 달 계획 검토'), '미리 작성 → 그 날짜 문서');
+  await page.locator('[data-testid="memo-header-date"]').click();
+  // 더 보기
+  await page.click('[data-testid="upcoming-more"]');
+  await page.locator(`[data-testid="upcoming-card-${d28}"]`).waitFor();
+  // 카드에서 체크 → 그 날짜 원본만 바뀐다
+  const row = card7.locator(`[data-testid="personal-memo-row"][data-memo-id="${a.id}"]`);
+  await row.locator('input[type="checkbox"]').click();
+  await waitFor(async () => (await dayOf(d7)).items.find(i => i.id === a.id)?.completed, '다음 주 항목 완료');
+  // 카드에서 그 자리 편집(기존 Rich Editor)
+  await row.locator('[aria-label="메모 편집"]').click();
+  await row.locator('[contenteditable="true"]').waitFor();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' (수정)');
+  await page.locator('[data-testid="memo-header-date"]').click();
+  await waitFor(async () => (await dayOf(d7)).items.find(i => i.id === a.id)?.contentHtml.includes('(수정)'), '다음 주 항목 수정');
+  const nowDay = await day();
+  assert.equal(nowDay.document.localRevision, todayRev, '보고 있는 오늘 문서는 바뀌지 않는다');
+  assert.ok(!nowDay.items.some(i => i.contentHtml.includes('정기 점검')), '오늘로 복사하지 않는다');
+  // 카드에서 삭제(메뉴)
+  const extra = card7.locator('[data-testid="personal-memo-row"]').filter({ hasText: '추가 항목 5' });
+  await extra.hover();
+  await extra.locator('[aria-label="메모 메뉴"]').click();
+  await page.locator('[role="menuitem"]:has-text("삭제")').click();
+  await waitFor(async () => !(await dayOf(d7)).items.some(i => i.contentHtml === '추가 항목 5'), '다음 주 항목 삭제');
+  assert.equal((await dayOf(d7)).document.syncEnabled, false, '표시·편집만으로 연결하지 않는다');
+  await app.shot('22-upcoming');
+  // 카드 제목 → 그 날짜 상세
+  await card7.locator(`[aria-label="${d7} 날짜 상세로"]`).click();
+  await page.locator(`[data-testid="upcoming-card-${plusDays(d7, 7)}"]`).waitFor();
+});
+
+step('carryover', async () => {
+  const src = plusDays(today, -7);
+  const a = await addItem(src, 'main', '<b>보고서</b> 작성');
+  const b = await addItem(src, 'am', '자료 정리');
+  const done = await addItem(src, 'pm', '완료한 일');
+  await app.invoke('item_set_completed', { id: done.id, completed: true });
+  await addItem(src, 'pm', '그냥 메모', 'text');
+  const before = await dayOf(src);
+  await openToday();
+  const notice = app.page.locator('[data-testid="carryover-notice"]');
+  await notice.waitFor();
+  assert.match(await notice.innerText(), /완료하지 않은 체크리스트가 2개/);
+  await app.shot('23-carryover-notice');
+  await app.page.click('[data-testid="carryover-pick"]');
+  const options = app.page.locator('[data-testid="carryover-option"]');
+  assert.equal(await options.count(), 2, '완료·텍스트 제외');
+  await options.nth(1).locator('input').click(); // '자료 정리' 고르지 않음
+  await app.shot('24-carryover-pick');
+  await app.page.click('[data-testid="carryover-import"]');
+  await waitFor(async () => (await day()).items.some(i => i.contentHtml === '<b>보고서</b> 작성'), '고른 항목만 복사');
+  const now = await day();
+  const copy = now.items.find(i => i.contentHtml === '<b>보고서</b> 작성');
+  assert.notEqual(copy.id, a.id, '새 id');
+  assert.equal(copy.section, 'main');
+  assert.equal(copy.completed, false);
+  assert.ok(!now.items.some(i => i.contentHtml === '자료 정리'), '고르지 않은 항목은 가져오지 않는다');
+  const after = await dayOf(src);
+  assert.deepEqual(after.items.map(i => [i.id, i.contentHtml, i.completed]), before.items.map(i => [i.id, i.contentHtml, i.completed]), '원본 그대로');
+  assert.equal(after.document.localRevision, before.document.localRevision);
+  // 같은 요청 다시(재클릭·재시도) → 중복 없음
+  const again = await app.invoke('carryover_import', { date: today, itemIds: [a.id] });
+  assert.equal(again.created.length, 0);
+  // 재실행 후 다시 저절로 안내하지 않는다 · 보조 메뉴로는 남은 항목을 가져올 수 있다
+  await app.restart();
+  await openToday();
+  await sleep(800);
+  assert.equal(await app.page.locator('[data-testid="carryover-notice"]').count(), 0, '가져온 뒤에는 저절로 안내하지 않는다');
+  await app.page.click('[data-testid="day-tools-menu"]');
+  await app.page.click('[data-testid="day-tools-carryover"]');
+  await app.page.locator('[data-testid="carryover-picker"]').waitFor();
+  assert.equal(await app.page.locator('[data-testid="carryover-option"]').count(), 1, '남은 항목(자료 정리)만');
+  await app.page.locator('[data-testid="carryover-picker"] button:has-text("취소")').click();
+  assert.equal((await day()).items.filter(i => i.contentHtml === '<b>보고서</b> 작성').length, 1, '재실행 후에도 하나');
+  void b;
+
+  // [이번에는 건너뛰기] — 이번 주의 다른 날짜(오늘이 월요일이면 내일)
+  const other = weekdayIndex(today) > 0 ? plusDays(today, -1) : plusDays(today, 1);
+  await addItem(plusDays(other, -7), 'main', '건너뛸 미완료');
+  await openDate(other);
+  await app.page.locator('[data-testid="carryover-notice"]').waitFor();
+  await app.page.click('[data-testid="carryover-skip"]');
+  await waitFor(async () => (await app.invoke('carryover_get', { date: other })).status === 'skipped', '건너뛰기 저장');
+  await app.restart();
+  await openDate(other);
+  await sleep(800);
+  assert.equal(await app.page.locator('[data-testid="carryover-notice"]').count(), 0, '건너뛴 안내는 재실행 후에도 다시 보이지 않는다');
+});
+
+step('reminder-setup', async () => {
+  const page = app.page;
+  const d7 = plusDays(today, 7);
+  await openToday();
+  const card = page.locator(`[data-testid="upcoming-card-${d7}"]`);
+  await card.locator('[data-testid="upcoming-reminder-button"]').click();
+  const dialog = page.locator('[data-testid="reminder-dialog"]');
+  await dialog.waitFor();
+  await dialog.locator('input[aria-label="1주 전"]').check();
+  await dialog.locator('input[aria-label="2일 전"]').check();
+  await dialog.locator('[data-testid="reminder-time"]').fill('21:30');
+  const preview = await dialog.locator('[data-testid="reminder-preview"]').innerText();
+  assert.match(preview, /오후 9:30/);
+  await app.shot('25-reminder-dialog');
+  await page.click('[data-testid="reminder-save"]');
+  await dialog.waitFor({ state: 'detached' });
+  const r = await app.invoke('reminder_get', { date: d7 });
+  assert.deepEqual(r.fires.map(f => f.fireAt), [`${today}T21:30`, `${plusDays(d7, -2)}T21:30`]);
+  const status = await app.invoke('reminder_status');
+  assert.equal(status.task?.error ?? null, null, `작업 등록 오류 없음: ${status.task?.error}`);
+  assert.ok(status.task.name.includes('e2e'), 'E2E 는 따로 된 작업 이름');
+  reminderTask = status.task.name;
+  const pending = r.fires.filter(f => f.status === 'pending').map(f => f.fireAt);
+  assert.deepEqual(status.task.triggers, pending, '예약 시각 = 아직 오지 않은 알림 시각');
+  const xml = execFileSync('schtasks', ['/Query', '/TN', reminderTask, '/XML'], { encoding: 'utf8' });
+  for (const t of pending) assert.ok(xml.includes(`<StartBoundary>${t}:00</StartBoundary>`), `작업 스케줄러 시각 ${t}`);
+  assert.ok(xml.includes('--plana-reminder'), '창 없이 알림만 처리하는 실행');
+  assert.ok(await card.locator('[data-reminder-on="true"]').count(), '카드에 알림 켜짐 표시');
+  // 그 날짜 체크리스트를 모두 완료하면 예약에서 빠진다
+  const open = (await dayOf(d7)).items.filter(i => i.kind === 'checklist' && !i.completed);
+  for (const item of open) await app.invoke('item_set_completed', { id: item.id, completed: true });
+  await waitFor(async () => (await app.invoke('reminder_status')).task?.triggers.length === 0, '모두 완료 → 예약 취소', 20000);
+  assert.throws(() => execFileSync('schtasks', ['/Query', '/TN', reminderTask], { stdio: 'ignore' }), '작업 삭제');
+  // 다시 미완료가 생기면 다시 예약
+  await app.invoke('item_set_completed', { id: open[0].id, completed: false });
+  await waitFor(async () => (await app.invoke('reminder_status')).task?.triggers.length === pending.length, '미완료 → 다시 예약', 20000);
+  // 알림 끄기
+  await app.invoke('reminder_set', { date: d7, offsets: [], time: '21:30' });
+  assert.equal((await app.invoke('reminder_status')).task.triggers.length, 0);
+  assert.throws(() => execFileSync('schtasks', ['/Query', '/TN', reminderTask], { stdio: 'ignore' }), '알림 끄기 → 작업 삭제');
+});
+
+step('reminder-click-opens-day', async () => {
+  // 알림을 누르면 Windows 가 <scheme>://open?date=… 로 앱을 연다(실행 중이면 그 창으로) → 그 날짜 상세
+  const target = plusDays(today, 21);
+  await openDate(target);
+  const [, m, d] = target.split('-').map(Number);
+  assert.ok((await app.page.locator('[data-testid="personal-memo-view-label"]').innerText()).includes(`${m}/${d}`), '알림의 날짜 상세');
+  assert.equal(await app.invoke('app_take_pending_open'), null, '한 번 연 날짜는 비워진다');
+});
+
 const only = process.argv.slice(2);
 let failed = 0;
 clearE2eCredential();
+const restoreWindowState = isolateWindowState();
 try {
   await app.start();
   for (const s of steps) {
@@ -324,6 +578,14 @@ try {
   await app.kill();
   app.cleanup();
   clearE2eCredential();
+  restoreWindowState();
+  if (reminderTask) {
+    try {
+      execFileSync('schtasks', ['/Delete', '/TN', reminderTask, '/F'], { stdio: 'ignore' });
+    } catch {
+      /* 이미 없음 */
+    }
+  }
 }
 console.log(failed ? `E2E 실패 ${failed}` : 'E2E 통과');
 process.exit(failed ? 1 : 0);

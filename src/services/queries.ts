@@ -7,6 +7,7 @@ import { QueryClient, useQuery } from '@tanstack/react-query';
 import {
   authService,
   dayMemoService,
+  dayToolsService,
   historyService,
   nextListService,
   searchService,
@@ -25,6 +26,11 @@ export const keys = {
   search: (q: string) => ['memo', 'search', q] as const,
   favorites: ['memo', 'favorites'] as const,
   history: (location: Location) => ['memo', 'history', locationKey(location)] as const,
+  // 날짜 상세 도구 — 'memo' 아래에 두어 메모를 쓰면(refreshMemo) 함께 다시 읽는다.
+  sameWeekday: (after: string, limit: number) => ['memo', 'same-weekday', after, limit] as const,
+  carryover: (date: string) => ['memo', 'carryover', date] as const,
+  reminder: (date: string) => ['memo', 'reminder', date] as const,
+  reminderStatus: ['reminder-status'] as const,
   sync: ['sync'] as const,
   syncOverview: ['sync', 'overview'] as const,
   conflicts: ['sync', 'conflicts'] as const,
@@ -49,6 +55,23 @@ export const useNextList = (listId: string | null, enabled = true) =>
   useQuery({ queryKey: keys.list(listId), queryFn: () => nextListService.list(listId), enabled });
 
 export const useLists = () => useQuery({ queryKey: keys.lists, queryFn: nextListService.lists });
+
+export const useSameWeekdayDates = (after: string, limit: number, enabled = true) =>
+  useQuery({
+    queryKey: keys.sameWeekday(after, limit),
+    queryFn: () => dayToolsService.sameWeekdayDates(after, limit),
+    enabled: enabled && limit > 0,
+    placeholderData: prev => prev,
+  });
+
+export const useCarryover = (date: string | null) =>
+  useQuery({ queryKey: keys.carryover(date ?? ''), queryFn: () => dayToolsService.carryover(date!), enabled: !!date });
+
+export const useReminder = (date: string | null) =>
+  useQuery({ queryKey: keys.reminder(date ?? ''), queryFn: () => dayToolsService.reminder(date!), enabled: !!date });
+
+export const useReminderStatus = (enabled: boolean) =>
+  useQuery({ queryKey: keys.reminderStatus, queryFn: dayToolsService.reminderStatus, enabled });
 
 export const useFavorites = (enabled = true) =>
   useQuery({ queryKey: keys.favorites, queryFn: searchService.favorites, enabled });

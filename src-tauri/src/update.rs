@@ -114,7 +114,7 @@ impl UpdateState {
         match result {
             Ok(found) => {
                 inner.last_checked_at = Some(crate::util::now());
-                inner.info = found.as_ref().map(|u| info_of(u));
+                inner.info = found.as_ref().map(info_of);
                 inner.update = found;
                 Ok(inner.info.clone())
             }

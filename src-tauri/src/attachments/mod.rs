@@ -121,6 +121,39 @@ pub fn get_row(conn: &Connection, id: &str) -> AppResult<Option<AttachmentRow>> 
         .optional()?)
 }
 
+/// 첨부 하나를 **새 id·새 파일**로 복제한다(메모 복사용). 복사본은 원본 항목·문서와 따로 산다 —
+/// 원본 메모를 지우거나 정리해도 복사본의 이미지가 깨지지 않고, 복사본의 주인 표시(item_id)가 원본을 빼앗지 않는다.
+/// 원본 파일이 없으면 None(본문은 원래 주소를 그대로 둔다). 새 항목이 아직 없으면 `item_id` 는 None — 항목을 저장한 뒤
+/// `repo::link_attachments` 가 주인을 정한다.
+pub fn duplicate(conn: &Connection, paths: &StoragePaths, id: &str, item_id: Option<&str>, document_id: &str) -> AppResult<Option<String>> {
+    let Some(row) = get_row(conn, id)? else { return Ok(None) };
+    let source = resolve_path(paths, &row.relative_path)?;
+    if !source.is_file() {
+        return Ok(None);
+    }
+    let ext = std::path::Path::new(&row.relative_path).extension().and_then(|e| e.to_str()).unwrap_or("bin").to_string();
+    let new_id = new_id();
+    let month = chrono::Utc::now().format("%Y/%m").to_string();
+    let relative = format!("attachments/{month}/{new_id}.{ext}");
+    let target = paths.root.join(&relative);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = target.with_extension(format!("{ext}.tmp"));
+    std::fs::copy(&source, &tmp)?;
+    std::fs::rename(&tmp, &target)?;
+    let inserted = conn.execute(
+        "INSERT INTO attachments (id, document_id, item_id, relative_path, mime_type, size, content_hash, original_name, created_at)
+         SELECT ?1, ?2, ?3, ?4, mime_type, size, content_hash, original_name, ?5 FROM attachments WHERE id = ?6",
+        params![new_id, document_id, item_id, relative, now(), id],
+    );
+    if let Err(error) = inserted {
+        let _ = std::fs::remove_file(&target);
+        return Err(error.into());
+    }
+    Ok(Some(new_id))
+}
+
 /// 상대 경로를 저장 폴더 **안의** 실제 경로로(.. · 절대 경로 거부).
 pub fn resolve_path(paths: &StoragePaths, relative: &str) -> AppResult<PathBuf> {
     let rel = std::path::Path::new(relative);

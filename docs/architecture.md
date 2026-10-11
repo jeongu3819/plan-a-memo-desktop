@@ -6,7 +6,8 @@ Web wrapper 가 아니다(planawork.com 을 띄우지 않는다).
 ```
 PLAN-A Memo.exe
  ├─ React UI (Vite)            src/
- │    ├─ features/memo         주간 2×4 · 날짜 상세(메인/오전/오후) · 행 · 메뉴 · 입력
+ │    ├─ features/memo         주간 2×4 · 날짜 상세(메인/오전/오후 + 다가오는 같은 요일 · 지난 미완료 가져오기) · 행 · 메뉴 · 입력
+ │    ├─ features/reminders    날짜 알림 설정
  │    ├─ features/next         Next List 탭
  │    ├─ features/search       List(찾아보기) · 전체 검색 · 즐겨찾기
  │    ├─ features/history      변경 이력
@@ -46,6 +47,22 @@ PLAN-A Memo.exe
 rusqlite 는 동기 API 라 transaction 경계가 분명하고, `bundled` 로 SQLite 를 함께 빌드해
 사용자 PC 의 SQLite 버전과 무관하다. Migration 은 앱이 직접(버전 테이블 + transaction) 관리한다.
 DB 작업은 async 명령 안에서 짧게 실행되고, 네트워크(await) 를 기다리는 동안 DB 잠금을 쥐지 않는다.
+
+## 날짜 상세 도구
+
+* **다가오는 ○요일** — 날짜 상세 아래에 **보고 있는 날짜** 기준 +7·+14일 같은 요일 카드(메모가 있는 더 먼 같은 요일은 [더 보기]).
+  각 카드는 자기 날짜의 DAY 문서를 읽고 쓴다(`memo_day`) — 카드에서 체크·편집(기존 MemoRow·Rich Editor)·삭제하면 그 날짜만 바뀐다.
+  보이기만 해서는 연결·업로드하지 않는다.
+* **지난 미완료 가져오기** — D-7 의 미완료 체크리스트를 고른 것만 D 로 **복사**(`memo/carryover.rs`). 원본 그대로, 복사본은 새 id·
+  미완료·같은 구역 맨 뒤, (원본, 대상 날짜) 복사 관계로 중복 방지. D 가 연결돼 있으면 D 의 변경으로 Outbox(`touch`).
+* **날짜 알림** — 날짜당 하나(1주 전 · 2일 전 · 시각). 앱이 꺼져 있어도 알리도록 Windows **작업 스케줄러**에 이 사용자 권한의 작업
+  하나(`PLAN-A Memo Reminders (<식별자>)`)를 등록한다. 작업은 시각마다 `<exe> --plana-reminder …` 를 실행하고, 이 프로세스는
+  Tauri 창을 만들기 전에(main.rs) 갈라져 시각이 된 알림을 DB 에서 **선점**한 뒤 Windows 알림(Toast, AppUserModelID = 앱 식별자)을
+  띄우고 다음 시각으로 작업을 다시 맞춘 뒤 끝난다. 알림 내용(미완료 수)은 알릴 때 센다 — 모두 완료면 띄우지 않고, 앱은 메모가 바뀔
+  때마다 예약을 맞춘다(모두 완료한 날짜는 예약에서 빠짐). 알림을 누르면 `<scheme>://open?date=…`(protocol 활성화)로 앱이 그 날짜
+  상세를 연다. PC 가 꺼져 시각을 놓치면 작업 스케줄러가 켜진 뒤 한 번 실행(StartWhenAvailable)하거나, 앱을 다시 열 때 '놓친 알림'
+  으로 한 번 안내한다(15분 넘게 늦은 알림 · 대상 날짜가 지났으면 보내지 않음). 실행 중인 앱은 작업이 실행되지 않았을 때만(2분 유예)
+  대신 알린다. 제거하면 작업도 지운다(`windows/installer-hooks.nsh`).
 
 ## 자동 저장 흐름
 

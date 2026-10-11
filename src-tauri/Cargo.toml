@@ -48,6 +48,9 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 keyring = { version = "3", features = ["windows-native"] }
 # 창 제목 표시줄 우클릭 시스템 메뉴(window_frame.rs) — Tauri 가 이미 쓰는 버전.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# 날짜 알림(reminders/os.rs) — Windows 알림(Toast). Tauri 가 이미 쓰는 windows 버전.
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Foundation"] }
+windows-registry = "0.6"
 
 [dev-dependencies]
 tempfile = "3"

@@ -35,6 +35,10 @@ pub struct AppState {
     /// 개발 빌드에서 서버 주소가 없을 때만 — 운영·staging 빌드에는 없다(개발용 도구도 숨겨진다).
     pub mock: Option<Arc<MockSyncTransport>>,
     pub log_dir: PathBuf,
+    /// 날짜별 알림(OS 예약 · 놓친 알림)
+    pub reminders: Arc<crate::reminders::runtime::ReminderRuntime>,
+    /// 알림·링크로 열어 달라고 온 날짜(화면이 준비되면 가져간다)
+    pub pending_open: Mutex<Option<String>>,
 }
 
 /// (Sync Transport, Auth API, 개발용 Mock 서버, Credential Manager 서비스 이름)
@@ -81,6 +85,8 @@ impl AppState {
             auth,
             mock,
             log_dir,
+            reminders: Arc::new(crate::reminders::runtime::ReminderRuntime::new()),
+            pending_open: Mutex::new(None),
         }
     }
 

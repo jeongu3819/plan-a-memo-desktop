@@ -7,7 +7,7 @@
 // * 재실행: 프로세스를 강제 종료(taskkill /F)했다가 다시 띄운다 — 강제 종료 후 복원·Outbox 유지 확인용.
 
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -122,4 +122,19 @@ export function clearE2eCredential() {
   } catch {
     /* 없음 */
   }
+}
+
+/**
+ * 개발 실행 파일의 창 위치·크기 파일(%APPDATA%\com.plana.memo.dev\.window-state.json)을 실행 동안 치워 둔다 —
+ * 평소 개발 중 남은 작은 창 크기로 E2E 가 시작되지 않게(기본 1100×816). 끝나면 그대로 되돌린다.
+ */
+export function isolateWindowState() {
+  const file = path.join(process.env.APPDATA || '', 'com.plana.memo.dev', '.window-state.json');
+  const aside = `${file}.e2e-aside`;
+  const had = existsSync(file);
+  if (had) renameSync(file, aside);
+  return () => {
+    rmSync(file, { force: true });
+    if (had && existsSync(aside)) renameSync(aside, file);
+  };
 }

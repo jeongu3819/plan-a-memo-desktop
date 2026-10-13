@@ -98,7 +98,7 @@ export function LinkControl({
     try {
       await syncService.link(location);
       refreshMemo(queryClient);
-      notify({ message: `${label} 메모를 PLAN-A Work와 연결했습니다. 이후 변경은 자동으로 맞춰집니다.`, variant: 'success' });
+      notify({ message: `${label} 메모를 연동했습니다. 연동을 허용한 모든 기기에 같은 내용으로 맞춰집니다.`, variant: 'success' });
     } catch (error) {
       if (error instanceof AppError && error.code === 'auth_required') {
         ui.openAccount('PLAN-A Work 계정 연결이 필요합니다.', () => void link());
@@ -115,7 +115,7 @@ export function LinkControl({
     try {
       await syncService.unlink(location);
       refreshMemo(queryClient);
-      notify({ message: '연결을 해제했습니다. 이 PC 의 메모는 그대로 있고, PLAN-A Work 의 사본도 지워지지 않습니다.' });
+      notify({ message: '이 PC 의 연동을 해제했습니다. 이 PC 의 메모는 그대로 있고, 다른 기기의 연동과 PLAN-A Work 의 메모도 그대로입니다.' });
     } catch (error) {
       notify({ message: errorMessage(error, '연결을 해제하지 못했습니다.'), variant: 'error' });
     }
@@ -143,7 +143,7 @@ export function LinkControl({
             onClick={event => setAnchor(event.currentTarget)}
             sx={{ fontSize: '0.76rem', color: '#4B5563', borderRadius: '8px', px: 1.25 }}
           >
-            PLAN-A Work와 연결됨
+            연동 중
           </Button>
           {/* 문제가 있을 때만(전달 대기·로그인 필요·오류·충돌) 옆에 작게 */}
           {syncProblem(document) && <SyncMark document={document} location={location} />}
@@ -162,7 +162,7 @@ export function LinkControl({
             onClick={() => void link()}
             sx={{ fontSize: '0.76rem', borderRadius: '8px', py: 0.25, px: 1.25 }}
           >
-            PLAN-A Work와 연결
+            연동
           </Button>
         </>
       )}
@@ -180,7 +180,7 @@ export function LinkControl({
         </MenuItem>
         <MenuItem dense onClick={() => void unlink()}>
           <ListItemIcon><LinkOffIcon fontSize="small" /></ListItemIcon>
-          <ListItemText primary="연결 해제" secondary="이 PC 의 메모는 그대로 둡니다" />
+          <ListItemText primary="이 PC 연동 해제" secondary="이 PC 의 메모는 그대로 · 다른 기기 연동은 유지" />
         </MenuItem>
       </Menu>
     </Box>

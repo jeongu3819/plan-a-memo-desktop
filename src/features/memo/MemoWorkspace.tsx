@@ -3,19 +3,18 @@
  *
  *   ┌ October 10, 2026                                   [동기화 문제 시만]
  *   │ 오늘도 좋은 하루예요~!
- *   │ ← 주간  ‹ 토 10/10 ▾ ›                  저장상태 · [🔍] [오늘] [⚙]
+ *   │ ← 주간  ‹ 토 10/10 ›                    저장상태 · [🔍] [오늘] [⚙]
  *   └ 주간(2×4) ↔ 날짜 상세 ↔ 검색·List(찾아보기)를 같은 자리에서 전환
  *
- * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다: 검색(찾아보기 화면 — 검색 · 즐겨찾기 · Next List · 지난 날짜 · History) ·
- * 오늘(**오늘 날짜의 상세** — 메인·오전·오후·다가오는 같은 요일) · 설정(내보내기 포함). 날짜 이동(‹ ›·같은 요일 고르기)은
- * 왼쪽의 보조 이동이다('이번 주' 버튼은 두지 않는다 — 주간 칸의 오늘 표시와 [오늘] 이 대신한다).
+ * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다(Web PersonalMemoWorkspace 와 같은 배치): 검색 — 아이콘 자리가 입력칸으로
+ * 펼쳐지고 결과·찾아보기(즐겨찾기 · Next List · 지난 날짜 · History)는 본문에 · 오늘(**오늘 날짜의 상세**) · 설정.
+ * 날짜 이동은 왼쪽의 ‹ › 뿐이다 — 기간 표시·같은 요일 고르기 메뉴는 두지 않는다(주간 칸의 날짜와 날짜 상세 아래
+ * '다가오는 같은 요일' 카드가 대신한다).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, Button, ButtonBase, Chip, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
+import { Box, Button, Chip, IconButton, InputBase, Tooltip, Typography } from '@mui/material';
 import { GlobalStyles } from '@mui/material';
-import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import SearchIcon from '@mui/icons-material/Search';
-import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
@@ -28,9 +27,6 @@ import {
   dayLabelWithYear,
   localDayString,
   longEnglishDate,
-  SAME_WEEKDAY_RELATIVE,
-  sameWeekdayAround,
-  shortDate,
   weekStart,
 } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import {
@@ -154,8 +150,8 @@ export default function MemoWorkspace() {
   const lists = useLists();
   const [view, setViewState] = useState<View>({ kind: 'week', monday: weekStart(today) });
   const [lastDay, setLastDay] = useState<string | null>(null);
-  const [jumpAnchor, setJumpAnchor] = useState<HTMLElement | null>(null);
   const [browseQuery, setBrowseQuery] = useState('');
+  const searchInput = useRef<HTMLInputElement>(null);
   const [beforeBrowse, setBeforeBrowse] = useState<View | null>(null);
   const [missed, setMissed] = useState<DueReminder[]>([]);
 
@@ -173,6 +169,11 @@ export default function MemoWorkspace() {
 
   const isDay = view.kind === 'day';
   const isBrowse = view.kind === 'browse';
+  const focusSearch = view.kind === 'browse' && !!view.focusSearch;
+  // 검색 아이콘을 누르면 펼쳐진 머리 줄 입력칸에 바로 커서.
+  useEffect(() => {
+    if (focusSearch) searchInput.current?.focus({ preventScroll: true });
+  }, [focusSearch, view]);
   const dayKey = isDay ? view.key : null;
   const onNext = isDay && isNextKey(dayKey);
   const location: Location | null = dayKey ? parseLocationKey(dayKey) : null;
@@ -185,7 +186,6 @@ export default function MemoWorkspace() {
   };
   /** 날짜 하나의 상세로(같은 요일 메뉴 · 다가오는 같은 요일 카드 · 알림 클릭 · 오늘). 이미 그 날짜면 화면을 다시 만들지 않는다. */
   const goToDate = (key: string) => {
-    setJumpAnchor(null);
     if (view.kind === 'day' && view.key === key && !view.fromBrowse) return;
     if (setView({ kind: 'day', key, monday: weekStart(key) })) setLastDay(key);
   };
@@ -259,17 +259,47 @@ export default function MemoWorkspace() {
   // 오른쪽 도구 — 어느 화면에서나 [검색] [오늘] [설정]. 찾아보기 화면에서 검색을 다시 누르면 검색창으로 돌아간다.
   const tools = (
     <Box data-testid="memo-header-tools" sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-      <Tooltip title="검색 · List" disableInteractive>
-        <IconButton
-          aria-label="메모 검색 · List"
-          aria-pressed={isBrowse}
-          data-testid="memo-search-open"
-          onClick={() => openBrowse(true)}
-          sx={{ ...HEADER_ICON_SX, ...(isBrowse ? HEADER_BUTTON_ACTIVE_SX : {}) }}
+      {isBrowse ? (
+        // 아이콘 자리가 그대로 검색 입력칸이 된다(Web 과 같은 인라인 검색). 결과·찾아보기는 본문에.
+        <Box
+          role="search"
+          data-testid="memo-search-field"
+          sx={{
+            display: 'flex', alignItems: 'center', height: 32, boxSizing: 'border-box', width: 260, minWidth: 0, flexShrink: 1, pl: 1, pr: 0.25,
+            border: '1px solid', borderColor: 'primary.main', borderRadius: '8px', bgcolor: MEMO_CARD, boxShadow: '0 0 0 3px rgba(37, 99, 235, 0.10)',
+          }}
         >
-          <SearchIcon sx={{ fontSize: 18 }} />
-        </IconButton>
-      </Tooltip>
+          <SearchIcon sx={{ fontSize: 18, color: 'primary.main', flexShrink: 0 }} />
+          <InputBase
+            inputRef={searchInput}
+            value={browseQuery}
+            placeholder="메모 검색"
+            onChange={event => setBrowseQuery(event.target.value)}
+            onKeyDown={event => {
+              if (event.nativeEvent.isComposing || event.key !== 'Escape') return;
+              event.preventDefault();
+              if (browseQuery) setBrowseQuery('');
+              else leaveBrowse();
+            }}
+            inputProps={{ 'aria-label': '메모 검색', 'data-testid': 'memo-search-input', maxLength: 200 }}
+            sx={{ flex: 1, minWidth: 0, mx: 0.75, fontSize: '0.84rem', '& input': { p: 0, height: 30 } }}
+          />
+          <IconButton size="small" aria-label="검색 닫기" data-testid="memo-search-close" onClick={leaveBrowse} sx={{ p: 0.5 }}>
+            <CloseIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </Box>
+      ) : (
+        <Tooltip title="검색 · List" disableInteractive>
+          <IconButton
+            aria-label="메모 검색 · List"
+            data-testid="memo-search-open"
+            onClick={() => openBrowse(true)}
+            sx={HEADER_ICON_SX}
+          >
+            <SearchIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
       <Tooltip title="오늘 날짜의 메모" disableInteractive>
         <Button
           size="small"
@@ -333,28 +363,17 @@ export default function MemoWorkspace() {
             </IconButton>
           </Tooltip>
         )}
-        {isDay && !onNext ? (
-          <ButtonBase
-            aria-haspopup="menu"
-            aria-expanded={!!jumpAnchor}
-            aria-label={`${dayLabelWithYear(dayKey!, today)} — 같은 요일 날짜 고르기`}
-            onClick={event => setJumpAnchor(event.currentTarget)}
-            sx={{ borderRadius: '6px', pl: 0.75, pr: 0.25, py: 0.25, height: 26, '&:hover': { bgcolor: 'action.hover' } }}
-          >
-            <Typography data-testid="personal-memo-view-label" sx={{ fontWeight: 700, fontSize: '0.9rem', color: dayTone(dayKey!).text }}>
-              {dayLabelWithYear(dayKey!, today)}
-            </Typography>
-            <ArrowDropDownIcon sx={{ fontSize: 20, color: 'text.secondary' }} />
-          </ButtonBase>
-        ) : (
+        {/* 날짜는 표시만 — 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치).
+            주간에는 기간 표시 없이 이전/다음 이동만 둔다(주간 칸의 날짜가 기간을 보여 준다). */}
+        {isDay && (
           <Typography
             data-testid="personal-memo-view-label"
             sx={{
-              fontWeight: 700, fontSize: '0.86rem', minWidth: 76, textAlign: 'center', color: 'text.primary',
-              px: onNext ? 1.5 : 0.5, fontVariantNumeric: 'tabular-nums',
+              fontWeight: 700, fontSize: '0.9rem', px: onNext ? 1.5 : 0.75, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+              color: onNext ? 'text.primary' : dayTone(dayKey!).text,
             }}
           >
-            {isDay ? NEXT_LABEL : `${shortDate(view.monday)} – ${shortDate(addDays(view.monday, 6))}`}
+            {onNext ? NEXT_LABEL : dayLabelWithYear(dayKey!, today)}
           </Typography>
         )}
         {isDay && dayKey === today && <TodayBadge />}
@@ -428,7 +447,7 @@ export default function MemoWorkspace() {
           onDismiss={() => setMissed([])}
         />
         {view.kind === 'browse' ? (
-          <BrowseView query={browseQuery} onQueryChange={setBrowseQuery} focusSearch={!!view.focusSearch} onOpen={openFromBrowse} />
+          <BrowseView query={browseQuery} onQueryChange={setBrowseQuery} focusSearch={!!view.focusSearch} onOpen={openFromBrowse} headerSearch />
         ) : view.kind === 'day' && location ? (
           <>
             {location.kind === 'next' && (
@@ -444,7 +463,6 @@ export default function MemoWorkspace() {
               editItemId={view.editItemId ?? null}
               highlight={view.highlight ?? null}
               listName={listName}
-              onOpenDay={goToDate}
             />
           </>
         ) : (
@@ -452,21 +470,6 @@ export default function MemoWorkspace() {
         )}
       </Box>
 
-      {isDay && !onNext && (
-        <Menu anchorEl={jumpAnchor} open={!!jumpAnchor} onClose={() => setJumpAnchor(null)} slotProps={{ paper: { sx: { minWidth: 230 } } }}>
-          {sameWeekdayAround(dayKey!).map((day, index) => (
-            <MenuItem key={day} dense selected={day === dayKey} onClick={() => goToDate(day)}>
-              <ListItemIcon>{day === dayKey ? <CheckIcon fontSize="small" /> : null}</ListItemIcon>
-              <ListItemText
-                primary={dayLabelWithYear(day, today)}
-                secondary={SAME_WEEKDAY_RELATIVE[index]}
-                primaryTypographyProps={{ fontWeight: day === dayKey ? 800 : 500, color: dayTone(day).text }}
-              />
-              {day === today && <Box sx={{ ml: 1 }}><TodayBadge /></Box>}
-            </MenuItem>
-          ))}
-        </Menu>
-      )}
     </Box>
   );
 }

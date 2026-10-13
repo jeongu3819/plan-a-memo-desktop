@@ -424,8 +424,8 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
 
         <SettingsSection
           icon={<CloudOutlinedIcon />}
-          title="PLAN-A Work 연결"
-          description="직접 고른 날짜 · List 만 PLAN-A Work 와 맞춥니다."
+          title="연동 및 계정"
+          description="직접 고른 날짜 · List 만 연동합니다. 연동한 메모는 같은 계정에서 연동을 허용한 모든 기기(웹·PC·모바일)에 반영됩니다."
           aside={
             <Chip
               size="small"
@@ -456,7 +456,7 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
           </SettingsRow>
           <Box sx={{ px: 2, py: 1.5, borderTop: '1px solid', borderColor: MEMO_GROUP_DIVIDER }}>
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 1 }}>
-              <Stat label="연결된 메모" value={s?.linkedDocuments ?? 0} />
+              <Stat label="연동 중인 메모" value={s?.linkedDocuments ?? 0} />
               <Stat label="전달 대기" value={s?.outbox ?? 0} />
               <Stat label="확인 필요" value={s?.conflicts ?? 0} alert={(s?.conflicts ?? 0) > 0} />
               <Stat label="오류" value={s?.errors ?? 0} alert={(s?.errors ?? 0) > 0} />

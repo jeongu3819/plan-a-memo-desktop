@@ -373,6 +373,23 @@ step('header-today', async () => {
       assert.ok(!overlap, '머리 버튼끼리 겹치지 않는다');
     }
   await app.shot('21-today-detail-small');
+  // 검색: 팝업 없이 머리 줄의 아이콘 자리가 입력칸으로 펼쳐지고 결과는 본문(찾아보기). 같은 높이로 겹치지 않는다.
+  await page.click('[data-testid="memo-search-open"]');
+  const search = page.locator('[data-testid="memo-header-tools"] [data-testid="memo-search-input"]');
+  await search.waitFor();
+  assert.ok(await search.evaluate(el => el === document.activeElement), '검색 입력칸에 바로 커서');
+  assert.equal(await page.locator('[data-testid="memo-search-input"]').count(), 1, '입력칸은 머리 줄 하나뿐(본문에 두 번째 입력칸 없음)');
+  assert.equal(await page.locator('[role="dialog"]').count(), 0, '검색 팝업 없음');
+  const field = await page.locator('[data-testid="memo-search-field"]').boundingBox();
+  assert.ok(Math.round(field.height) === 32 && field.x + field.width <= 851, `머리 줄 안의 입력칸 ${JSON.stringify(field)}`);
+  await search.type('예약');
+  await page.locator('[data-testid="personal-memo-browse"]').waitFor();
+  await app.shot('21-search-inline-small');
+  await search.press('Escape');
+  assert.equal(await search.inputValue(), '', 'Esc 1회: 검색어 지우기');
+  await search.press('Escape');
+  await page.waitForSelector('[data-testid="memo-section-main"]');
+  assert.equal(await page.locator('[data-testid="memo-search-input"]').count(), 0, 'Esc 2회: 원래 날짜 상세로');
   await page.setViewportSize(original);
   await app.shot('21-today-detail');
   // [← 주간] → 오늘이 든 주
@@ -396,20 +413,17 @@ step('upcoming-weekday', async () => {
   await card7.waitFor();
   const text7 = await card7.innerText();
   assert.ok(text7.includes('다음 주') && text7.includes('정기 점검') && text7.includes('예약한 일정 확인'), '다음 주 카드에 실제 내용');
-  assert.ok(text7.includes('나머지') && text7.includes('펼치기'), '많으면 일부만 + 펼치기');
-  await card7.locator('button:has-text("펼치기")').click();
-  assert.ok((await card7.innerText()).includes('추가 항목 5'), '펼치면 모두');
-  // 빈 다다음 주 — 작은 한 줄 + [미리 작성]
+  assert.ok(text7.includes('추가 항목 5'), '카드는 그 날짜의 메모장 — 모든 항목이 그 자리에 보인다');
+  // 빈 2주 후 — 메인·오전·오후 입력칸이 바로 있다([미리 작성] 버튼 없음)
   const card14 = page.locator(`[data-testid="upcoming-card-${d14}"]`);
-  assert.equal(await card14.getAttribute('data-empty'), 'true');
-  const h14 = (await card14.boundingBox()).height;
-  assert.ok(h14 < 60, `빈 날짜는 작게(${h14}px)`);
+  assert.ok((await card14.innerText()).includes('2주 후'), '2주 후 카드 제목');
+  assert.equal(await page.locator('[data-testid="upcoming-write"]').count(), 0, '[미리 작성] 버튼 없음');
   assert.equal(await page.locator(`[data-testid="upcoming-card-${d28}"]`).count(), 0, '더 먼 날짜는 [더 보기] 전에는 없다');
-  await card14.locator('[data-testid="upcoming-write"]').click();
-  const input14 = card14.locator('[data-testid="personal-memo-quick-input"]');
+  const input14 = card14.locator('[data-testid="upcoming-group-main"] [data-testid="personal-memo-quick-input"]');
+  await input14.click();
   await input14.type('다음 달 계획 검토');
   await page.keyboard.press('Control+Enter');
-  await waitFor(async () => (await dayOf(d14)).items.some(i => i.contentHtml === '다음 달 계획 검토'), '미리 작성 → 그 날짜 문서');
+  await waitFor(async () => (await dayOf(d14)).items.some(i => i.contentHtml === '다음 달 계획 검토'), '카드에서 작성 → 그 날짜 문서');
   await page.locator('[data-testid="memo-header-date"]').click();
   // 더 보기
   await page.click('[data-testid="upcoming-more"]');
@@ -436,9 +450,9 @@ step('upcoming-weekday', async () => {
   await waitFor(async () => !(await dayOf(d7)).items.some(i => i.contentHtml === '추가 항목 5'), '다음 주 항목 삭제');
   assert.equal((await dayOf(d7)).document.syncEnabled, false, '표시·편집만으로 연결하지 않는다');
   await app.shot('22-upcoming');
-  // 카드 제목 → 그 날짜 상세
-  await card7.locator(`[aria-label="${d7} 날짜 상세로"]`).click();
-  await page.locator(`[data-testid="upcoming-card-${plusDays(d7, 7)}"]`).waitFor();
+  // 카드 제목은 이동 버튼이 아니다 — 보고 있는 날짜는 그대로
+  assert.equal(await card7.locator(`[aria-label="${d7} 날짜 상세로"]`).count(), 0, '카드에서 날짜 상세로 옮기지 않는다');
+  assert.equal(await page.locator('[data-testid="memo-search-input"]').count(), 0, '검색 입력칸은 머리 줄에서 펼칠 때만');
 });
 
 step('carryover', async () => {

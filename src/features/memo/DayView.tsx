@@ -4,7 +4,7 @@
  * 하루 전체(또는 List 전체)가 문서 1건이므로 연결 버튼도 화면 위에 하나만 있다.
  *
  * 날짜 상세에서는 구역이 내용만큼만 자란다(빈 구역은 낮은 입력칸) — 아래의 '지난 미완료 가져오기' 안내와
- * '다가오는 ○요일'(다음 주·다다음 주 같은 요일 메모)이 일반적인 양에서 함께 보이게.
+ * '다가오는 ○요일'(다음 주·2주 후 같은 요일 메모장 — 그 자리에서 작성)이 일반적인 양에서 함께 보이게.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, CircularProgress, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
@@ -143,15 +143,12 @@ export default function DayView({
   editItemId = null,
   highlight = null,
   listName = null,
-  onOpenDay,
 }: {
   location: Location;
   focusSection?: MemoSection | null;
   editItemId?: string | null;
   highlight?: { itemId: string; tokens: string[] } | null;
   listName?: string | null;
-  /** 다가오는 같은 요일 카드에서 그 날짜 상세로 */
-  onOpenDay?: (date: string) => void;
 }) {
   const { actions, setEditingId, openHistory } = usePersonalMemo();
   const [toolsAnchor, setToolsAnchor] = useState<HTMLElement | null>(null);
@@ -322,7 +319,7 @@ export default function DayView({
         <>
           <CarryReviews date={location.date} />
           <CarryoverNotice date={location.date} manual={carryoverOpen} onCloseManual={() => setCarryoverOpen(false)} />
-          <UpcomingWeekday date={location.date} onOpenDay={date => onOpenDay?.(date)} />
+          <UpcomingWeekday date={location.date} />
           <Menu anchorEl={toolsAnchor} open={!!toolsAnchor} onClose={() => setToolsAnchor(null)} data-personal-memo-overlay="true">
             <MenuItem
               dense

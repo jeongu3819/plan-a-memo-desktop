@@ -16,13 +16,16 @@ export function weekdayName(date: string): string {
   return `${WEEKDAY_LABELS[weekdayOf(date)]}요일`;
 }
 
-/** 보고 있는 날짜에서 몇 주 뒤인가에 따른 이름 — '다음 주 토요일' · '다다음 주 토요일' · '3주 뒤 토요일'. */
+/** 보고 있는 날짜에서 몇 주 뒤인가에 따른 이름 — '다음 주 토요일' · '2주 후 토요일' · '3주 후 토요일'(Web 과 같은 표기). */
 export function relativeWeekdayLabel(base: string, date: string): string {
   const weeks = Math.round(daysBetween(base, date) / 7);
   const name = weekdayName(date);
-  if (weeks === 1) return `다음 주 ${name}`;
-  if (weeks === 2) return `다다음 주 ${name}`;
-  return `${weeks}주 뒤 ${name}`;
+  return weeks === 1 ? `다음 주 ${name}` : `${weeks}주 후 ${name}`;
+}
+
+/** 다가오는 같은 요일 카드 제목 — '다음 주 월요일 · 10/19' (연도가 다르면 '2027. 1/4'). */
+export function upcomingCardTitle(base: string, date: string, today: string): string {
+  return `${relativeWeekdayLabel(base, date)} · ${dateWithYear(date, today)}`;
 }
 
 export function daysBetween(from: string, to: string): number {

@@ -102,11 +102,14 @@ export default function BrowseView({
   onQueryChange,
   focusSearch,
   onOpen,
+  headerSearch = false,
 }: {
   query: string;
   onQueryChange: (q: string) => void;
   focusSearch: boolean;
   onOpen: (target: OpenTarget) => void;
+  /** 검색어 입력칸이 머리 줄에 있다(Web 과 같은 인라인 검색) — 이 화면은 결과만 그린다. */
+  headerSearch?: boolean;
 }) {
   const { today } = usePersonalMemo();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -133,7 +136,7 @@ export default function BrowseView({
 
   return (
     <Box data-testid="personal-memo-browse" sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, maxWidth: 880, width: '100%', mx: 'auto' }}>
-      <InputBase
+      {!headerSearch && <InputBase
         inputRef={inputRef}
         value={query}
         onChange={event => onQueryChange(event.target.value)}
@@ -154,7 +157,7 @@ export default function BrowseView({
           transition: 'border-color 0.15s, box-shadow 0.15s',
           '&.Mui-focused': { borderColor: 'rgba(37, 99, 235, 0.45)', boxShadow: '0 0 0 3px rgba(37, 99, 235, 0.08)' },
         }}
-      />
+      />}
 
       {searching ? (
         results.isPending ? (

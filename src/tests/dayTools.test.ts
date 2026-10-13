@@ -6,6 +6,7 @@ import {
   koreanLongDate,
   koreanTime,
   relativeWeekdayLabel,
+  upcomingCardTitle,
   reminderFireAt,
   reminderPreview,
   upcomingSameWeekdays,
@@ -27,8 +28,14 @@ describe('다가오는 같은 요일 — 보고 있는 날짜 기준', () => {
 
   it('상대 이름은 보고 있는 날짜에서 센다(실제 오늘이 아니다)', () => {
     expect(relativeWeekdayLabel('2026-09-26', '2026-10-03')).toBe('다음 주 토요일');
-    expect(relativeWeekdayLabel('2026-09-26', '2026-10-10')).toBe('다다음 주 토요일');
-    expect(relativeWeekdayLabel('2026-10-05', '2026-10-26')).toBe('3주 뒤 월요일');
+    expect(relativeWeekdayLabel('2026-09-26', '2026-10-10')).toBe('2주 후 토요일');
+    expect(relativeWeekdayLabel('2026-10-05', '2026-10-26')).toBe('3주 후 월요일');
+  });
+
+  it('카드 제목 — Web 과 같은 "다음 주 월요일 · 10/19" 표기', () => {
+    expect(upcomingCardTitle('2026-10-12', '2026-10-19', '2026-10-12')).toBe('다음 주 월요일 · 10/19');
+    expect(upcomingCardTitle('2026-10-12', '2026-10-26', '2026-10-12')).toBe('2주 후 월요일 · 10/26');
+    expect(upcomingCardTitle('2026-12-26', '2027-01-09', '2026-12-26')).toBe('2주 후 토요일 · 2027. 1/9');
   });
 
   it('연도가 다르면 연도까지', () => {

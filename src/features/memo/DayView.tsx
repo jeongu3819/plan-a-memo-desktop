@@ -3,8 +3,9 @@
  *   넓으면 메인(위, 전체 폭) + 오전·오후(아래, 나란히). 구역 이동·순서 변경은 끌기와 메뉴 둘 다 된다.
  * 하루 전체(또는 List 전체)가 문서 1건이므로 연결 버튼도 화면 위에 하나만 있다.
  *
- * 날짜 상세에서는 구역이 내용만큼만 자란다(빈 구역은 낮은 입력칸) — 아래의 '지난 미완료 가져오기' 안내와
- * '다가오는 ○요일'(다음 주·2주 후 같은 요일 메모장 — 그 자리에서 작성)이 일반적인 양에서 함께 보이게.
+ * 날짜 상세에서는 보고 있는 날짜의 메인·오전·오후가 주인공이다 — 세 구역이 창 높이의 대부분을 채우고(입력칸이 남은
+ * 자리를 채운다), 아래의 '지난 미완료 가져오기' 안내와 '다가오는 ○요일'(다음 같은 요일 메모장 — 그 자리에서 작성)은
+ * 그 아래 보조 영역으로 스크롤해서 본다. 메모가 많으면 구역은 내용만큼 더 자란다.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, CircularProgress, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
@@ -77,7 +78,7 @@ function Section({
   minRows: number;
   autoFocus: boolean;
   area: string;
-  /** Next List — 창 높이를 채운다. 날짜 상세는 내용만큼만. */
+  /** Next List — 메모가 있어도 입력칸을 minRows 로 둔다. 날짜 상세는 메모가 있으면 한 줄부터(남은 자리는 채운다). */
   grow: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `section:${section}` });
@@ -95,8 +96,8 @@ function Section({
         border: '1px solid',
         borderColor: isOver ? 'primary.main' : MEMO_CARD_BORDER,
         borderRadius: MEMO_RADIUS,
-        px: { xs: 1.5, sm: 2 },
-        pt: { xs: 1.25, sm: 1.75 },
+        px: { xs: 1.5, sm: 2.25 },
+        pt: { xs: 1.25, sm: 2 },
         pb: { xs: 1, sm: 1.25 },
         bgcolor: MEMO_CARD,
         boxShadow: MEMO_CARD_SHADOW,
@@ -110,7 +111,7 @@ function Section({
     >
       {title && (
         <Box sx={{ display: 'flex', alignItems: 'baseline', mb: 1, px: 0.25 }}>
-          <Typography sx={{ fontWeight: 700, fontSize: '0.92rem', flex: 1, letterSpacing: '-0.01em' }}>{title}</Typography>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.98rem', flex: 1, letterSpacing: '-0.01em' }}>{title}</Typography>
           {checklist.length > 0 && (
             <Typography sx={{ fontSize: '0.72rem', color: MEMO_MUTED, fontVariantNumeric: 'tabular-nums' }}>
               {done}/{checklist.length} 완료
@@ -130,7 +131,7 @@ function Section({
           placeholder={hint}
           minRows={grow ? minRows : items.length ? 1 : minRows}
           autoFocus={autoFocus}
-          fill={grow}
+          fill
         />
       </Box>
     </Box>
@@ -281,7 +282,10 @@ export default function DayView({
             minHeight: 0,
             gap: { xs: 1.25, sm: 1.5 },
             gridTemplateColumns: isNext ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))',
-            gridTemplateRows: isNext ? 'minmax(min-content, 1fr)' : 'auto auto',
+            // 날짜 상세: 메인(위)·오전/오후(아래)가 창 높이의 대부분을 채운다 — 아래 보조 영역의 제목이 살짝 보일 만큼 남긴다.
+            // 메모가 많으면 각 줄이 내용만큼 더 자란다(min-content).
+            ...(isNext ? {} : { minHeight: 'max(420px, calc(100vh - 236px))' }),
+            gridTemplateRows: isNext ? 'minmax(min-content, 1fr)' : 'minmax(min-content, 1fr) minmax(min-content, 1.2fr)',
             gridTemplateAreas: isNext ? '"main"' : '"main main" "am pm"',
           }}
         >
@@ -306,7 +310,7 @@ export default function DayView({
                 items={bySection[section]}
                 location={location}
                 section={section}
-                minRows={2}
+                minRows={3}
                 grow={false}
                 autoFocus={focusSection === section && !editItemId}
                 hint={SECTION_PLACEHOLDERS[section]}

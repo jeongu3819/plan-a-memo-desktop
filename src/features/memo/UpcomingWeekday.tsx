@@ -1,5 +1,6 @@
 /**
- * 날짜 상세 아래 '다가오는 토요일' — **보고 있는 날짜** 기준 다음 주·2주 후 같은 요일의 메모장.
+ * 날짜 상세 아래 '다가오는 토요일' — **보고 있는 날짜** 기준 다음 같은 요일(+7·+14일)의 메모장.
+ * 카드 제목은 몇 주 뒤든 '다음 토요일 · 10/17' — 날짜로 구분하고 '다음 주·2주 후' 같은 상대 표현은 쓰지 않는다.
  *
  * · 카드 하나가 그 날짜의 **그 자리 메모장**이다(메인·오전·오후). 입력·체크·편집·삭제는 카드의 날짜(그 날짜의 DAY 문서)로
  *   저장되고, 보고 있는 날짜·화면은 바뀌지 않는다 — 날짜 상세로 옮겨 가는 버튼이 없다(Web MemoUpcomingDays 와 같다).
@@ -56,7 +57,7 @@ function ReminderButton({ date, onOpen }: { date: string; onOpen: () => void }) 
   );
 }
 
-function FutureDayCard({ base, date, onReminder }: { base: string; date: string; onReminder: (date: string) => void }) {
+function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: string) => void }) {
   const { today } = usePersonalMemo();
   const { data, isPending } = useDay(date);
   const location: Location = useMemo(() => ({ kind: 'day', date }), [date]);
@@ -68,7 +69,7 @@ function FutureDayCard({ base, date, onReminder }: { base: string; date: string;
     <Box
       component="section"
       data-testid={`upcoming-card-${date}`}
-      aria-label={upcomingCardTitle(base, date, today)}
+      aria-label={upcomingCardTitle(date, today)}
       sx={{
         border: '1px solid',
         borderColor: MEMO_CARD_BORDER,
@@ -84,7 +85,7 @@ function FutureDayCard({ base, date, onReminder }: { base: string; date: string;
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minHeight: 28, mb: 0.5 }}>
         <Typography component="h3" data-testid="upcoming-card-title" sx={{ fontSize: '0.86rem', fontWeight: 700, color: 'text.primary' }}>
-          {upcomingCardTitle(base, date, today)}
+          {upcomingCardTitle(date, today)}
         </Typography>
         <ReminderButton date={date} onOpen={() => onReminder(date)} />
         <Box sx={{ flex: 1 }} />
@@ -140,7 +141,7 @@ export default function UpcomingWeekday({ date }: { date: string }) {
   const name = weekdayName(date);
 
   return (
-    <Box component="section" data-testid="upcoming-weekday" aria-label={`다가오는 ${name}`} sx={{ mt: 1 }}>
+    <Box component="section" data-testid="upcoming-weekday" aria-label={`다가오는 ${name}`} sx={{ mt: 2 }}>
       <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, px: 0.25, mb: 0.75 }}>
         <Typography component="h2" sx={{ fontSize: '0.92rem', fontWeight: 700, color: MEMO_SECTION_TITLE, letterSpacing: '-0.01em' }}>
           다가오는 {name}
@@ -149,7 +150,7 @@ export default function UpcomingWeekday({ date }: { date: string }) {
       </Box>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
         {[...base, ...moreDates].map(day => (
-          <FutureDayCard key={day} base={date} date={day} onReminder={setReminderDate} />
+          <FutureDayCard key={day} date={day} onReminder={setReminderDate} />
         ))}
       </Box>
       {hasMore ? (

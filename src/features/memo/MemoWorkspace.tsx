@@ -1,15 +1,16 @@
 /**
  * PLAN-A Memo 메인 화면 — Web 개인 메모 창(PersonalMemoWorkspaceDialog + Workspace)을 창 전체로.
  *
- *   ┌ October 10, 2026                                   [동기화 문제 시만]
- *   │ 오늘도 좋은 하루예요~!
- *   │ ← 주간  ‹ 토 10/10 ›                    저장상태 · [🔍] [오늘] [⚙]
+ *   ┌ October 10, 2026          (주간)  ‹ 10/5 – 10/11 ›  │ [🔍] [오늘] [⚙]
+ *   │ 오늘도 좋은 하루예요~!    (날짜 상세) ← 주간 ‹ 토 10/10 Today › │ [🔍] [오늘] [⚙]
  *   └ 주간(2×4) ↔ 날짜 상세 ↔ 검색·List(찾아보기)를 같은 자리에서 전환
  *
+ * 머리는 한 줄 — 왼쪽 표지(날짜·인사말), 오른쪽 조작 묶음(화면 이동 │ 도구). 본문 위에 따로 이동 줄을 두지 않는다
+ * (날짜 상세의 저장 상태·연결·History 줄이 그 바로 아래 둘째 줄이 된다 — DayView 의 LinkControl).
  * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다(Web PersonalMemoWorkspace 와 같은 배치): 검색 — 아이콘 자리가 입력칸으로
  * 펼쳐지고 결과·찾아보기(즐겨찾기 · Next List · 지난 날짜 · History)는 본문에 · 오늘(**오늘 날짜의 상세**) · 설정.
- * 날짜 이동은 왼쪽의 ‹ › 뿐이다 — 기간 표시·같은 요일 고르기 메뉴는 두지 않는다(주간 칸의 날짜와 날짜 상세 아래
- * '다가오는 같은 요일' 카드가 대신한다).
+ * 날짜 이동은 도구 왼쪽의 ‹ › 뿐이다(주간은 기간, 날짜 상세는 그 날짜를 가운데 표시) — 같은 요일 고르기 메뉴는 두지 않는다
+ * (날짜 상세 아래 '다가오는 같은 요일' 카드가 대신한다).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Button, Chip, IconButton, InputBase, Tooltip, Typography } from '@mui/material';
@@ -27,6 +28,7 @@ import {
   dayLabelWithYear,
   localDayString,
   longEnglishDate,
+  shortDate,
   weekStart,
 } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import {
@@ -319,7 +321,7 @@ export default function MemoWorkspace() {
     </Box>
   );
 
-  // 왼쪽 보조 이동 — 주간: ‹ 기간 › · 날짜 상세: ← 주간 ‹ 날짜 ▾ › · 찾아보기: ← 메모장.
+  // 도구 왼쪽의 화면 이동 — 주간: ‹ 기간 › · 날짜 상세: ← 주간 ‹ 날짜 Today › · 찾아보기: ← 메모장.
   const navControls = isBrowse ? (
     <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={leaveBrowse} data-testid="memo-browse-back" sx={{ height: 32, color: MEMO_SECTION_TITLE }}>
       메모장
@@ -363,8 +365,15 @@ export default function MemoWorkspace() {
             </IconButton>
           </Tooltip>
         )}
-        {/* 날짜는 표시만 — 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치).
-            주간에는 기간 표시 없이 이전/다음 이동만 둔다(주간 칸의 날짜가 기간을 보여 준다). */}
+        {/* 날짜·기간은 표시만 — 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치). */}
+        {!isDay && (
+          <Typography
+            data-testid="personal-memo-week-range"
+            sx={{ fontWeight: 600, fontSize: '0.84rem', px: 0.5, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: 'text.primary' }}
+          >
+            {shortDate(view.monday)} – {shortDate(addDays(view.monday, 6))}
+          </Typography>
+        )}
         {isDay && (
           <Typography
             data-testid="personal-memo-view-label"
@@ -397,45 +406,44 @@ export default function MemoWorkspace() {
   return (
     <Box data-testid="personal-memo-workspace" sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: MEMO_SURFACE }}>
       <GlobalStyles styles={{ [`::highlight(${MEMO_SEARCH_HIGHLIGHT})`]: { backgroundColor: 'rgba(250, 204, 21, 0.55)', color: 'inherit' } }} />
-      {/* 노트 표지 — 오늘 날짜(serif) + 인사말. 아래 줄: 왼쪽 보조 이동 · 오른쪽 검색·오늘·설정. */}
+      {/* 노트 표지 — 왼쪽 오늘 날짜(serif) + 인사말, 오른쪽 같은 줄에 조작 묶음(화면 이동 │ 검색·오늘·설정).
+          창이 좁으면 조작 묶음이 표지 아래로 내려간다(겹치지 않는다). */}
       <Box
         component="header"
         data-testid="memo-dialog-header"
-        sx={{ display: 'flex', flexDirection: 'column', gap: 1.25, px: 3, pt: 2, pb: 1.25, flexShrink: 0 }}
+        sx={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', columnGap: 2, rowGap: 1, px: 3, pt: 2, pb: 1.5, flexShrink: 0 }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
-          <Box sx={{ flex: '1 1 220px', minWidth: 0, pt: 0.25, pl: 0.25 }}>
-            <Typography
-              component="h1"
-              data-testid="memo-header-date"
-              noWrap
-              sx={{ fontFamily: MEMO_NOTE_SERIF, fontSize: '1.875rem', fontWeight: 400, letterSpacing: '0.4px', lineHeight: 1.15, color: MEMO_NOTE_DATE }}
-            >
-              {longEnglishDate(today)}
-            </Typography>
-            <Typography
-              data-testid="memo-header-greeting"
-              noWrap
-              sx={{ mt: 0.75, fontSize: '0.875rem', fontWeight: 400, lineHeight: 1.4, letterSpacing: '0.2px', color: MEMO_NOTE_GREETING }}
-            >
-              오늘도 좋은 하루예요~!
-            </Typography>
-          </Box>
-          {/* 동기화에 문제가 있을 때만 오른쪽 위에 작게 */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', justifyContent: 'flex-end', pt: 0.5 }}>
-            <SyncProblems />
-          </Box>
+        <Box sx={{ flex: '1 1 220px', minWidth: 0, pt: 0.25, pl: 0.25 }}>
+          <Typography
+            component="h1"
+            data-testid="memo-header-date"
+            noWrap
+            sx={{ fontFamily: MEMO_NOTE_SERIF, fontSize: '1.875rem', fontWeight: 400, letterSpacing: '0.4px', lineHeight: 1.15, color: MEMO_NOTE_DATE }}
+          >
+            {longEnglishDate(today)}
+          </Typography>
+          <Typography
+            data-testid="memo-header-greeting"
+            noWrap
+            sx={{ mt: 0.75, fontSize: '0.875rem', fontWeight: 400, lineHeight: 1.4, letterSpacing: '0.2px', color: MEMO_NOTE_GREETING }}
+          >
+            오늘도 좋은 하루예요~!
+          </Typography>
         </Box>
-        <Box data-testid="personal-memo-view-header" sx={{ display: 'flex', alignItems: 'center', columnGap: 1, rowGap: 0.75, flexWrap: 'wrap', minHeight: 32 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, flexWrap: 'wrap', minWidth: 0 }}>{navControls}</Box>
-          <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 1 }}>
-            <MemoSaveIndicator hideSaved fixedSlot />
-            {tools}
-          </Box>
+        <Box
+          data-testid="personal-memo-view-header"
+          sx={{ ml: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', columnGap: 1, rowGap: 0.75, flexWrap: 'wrap', minHeight: 32, pt: 0.25 }}
+        >
+          {/* 동기화에 문제가 있을 때만 작게 · 저장 상태(알릴 것이 있을 때만 — 비어 있으면 빈 자리) */}
+          <SyncProblems />
+          <MemoSaveIndicator hideSaved fixedSlot />
+          <Box data-testid="memo-header-nav" sx={{ display: 'flex', alignItems: 'center', gap: 0.25, minWidth: 0 }}>{navControls}</Box>
+          <Box aria-hidden sx={{ width: '1px', height: 20, bgcolor: MEMO_CARD_BORDER, mx: 0.25 }} />
+          {tools}
         </Box>
       </Box>
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 3, pb: 2.5, pt: 0.5, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 3, pb: 2.5, pt: 0.25, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
         <MissedReminders
           items={missed}
           onOpen={date => {

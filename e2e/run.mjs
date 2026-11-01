@@ -342,6 +342,20 @@ step('header-today', async () => {
   // 같은 높이·세로 정렬
   const boxes = await page.$$eval('[data-testid="memo-header-tools"] > *', nodes => nodes.map(n => n.getBoundingClientRect()).map(r => [Math.round(r.top), Math.round(r.height)]));
   assert.ok(boxes.every(([top, h]) => h === boxes[0][1] && Math.abs(top - boxes[0][0]) <= 1), `도구 높이·정렬 ${JSON.stringify(boxes)}`);
+  // 주간 기간(‹ 10/26 – 11/1 ›)은 도구 바로 왼쪽, 표지(날짜·인사말)와 같은 줄 — 본문 위에 따로 이동 줄이 없다
+  const sameRow = async selector => {
+    const [nav, tools, title] = await Promise.all(
+      [selector, '[data-testid="memo-header-tools"]', '[data-testid="memo-header-date"]'].map(s => page.locator(s).boundingBox()),
+    );
+    assert.ok(Math.abs(nav.y + nav.height / 2 - (tools.y + tools.height / 2)) <= 2, `${selector} 와 도구가 같은 줄`);
+    assert.ok(nav.x + nav.width <= tools.x && nav.x > title.x + 200, `${selector} 는 오른쪽 도구 왼쪽`);
+    assert.ok(tools.y < title.y + title.height, '조작 묶음이 표지 줄에 있다');
+  };
+  const [, tm, td] = today.split('-').map(Number);
+  const monday = plusDays(today, -weekdayIndex(today));
+  const short = date => date.slice(5).split('-').map(Number).join('/');
+  assert.equal(await page.locator('[data-testid="personal-memo-week-range"]').innerText(), `${short(monday)} – ${short(plusDays(monday, 6))}`, '주간 기간 표시');
+  await sameRow('[data-testid="personal-memo-nav"]');
   await app.shot('20-header-week');
   // [오늘] → 오늘 날짜 상세(메인·오전·오후 + 다가오는 같은 요일)
   await page.click('[data-testid="memo-today"]');
@@ -350,6 +364,16 @@ step('header-today', async () => {
   assert.equal(await page.getAttribute('[data-testid="memo-today"]', 'aria-pressed'), 'true');
   assert.deepEqual(await order(), ['memo-search-open', 'memo-today', 'open-settings'], '날짜 상세: 같은 순서');
   assert.ok(await page.locator('[data-testid="memo-back-to-week"]').isVisible(), '← 주간 유지');
+  // 날짜 상세: 1줄 = ← 주간 ‹ 날짜 Today › │ 검색·오늘·설정 · 2줄 = 저장 상태·연결 │ History·메뉴
+  await sameRow('[data-testid="memo-header-nav"]');
+  assert.ok((await page.locator('[data-testid="personal-memo-view-label"]').innerText()).includes(`${tm}/${td}`), '날짜 표시');
+  const link = await page.locator('[data-testid="sync-link-control"]').boundingBox();
+  const toolsBox = await page.locator('[data-testid="memo-header-tools"]').boundingBox();
+  assert.ok(link.y >= toolsBox.y + toolsBox.height, '연결·History 줄은 조작 줄 아래');
+  // 메인·오전·오후가 창 높이의 대부분을 차지한다(빈 날짜에서도 큰 입력 영역)
+  const grid = await page.locator('[data-testid="personal-memo-day-sections"]').boundingBox();
+  const viewport = page.viewportSize() ?? (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })));
+  assert.ok(grid.height >= Math.min(420, viewport.height) && grid.height >= viewport.height * 0.6, `메모 구역 높이 ${grid.height} / ${viewport.height}`);
   const names = ['월', '화', '수', '목', '금', '토', '일'];
   assert.match(await page.locator('[data-testid="upcoming-weekday"] h2').innerText(), new RegExp(`다가오는 ${names[weekdayIndex(today)]}요일`));
   // 이미 오늘이면 다시 눌러도 화면을 다시 만들지 않는다 — 쓰던 글은 기존 규칙대로(바깥을 누르면) 저장된다
@@ -412,11 +436,15 @@ step('upcoming-weekday', async () => {
   const card7 = page.locator(`[data-testid="upcoming-card-${d7}"]`);
   await card7.waitFor();
   const text7 = await card7.innerText();
-  assert.ok(text7.includes('다음 주') && text7.includes('정기 점검') && text7.includes('예약한 일정 확인'), '다음 주 카드에 실제 내용');
+  const weekdayText = `${['월', '화', '수', '목', '금', '토', '일'][weekdayIndex(today)]}요일`;
+  const md = date => date.slice(5).split('-').map(Number).join('/');
+  assert.ok(text7.includes('정기 점검') && text7.includes('예약한 일정 확인'), '다음 주 카드에 실제 내용');
+  assert.equal(await card7.locator('[data-testid="upcoming-card-title"]').innerText(), `다음 ${weekdayText} · ${md(d7)}`, '카드 제목: 다음 ○요일 · 날짜');
   assert.ok(text7.includes('추가 항목 5'), '카드는 그 날짜의 메모장 — 모든 항목이 그 자리에 보인다');
   // 빈 2주 후 — 메인·오전·오후 입력칸이 바로 있다([미리 작성] 버튼 없음)
   const card14 = page.locator(`[data-testid="upcoming-card-${d14}"]`);
-  assert.ok((await card14.innerText()).includes('2주 후'), '2주 후 카드 제목');
+  assert.equal(await card14.locator('[data-testid="upcoming-card-title"]').innerText(), `다음 ${weekdayText} · ${md(d14)}`, '2주 후 카드도 같은 표기');
+  assert.ok(!(await page.locator('[data-testid="upcoming-weekday"]').innerText()).match(/다음 주|다다음|주 후/), '상대 표현 없음');
   assert.equal(await page.locator('[data-testid="upcoming-write"]').count(), 0, '[미리 작성] 버튼 없음');
   assert.equal(await page.locator(`[data-testid="upcoming-card-${d28}"]`).count(), 0, '더 먼 날짜는 [더 보기] 전에는 없다');
   const input14 = card14.locator('[data-testid="upcoming-group-main"] [data-testid="personal-memo-quick-input"]');

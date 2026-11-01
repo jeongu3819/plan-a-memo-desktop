@@ -107,6 +107,7 @@ import {
     insertHtmlAsSingleTransaction,
     insertHtmlAtSelection as insertHtmlAtSelectionDom,
     restoreEditorSelection,
+    revealSelection,
 } from '../utils/richHtmlInsert';
 import {
     analyzeImageDrop,
@@ -430,13 +431,18 @@ const RichDescriptionEditor: React.FC<Props> = ({
         }
         restoreSelection();
         try {
-            if (document.execCommand('insertText', false, text)) return;
+            if (document.execCommand('insertText', false, text)) {
+                // [PLAN-A Memo Desktop] 장문을 넣은 뒤 커서(끝)가 보이게 — execCommand 는 스크롤하지 않는다.
+                if (ref.current) revealSelection(ref.current);
+                return;
+            }
         } catch {
             // fall through
         }
         const escaped = document.createElement('div');
         escaped.textContent = text;
         insertHtmlAtSelection(escaped.innerHTML.replace(/\r?\n/g, '<br>'));
+        if (ref.current) revealSelection(ref.current);
     }, [restoreSelection, insertHtmlAtSelection]);
 
     // ── 하이퍼링크 ──

@@ -35,6 +35,12 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
   credential 은 Windows 자격 증명 관리자의 `PLAN-A Memo (development-e2e)` 항목만 쓰고 시작·끝에 지운다.
   사용자의 실제 설정·메모·운영 credential 은 건드리지 않는다.
 * 스크린샷: `e2e/output/` (저장소에 넣지 않음). `PLANA_E2E_KEEP=1` 이면 임시 저장소를 남긴다.
+* **긴 텍스트 붙여넣기**: `node e2e/long-paste.mjs` (단계만: `node e2e/long-paste.mjs next-quick`) — 실제 Windows 클립보드에
+  원문(최대 약 29만 자·7천 줄, 한글·Emoji·빈 줄·한 줄 6만 자·목록/표 형태 텍스트, 서식 HTML)을 넣고 Ctrl+V →
+  입력칸/편집기 → 자동 저장 → SQLite(파일 직접 읽기) → 화면 전환 → 정상 종료·재실행까지 글자 수·줄·첫/중간/끝 표식
+  `[END-OF-MEMO-PASTE-TEST-12345]` 를 비교한다. Next·DAY 메인/오전/오후·다가오는 같은 요일, 이어서 편집·Undo/Redo,
+  저장 실패(DB 잠금)·2MB 초과 안내, Mock Sync. 결과 표: `e2e/output/long-paste-report.json`.
+  **클립보드는 PC 전체가 함께 쓴다** — 실행 중(약 3분) 복사하지 말 것. 시작 때 클립보드 텍스트를 보관했다가 끝나면 되돌린다.
 * 개발·E2E 빌드는 식별자 `com.plana.memo.dev`·scheme `plana-memo-dev://`(`src-tauri/tauri.dev.conf.json`)를 쓴다 — 실행 중인 운영 설치본과
   single-instance·앱 설정·`plana-memo://` 등록이 섞이지 않는다(예전에는 운영본이 켜져 있으면 E2E 앱이 바로 종료되고, deep-link 단계가 운영 등록을 덮었다).
 * 창 크기: 실행 동안 개발 실행 파일의 창 상태 파일(`%APPDATA%com.plana.memo.dev.window-state.json`)을 치워 두고 끝나면 되돌린다.

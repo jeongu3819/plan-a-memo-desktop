@@ -19,7 +19,7 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | `hooks/useDescriptionTableResize.ts`, `hooks/useMentionAutocomplete.ts` | 표 크기 조절·멘션(메모에서는 꺼짐) |
 | `theme/tokens.ts`, `theme/customTheme.ts`, `theme/planAiTheme.ts` | 전역 MUI 테마(버튼·Dialog·Menu·Tooltip) |
 | `utils/personalMemoDates.ts` (+test) | 날짜 계산·라벨(이번 주/같은 요일 ±2주/영문 날짜) |
-| `utils/richTextFormatting.ts`, `richLink*.ts`, `richHtmlInsert.ts`, `richTableSx.ts`, `richTextSurface.ts`, `richImageLayout.ts`, `tableResize.ts`, `tsvTable.ts` | HTML serialization·서식·표 |
+| `utils/richTextFormatting.ts`, `richLink*.ts`, `richHtmlInsert.ts` (추가 — 아래), `richTableSx.ts`, `richTextSurface.ts`, `richImageLayout.ts`, `tableResize.ts`, `tsvTable.ts` | HTML serialization·서식·표 |
 | `utils/officePaste.ts`, `clipboardPaste*.ts`, `pastedImage*.ts`, `rtfPict.ts`, `imageDrop.ts`, `inlineImage{Limit,Url}.ts`, `descriptionImage*.ts`, `imageZoom.ts`, `imageViewerLayers.ts`, `htmlText.ts`, `mentionMarkup.ts` (+test), `avatarColor.ts` | 붙여넣기·이미지 처리 |
 | `frontend/src/index.css` 의 "저장 서식 계약" 블록 | `src/styles/global.css` 앞부분(글자 크기·정렬·들여쓰기·표 규칙) |
 
@@ -28,7 +28,8 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | 파일 | 변경 |
 |---|---|
 | `utils/richImage.ts` | **다시 작성**(export 이름·의미 동일). 보호 이미지 canonical 을 `/api/personal-memos/images/…` 대신 `attachment://<id>` 로, 화면 주소를 Bearer blob 대신 `http://attachment.localhost/<id>` 로. `serializeRichHtml` 은 화면 주소가 섞여도 `attachment://` 로 저장하고, **브라우징 컨텍스트 없는 문서**(`createHTMLDocument`)에서 복제·수정한다. `storedHtmlForDisplay` 추가(편집기에 넣기 전에 화면 주소로). `descriptionToPreviewText` 는 `div` 대신 inert `<template>` 로 파싱. 이 세 가지가 편집·저장 때 남던 `attachment://` 로딩 콘솔 오류(ERR_UNKNOWN_URL_SCHEME)의 원인이었다. `compressPastedImage` 는 원본 그대로 |
-| `components/RichDescriptionEditor.tsx` | 외부 value 동기화 한 줄: `el.innerHTML = storedHtmlForDisplay(value)` (원본은 `value` 를 그대로 넣고 나서 hydrate) |
+| `components/RichDescriptionEditor.tsx` | 외부 value 동기화 한 줄: `el.innerHTML = storedHtmlForDisplay(value)` (원본은 `value` 를 그대로 넣고 나서 hydrate). `insertPlainText` 가 넣은 뒤 `revealSelection` 호출 |
+| `utils/richHtmlInsert.ts` | `revealSelection(root)` 추가 — `insertHtmlAsSingleTransaction` 끝에서 호출. `execCommand('insertHTML'/'insertText')` 는 캐럿으로 스크롤하지 않아 서식 있는 장문을 붙여넣으면 편집기가 위에 머문 채 커서가 화면 밖에 남았다. DOM 은 건드리지 않고(Undo 이력 그대로) 캐럿을 담은 스크롤 영역만 움직인다 |
 | `utils/taskDescription.ts` | `safeImageUrl` 에 `attachment://<uuid>` 허용 한 줄 추가(나머지 sanitizer 규칙 그대로) |
 | `utils/inlineImageMetrics.ts` | 서버 보고 대신 no-op(같은 함수 모양) |
 | `components/personalMemo/personalMemoTheme.tsx` | Desktop 표면 톤: 창 바탕 `#F7F6F3`, 칸 경계를 반투명 선(`rgba(28,25,23,.07)`)으로, `MEMO_CARD_SHADOW`·`MEMO_CARD_SHADOW_HOVER` 추가, `MEMO_RADIUS` 18px → 14px, Today 배지 굵기 800 → 700. 다시 복사하면 이 값들만 다시 적용 |

@@ -75,7 +75,9 @@ export default function QuickInput({
         }}
         placeholder={placeholder}
         autoFocus={autoFocus}
-        inputProps={{ 'aria-label': placeholder, maxLength: 4000, 'data-testid': 'personal-memo-quick-input' }}
+        // 글자 수 제한(maxLength)을 두지 않는다 — 브라우저는 넘치는 붙여넣기를 알리지 않고 잘라 버린다(장문 끝이 사라짐).
+        // 크기 한도는 저장 쪽(2MB)이 판단하고, 넘으면 오류 안내 + 입력칸에 그대로 되돌린다(commit).
+        inputProps={{ 'aria-label': placeholder, 'data-testid': 'personal-memo-quick-input' }}
         onCompositionStart={() => {
           composing.current = true;
         }}

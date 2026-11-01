@@ -382,3 +382,30 @@ fn unreferenced_image_cleanup_keeps_history_backups_and_recent_drafts() {
         assert!(s.with_conn(|c| attachments::read_bytes(c, &s.paths, kept)).is_ok(), "남긴 이미지는 파일도 그대로");
     }
 }
+
+/// 긴 문서 붙여넣기 — 수십만 자 본문이 SQLite 에 그대로 저장되고, 저장소를 다시 열어도(재실행) 마지막 글자까지 같다.
+#[test]
+fn long_pasted_memo_is_stored_and_reopened_without_loss() {
+    let (_d, s) = temp_storage();
+    let body: String = (0..6000).map(|i| format!("{i}번째 줄 가나다 English 123 😀👨‍👩‍👧‍👦 &amp; &lt;tag&gt;<br>")).collect();
+    let html = format!("[FIRST] {body}[END-OF-MEMO-PASTE-TEST-12345]");
+    assert!(html.chars().count() > 250_000);
+    let item = add(&s, next(None), "next", &html);
+    let appended = format!("{html}<br>{body}끝에 붙인 장문 [APPEND]");
+    s.with_conn(|c| service::update_content(c, &item.id, &appended)).unwrap();
+    let root = s.paths.root.clone();
+    drop(s);
+    let (s, _) = plan_a_memo_lib::storage::Storage::open(&root, false).unwrap();
+    let list = s.with_conn(|c| service::get_list(c, None)).unwrap();
+    assert_eq!(list.items[0].content_html, appended, "재실행 후에도 한 글자도 다르지 않다");
+    let text: String = s
+        .with_conn(|c| Ok(c.query_row("SELECT content_text FROM memo_items WHERE id = ?1", [&item.id], |r| r.get(0))?))
+        .unwrap();
+    assert!(text.starts_with("[FIRST]") && text.ends_with("[APPEND]"), "검색용 평문도 끝까지");
+    // 저장 한도(2MB)를 넘으면 잘라 저장하지 않고 분명한 오류 — 기존 내용은 그대로
+    let huge = "가".repeat(800_000);
+    let err = s.with_conn(|c| service::update_content(c, &item.id, &huge)).unwrap_err();
+    assert_eq!(err.code(), "validation");
+    assert!(err.to_string().contains("2MB"));
+    assert_eq!(s.with_conn(|c| service::get_list(c, None)).unwrap().items[0].content_html, appended);
+}

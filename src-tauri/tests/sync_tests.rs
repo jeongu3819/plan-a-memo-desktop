@@ -1638,3 +1638,31 @@ async fn carried_over_items_sync_as_new_items_of_the_linked_day_only() {
     e.sync().await;
     assert_eq!(e.mock.unit_items(1, &Unit::day("2026-10-10")).len(), 2);
 }
+
+/// 긴 문서 붙여넣기 — 연결된 Next 의 장문이 Outbox·Mock 서버에 통째로 가고, 충돌 비교·History 에서도 잘리지 않는다.
+#[tokio::test]
+async fn long_pasted_memo_syncs_whole_and_survives_conflict_history() {
+    let e = env_logged_in().await;
+    let body: String = (0..5000).map(|i| format!("{i}번째 줄 가나다 English 123 😀<br>")).collect();
+    let html = format!("[FIRST] {body}[END-OF-MEMO-PASTE-TEST-12345]");
+    let a = add(&e.storage, next(None), "next", &html);
+    e.link(next(None));
+    e.sync().await;
+    assert_eq!(e.status(&next(None)), "synced");
+    let unit = Unit::list("default");
+    assert_eq!(e.mock.document_of(1, &unit).unwrap().items[0].content, html, "서버에 마지막 글자까지");
+    // 양쪽 수정 → 비교 → Web 선택: 고르지 않은 Desktop 장문은 History 에 통째로
+    e.mock.web_create(1, &unit, "main", "Web 수정");
+    let edited = format!("{html}<br>Desktop 에서 덧붙임 [APPEND]");
+    e.storage.with_conn(|c| service::update_content(c, &a.id, &edited)).unwrap();
+    assert_eq!(e.sync().await.conflicts, 1);
+    let conflict = e.storage.with_conn(|c| list_conflicts(c)).unwrap().remove(0);
+    assert_eq!(conflict.local.items[0].content_html, edited, "비교 화면의 Desktop 쪽도 장문 그대로");
+    e.resolve(ConflictChoice::Remote).await.unwrap();
+    let local = e.storage.with_conn(|c| service::get_list(c, None)).unwrap();
+    assert_eq!(local.items[0].content_html, html, "Web 쪽(원래 장문) 그대로");
+    let versions = e.storage.with_conn(|c| history::list_for_location(c, &next(None))).unwrap();
+    let kept = versions.iter().find(|v| v.reason == "conflict_local").expect("Desktop 내용은 History 에");
+    let detail = e.storage.with_conn(|c| history::get(c, kept.id)).unwrap();
+    assert!(detail.snapshot.items.iter().any(|i| i.content_html == edited), "History 스냅샷도 마지막 글자까지");
+}

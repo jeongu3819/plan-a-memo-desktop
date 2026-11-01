@@ -49,6 +49,42 @@ export function insertHtmlAtSelection(root: HTMLElement, html: string): void {
     }
 }
 
+/**
+ * [PLAN-A Memo Desktop] 캐럿(넣은 내용의 끝)이 보이게 스크롤한다.
+ * execCommand('insertHTML'/'insertText') 는 사용자가 직접 붙여넣을 때와 달리 캐럿으로 스크롤하지 않는다 —
+ * 서식 있는 장문을 붙여넣으면 편집기(내부 스크롤)가 위쪽에 머문 채 커서가 화면 밖에 남았다.
+ * DOM 은 건드리지 않고(Undo 이력 그대로) 캐럿을 담은 스크롤 영역들만 안쪽부터 움직인다.
+ */
+export function revealSelection(root: HTMLElement): void {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return;
+    const caret = selection.getRangeAt(0).cloneRange();
+    caret.collapse(false);
+    if (!root.contains(caret.endContainer)) return;
+    const caretRect = (): DOMRect | null => {
+        const rects = caret.getClientRects();
+        if (rects.length) return rects[rects.length - 1];
+        // 빈 줄(<br>) · 블록 경계에서는 접힌 Range 의 사각형이 없다 → 캐럿 바로 앞 노드로 잰다
+        const container = caret.endContainer;
+        const before = container.nodeType === Node.ELEMENT_NODE ? container.childNodes[caret.endOffset - 1] : container;
+        if (!before) return (container as Element).getBoundingClientRect?.() ?? null;
+        const probe = document.createRange();
+        probe.selectNode(before);
+        return probe.getBoundingClientRect();
+    };
+    const MARGIN = 24;
+    for (let el: HTMLElement | null = root; el; el = el.parentElement) {
+        if (!/(auto|scroll)/.test(getComputedStyle(el).overflowY) || el.scrollHeight <= el.clientHeight) continue;
+        const rect = caretRect();
+        if (!rect) return;
+        const box = el.getBoundingClientRect();
+        if (rect.bottom > box.bottom - MARGIN) el.scrollTop += rect.bottom - box.bottom + MARGIN;
+        else if (rect.top < box.top + MARGIN) el.scrollTop -= box.top + MARGIN - rect.top;
+    }
+    const rect = caretRect();
+    if (rect && rect.bottom > window.innerHeight) window.scrollBy(0, rect.bottom - window.innerHeight + MARGIN);
+}
+
 /** HTML 을 편집기의 **한 단계**로 넣는다. */
 export function insertHtmlAsSingleTransaction(root: HTMLElement, html: string, saved: Range | null): void {
     restoreEditorSelection(root, saved);
@@ -59,4 +95,5 @@ export function insertHtmlAsSingleTransaction(root: HTMLElement, html: string, s
         inserted = false;
     }
     if (!inserted) insertHtmlAtSelection(root, html);
+    revealSelection(root);
 }

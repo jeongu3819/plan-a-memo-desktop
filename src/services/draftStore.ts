@@ -98,8 +98,9 @@ export class DraftStore {
   }
 
   private async save(id: string): Promise<void> {
-    const running = this.inflight.get(id);
-    if (running) {
+    // 같은 항목의 저장은 한 번에 하나씩 — 기다리던 저장이 둘 이상이면 앞의 것이 끝난 뒤 다시 확인한다.
+    // (동시에 보내면 DB 에 도착하는 순서가 바뀌어 오래된 내용이 최신 내용을 덮을 수 있다)
+    for (let running = this.inflight.get(id); running; running = this.inflight.get(id)) {
       await running;
     }
     const draft = this.drafts.get(id);

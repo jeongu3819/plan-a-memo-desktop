@@ -88,6 +88,60 @@ describe('DraftStore (자동 저장)', () => {
     expect(store.draft(memo.id)?.status).toBe('saved');
   });
 
+  it('같은 메모의 저장은 동시에 보내지 않는다 — 오래된 내용이 최신 내용을 덮지 않는다', async () => {
+    let active = 0;
+    let maxActive = 0;
+    let db = '';
+    const pending: Array<() => void> = [];
+    const save = vi.fn(
+      (_id: string, html: string) =>
+        new Promise<MemoItem>(resolve => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          pending.push(() => {
+            active -= 1;
+            db = html; // 응답이 온 순서대로 DB 에 쓰였다고 본다
+            resolve(item(html));
+          });
+        }),
+    );
+    const tick = () => new Promise(r => setTimeout(r, 0));
+    const store = new DraftStore(save);
+    const memo = item();
+    store.edit(memo, 'v1');
+    const flushes = [store.flush(memo.id)];
+    await tick();
+    store.edit(memo, 'v2');
+    flushes.push(store.flush(memo.id), store.flush(memo.id)); // 저장 중에 두 번 더(바깥 클릭 + 창 숨김)
+    await tick();
+    pending.shift()!(); // v1 응답
+    await tick();
+    store.edit(memo, 'v3');
+    flushes.push(store.flush(memo.id));
+    await tick();
+    // 남은 응답을 늦게 시작한 것부터(역순) 돌려준다 — 동시에 보냈다면 v2 가 v3 를 덮는다
+    while (pending.length) {
+      pending.pop()!();
+      await tick();
+    }
+    await Promise.all(flushes);
+    await store.flushAll();
+    expect(maxActive).toBe(1);
+    expect(db).toBe('v3');
+    expect(store.draft(memo.id)?.status).toBe('saved');
+  });
+
+  it('수십만 자 본문도 자르지 않고 그대로 저장 함수에 넘긴다', async () => {
+    const long = `<p>${'가나다라마바사 ABC 123 😀 '.repeat(20000)}</p><p>[END-OF-MEMO-PASTE-TEST-12345]</p>`;
+    const save = vi.fn(async (_id: string, html: string) => item(html));
+    const store = new DraftStore(save);
+    const memo = item();
+    store.edit(memo, long);
+    await store.flush(memo.id);
+    expect(save).toHaveBeenCalledWith(memo.id, long);
+    expect(store.draft(memo.id)?.savedContent).toBe(long);
+  });
+
   it('flushAll 은 창을 닫기 전 남은 입력을 모두 저장한다', async () => {
     const save = vi.fn(async (_id: string, html: string) => item(html));
     const store = new DraftStore(save);

@@ -106,13 +106,61 @@ staging 파일명은 `PLAN-A-Memo-Staging_<버전>_x64-setup.exe`.
    ```
    → `release/staging/0.2.4/…exe`·`.sig`, `release/staging/latest.json`, `release/staging/PLAN-A-Memo-Staging-Setup.exe`
 5. **staging 업로드** — ① 버전 폴더의 exe·sig ② (선택) Setup.exe ③ **마지막에** latest.json. 순서를 바꾸면 앱이 아직 없는 파일을 받으려 한다.
+   올린 뒤 `npm run release:verify:staging`(같은 `PLANA_UPDATE_BASE_URL`) — 게시된 latest.json 의 channel·version·signature 와
+   업데이트 파일(HTTP 200·크기)을 dist 결과와 비교한다. 실패하면 앱에서 시험하기 전에 고친다.
 6. **staging 확인** — 이전 staging 버전이 설치된 PC 에서 설정 → [업데이트 확인] → 설치 → 재실행 후 버전·메모 확인.
 7. **production 빌드** — 4와 같되 production 키·비밀번호로 `npm run dist:production`. (서버 확인에서 멈추면 서버를 먼저 고친다.)
-8. **production 업로드** — 5와 같은 순서. 기존 사용자 앱은 시작 20초 뒤·6시간마다 확인하고, 알림만 띄운다(설치는 사용자가 누를 때).
+8. **production 업로드** — 5와 같은 순서, 확인은 `npm run release:verify:production`. 기존 사용자 앱은 시작 20초 뒤·6시간마다 확인하고, 알림만 띄운다(설치는 사용자가 누를 때).
 9. **기록** — git tag `v0.2.4`, 업로드한 파일의 sha256(빌드 출력) 기록. 환경 변수의 키는 셸을 닫아 지운다.
 
 **되돌리기** — Updater 는 낮은 버전으로 내려가지 않는다. 문제가 있으면 ① `latest.json` 을 이전 내용으로 되돌려 더 퍼지지 않게 하고
 ② 고친 버전을 더 높은 번호로 배포한다.
+
+**dist 스크립트가 멈추는 경우(업데이트 관련)** — 아래 상태로 만든 설치본은 앱 안 업데이트를 받을 수 없어 다시 직접 설치해야 하므로 빌드 전에 막는다.
+* `PLANA_UPDATE_BASE_URL` 이 https 가 아니거나 계정 정보·로컬 주소가 있거나, 경로에 다른 채널 이름(`/production/`·`/staging/`)이 들어 있음
+* `src-tauri/updater/<채널>.pub` 이 Tauri 서명 공개키 형식이 아님
+* 빌드한 실행 파일에 업데이트 주소가 들어가지 않음(빌드 캐시 문제 — `cargo clean` 후 다시)
+
+## 4-1. Staging 앱 안 업데이트 시작 — 0.2.3 에서 한 번 전환
+
+지금 설치된 PLAN-A Memo Staging 0.2.3 은 공개키·업데이트 주소 없이 빌드되어 [업데이트 확인]이
+"이 버전에는 업데이트 서버가 설정되어 있지 않습니다" 로 끝난다. 앱 안에서는 이 설정을 바꿀 수 없으므로
+**업데이트 설정이 들어간 Staging 설치본을 한 번 직접 설치**하고, 그다음 버전부터 앱 안에서 업데이트한다.
+
+**준비(1회)**
+
+| 항목 | 할 일 | 저장소 |
+|---|---|---|
+| staging 서명 키쌍 | `npx tauri signer generate -w "$HOME\.plan-a-memo-keys\staging.key"` (비밀번호 필수) | 개인키 ❌ — 비밀번호 관리자 + 오프라인 백업 |
+| staging 공개키 | `Copy-Item "$HOME\.plan-a-memo-keys\staging.key.pub" src-tauri\updater\staging.pub` | `staging.pub` ✅ 커밋 |
+| 게시 주소 | 정적 파일 HTTPS 주소(§3). 앱은 `<BASE>/staging/latest.json` 을 본다. `latest.json` 캐시는 0~60초 | 빌드 PC 환경 변수 `PLANA_UPDATE_BASE_URL` |
+
+공개키와 게시 주소는 **전환 설치본에 영구히 들어간다** — 바꾸면 다시 직접 설치해야 하므로 실제로 계속 쓸 값으로 정한다.
+
+**전환 설치본(권장 0.2.4)**
+1. 버전을 0.2.4 로 올리고 `release-notes/0.2.4.md` 작성(§4 1~2). 0.2.3 을 그대로 다시 빌드해도 되지만, 설치 화면이 '이미 설치됨' 으로 뜨고
+   업데이트 전·후 버전을 구분할 수 없어 권하지 않는다.
+2. §4 의 4번처럼 staging 키·`PLANA_UPDATE_BASE_URL` 을 주고 `npm run dist:staging` — 출력에 `업데이트 확인: <BASE>/staging/latest.json` 이 보여야 한다
+   (`업데이트 확인 없이 빌드합니다` 경고가 보이면 멈추고 설정을 고친다).
+3. §4 의 5번 순서로 0.2.4 를 게시하고 `npm run release:verify:staging`.
+4. 시험 PC 에서 설정 → Backup 을 한 번 만들어 둔다(선택 — 설치는 메모를 건드리지 않는다).
+5. `release/staging/PLAN-A-Memo-Staging-Setup.exe` 를 0.2.3 위에 실행한다. 식별자(`com.plana.memo.staging`)·설치 폴더가 같아 그 자리에서 바뀐다.
+6. 확인: 설정 → 앱 정보 → 현재 버전 0.2.4, [업데이트 확인] → "최신 버전을 사용 중입니다". 메모·저장 위치·계정 연결 상태가 그대로인지 본다.
+
+**유지되는 것** — 설치·업데이트는 설치 폴더(`%LOCALAPPDATA%\PLAN-A Memo Staging`)의 프로그램 파일만 바꾼다.
+메모 SQLite·이미지·History·Backup(`%USERPROFILE%\PLAN-A Memo Staging` 또는 고른 저장 위치), 저장 위치 기록·로그(`%APPDATA%\com.plana.memo.staging`),
+계정 연결 credential(Windows 자격 증명 `PLAN-A Memo (staging)`)과 동기화 상태(메모 DB 안)는 설치 폴더 밖이라 그대로다.
+앱 안 업데이트는 여기에 더해 설치 직전 `pre-update` Backup 을 만든다. 운영 앱(`com.plana.memo`)과는 서로 건드리지 않는다.
+
+**첫 앱 안 업데이트 시험(0.2.4 → 0.2.5)**
+1. 0.2.5 로 올리고 `release-notes/0.2.5.md` → 같은 키·주소로 `npm run dist:staging` → 게시(exe·sig 먼저, latest.json 마지막) → `npm run release:verify:staging`.
+2. 0.2.4 앱에서 [업데이트 확인](또는 실행 20초 뒤 자동 알림) → "새 버전 0.2.5" → 설치 → 앱이 닫혔다가 다시 열린다.
+3. 현재 버전 0.2.5, 메모·동기화 상태 그대로, 저장 위치의 Backup 목록에 `pre-update` 가 있는지 확인.
+4. 실패 시: 앱은 0.2.4 그대로 남는다. 진단 로그(`%APPDATA%\com.plana.memo.staging\logs`)의 `updater … failed: <코드>` 로 원인을 본다
+   (`update_signature` = 키 불일치, `update_manifest` = latest.json 형식, `update_channel_mismatch` = 다른 채널 파일, `update_download` = 파일 주소).
+
+**Production 은 따로** — production 키(다른 키쌍)·`production.pub`·`<BASE>/production/` 로 같은 과정을 한 번 거친다. 운영 0.2.2 설치본도
+업데이트 설정이 없으므로 전환 설치본을 한 번 직접 설치해야 한다. staging 파일·키는 운영 앱에서 쓰이지 않는다(§1 3중 장치).
 
 ## 5. 설치 · 업데이트 · 제거 정책(Windows)
 

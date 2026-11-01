@@ -21,6 +21,8 @@
     "e2e": "node e2e/run.mjs",
     "dist:staging": "node scripts/dist.mjs staging",
     "dist:production": "node scripts/dist.mjs production",
+    "release:verify:staging": "node scripts/verify-update.mjs staging",
+    "release:verify:production": "node scripts/verify-update.mjs production",
     "e2e:installer": "node e2e/installer.mjs"
   },
   "dependencies": {

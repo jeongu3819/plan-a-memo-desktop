@@ -59,12 +59,14 @@ if (pkg.version !== version || cargoVersion !== version) {
 const overlays = [];
 let productName = conf.productName;
 let identifier = conf.identifier;
+let mainBinaryName = conf.mainBinaryName;
 if (channel === 'staging') {
   const overlayPath = path.join('src-tauri', 'tauri.staging.conf.json');
   const overlay = JSON.parse(readFileSync(path.join(root, overlayPath), 'utf8'));
   overlays.push(overlayPath);
   productName = overlay.productName;
   identifier = overlay.identifier;
+  mainBinaryName = overlay.mainBinaryName ?? mainBinaryName;
 }
 const defaultOrigin = { production: 'https://planawork.com', staging: 'https://staging.planawork.com' }[channel];
 const origin = (process.env.PLANA_SERVER_ORIGIN || defaultOrigin).replace(/\/+$/, '');
@@ -104,6 +106,26 @@ if (flag('--skip-server-check')) {
 }
 
 // ── 4. 업데이트 설정 ───────────────────────────────────────────────────
+/** src-tauri/src/config.rs validate_update_endpoint 와 같은 규칙(staging·production). 문제없으면 null. */
+function checkUpdateEndpoint(value, ch) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return `주소 형식이 아닙니다(${value})`;
+  }
+  if (url.protocol !== 'https:') return 'https 주소만 쓸 수 있습니다';
+  if (url.username || url.password) return '주소에 계정 정보를 넣을 수 없습니다';
+  if (['127.0.0.1', 'localhost'].includes(url.hostname)) return '배포 빌드에는 로컬 주소를 쓸 수 없습니다';
+  const other = ch === 'staging' ? 'production' : 'staging';
+  const p = url.pathname.toLowerCase();
+  if (!p.includes(`/${ch}/`)) return `경로에 /${ch}/ 가 없습니다(${url.pathname})`;
+  if (p.includes(`/${other}/`)) return `경로에 다른 채널 이름 /${other}/ 가 들어 있습니다(${url.pathname})`;
+  return null;
+}
+/** config.rs valid_pubkey 와 같은 검사 — base64 를 풀면 minisign 공개키 주석이 있어야 한다. */
+const isMinisignPubkey = value => Buffer.from(value, 'base64').toString('utf8').includes('minisign public key');
+
 const env = { ...process.env, PLANA_ENV: channel };
 delete env.PLAN_A_ENV;
 const pubkeyFile = path.join(root, 'src-tauri', 'updater', `${channel}.pub`);
@@ -112,6 +134,13 @@ let updatesEnabled = false;
 if (existsSync(pubkeyFile) && baseUrl) {
   env.PLANA_UPDATER_PUBKEY = readFileSync(pubkeyFile, 'utf8').trim();
   env.PLANA_UPDATE_ENDPOINT = `${baseUrl}/${channel}/latest.json`;
+  // 앱(config.rs)은 규칙에 맞지 않는 주소·공개키를 받으면 경고 로그만 남기고 업데이트를 끈 채 실행된다.
+  // 그런 설치본을 배포하면 다시 수동 설치가 필요하므로 같은 규칙으로 여기서 멈춘다.
+  const endpointProblem = checkUpdateEndpoint(env.PLANA_UPDATE_ENDPOINT, channel);
+  if (endpointProblem) fail(`PLANA_UPDATE_BASE_URL 이 올바르지 않습니다 — ${endpointProblem}`);
+  if (!isMinisignPubkey(env.PLANA_UPDATER_PUBKEY)) {
+    fail(`src-tauri/updater/${channel}.pub 이 Tauri 서명 공개키 형식이 아닙니다(tauri signer generate 가 만든 .key.pub 내용 그대로).`);
+  }
   updatesEnabled = true;
   info(`업데이트 확인: ${env.PLANA_UPDATE_ENDPOINT}`);
 } else {
@@ -154,6 +183,14 @@ const nsisDir = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'nsi
 const setupName = `${productName}_${version}_x64-setup.exe`;
 const setupPath = path.join(nsisDir, setupName);
 if (!existsSync(setupPath)) fail(`설치 파일을 찾지 못했습니다: ${setupPath}`);
+if (updatesEnabled) {
+  // 업데이트 주소는 빌드 때 실행 파일에 들어간다(option_env!) — 빠졌다면 설치해도 [업데이트 확인]이 '설정되지 않음' 이다.
+  const exeName = `${mainBinaryName}.exe`;
+  const exePath = path.join(root, 'src-tauri', 'target', 'release', exeName);
+  if (existsSync(exePath) && !readFileSync(exePath).includes(Buffer.from(env.PLANA_UPDATE_ENDPOINT))) {
+    fail(`빌드한 ${exeName} 에 업데이트 주소가 들어 있지 않습니다. cargo clean 후 다시 빌드해주세요.`);
+  }
+}
 const outDir = path.join(root, 'release', channel);
 mkdirSync(outDir, { recursive: true });
 const friendly = channel === 'production' ? 'PLAN-A-Memo-Setup.exe' : 'PLAN-A-Memo-Staging-Setup.exe';

@@ -67,6 +67,12 @@ impl SyncRuntime {
         Ok(report)
     }
 
+    /// 앱 종료 직전 — 진행 중인 Sync 가 끝나기를 기다리고, 돌려받은 잠금을 쥐고 있는 동안 새 Sync 를 시작하지 않는다.
+    /// 시간 안에 끝나지 않으면 None.
+    pub async fn wait_idle(&self, timeout: std::time::Duration) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        tokio::time::timeout(timeout, self.run_lock.lock()).await.ok()
+    }
+
     /// Conflict 선택 — Sync 실행과 겹치지 않게 같은 잠금 안에서.
     pub async fn resolve(&self, storage: &Storage, conflict_id: &str, choice: engine::ConflictChoice) -> AppResult<crate::memo::Location> {
         let _guard = self.run_lock.lock().await;

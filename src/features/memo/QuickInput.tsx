@@ -13,6 +13,11 @@ import { usePersonalMemo } from './MemoProvider';
 
 const escapeHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/** 입력칸에 아직 저장되지 않은 글이 있는가(저장 실패로 되돌아온 글 포함) — 앱을 곧 닫는 경로에서 확인한다. */
+export function hasUnsavedQuickInput(): boolean {
+  return Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea[data-testid="personal-memo-quick-input"]')).some(input => input.value.trim());
+}
+
 export const COMPOSER_HINT = 'Enter 줄바꿈 · Ctrl+Enter 저장 후 다음 · 바깥을 누르면 자동 저장';
 
 export default function QuickInput({

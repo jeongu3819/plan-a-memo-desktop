@@ -3,15 +3,16 @@
 //   npm run release:verify:staging       (= node scripts/verify-update.mjs staging)
 //   npm run release:verify:production
 //
-// 필요한 값: PLANA_UPDATE_BASE_URL(빌드 때와 같은 값). release/<채널>/ 에 dist 결과가 있으면 그것과 비교한다.
+// 필요한 값: PLANA_UPDATE_BASE_URL(빌드 때와 같은 값 — staging 은 scripts/release.staging.json 이 기본값). release/<채널>/ 에 dist 결과가 있으면 그것과 비교한다.
 // 확인하는 것
 //   1. <BASE>/<채널>/latest.json — 내려받기 가능, channel 이 이 채널, version·signature 가 dist 결과와 같음
-//   2. latest.json 의 url — <BASE>/<채널>/<버전>/ 아래, 내려받기 가능, 크기가 dist 결과 파일과 같음
+//   2. latest.json 의 url — <BASE>/<채널>/<버전>/ 아래, 내려받기 가능, 내용(sha256)이 dist 결과 파일과 같음
 // 아무것도 올리거나 바꾸지 않는다(읽기만).
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadStagingConfig, sha256 } from './lib/release-lib.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const channel = process.argv[2];
@@ -26,7 +27,7 @@ if (!['staging', 'production'].includes(channel)) {
   console.error('\n✖ 채널을 정해주세요: npm run release:verify:staging  또는  npm run release:verify:production\n');
   process.exit(1);
 }
-const baseUrl = (process.env.PLANA_UPDATE_BASE_URL || '').replace(/\/+$/, '');
+const baseUrl = (process.env.PLANA_UPDATE_BASE_URL || (channel === 'staging' ? loadStagingConfig(root).baseUrl : '')).replace(/\/+$/, '');
 if (!baseUrl) {
   console.error('\n✖ PLANA_UPDATE_BASE_URL 이 없습니다(빌드 때와 같은 값).\n');
   process.exit(1);
@@ -43,7 +44,14 @@ let remote = null;
 try {
   const res = await fetch(manifestUrl, { headers: { Accept: 'application/json' } });
   if (!res.ok) problem(`${manifestUrl} → HTTP ${res.status}`);
-  else remote = JSON.parse(await res.text());
+  else {
+    const text = await res.text();
+    try {
+      remote = JSON.parse(text);
+    } catch {
+      problem(`${manifestUrl} 이 JSON 이 아닙니다(${res.headers.get('content-type')}) — 웹 화면 HTML 이 돌아오면 서버 설정이 빠진 것입니다(scripts/server/memo-updates.nginx.conf).`);
+    }
+  }
 } catch (error) {
   problem(`${manifestUrl} 을 읽지 못했습니다(${error.cause?.code || error.message})`);
 }
@@ -63,13 +71,14 @@ if (remote) {
     const expectedPrefix = `${baseUrl}/${channel}/${remote.version}/`;
     if (!target.url.startsWith(expectedPrefix)) problem(`url 이 ${expectedPrefix} 아래가 아닙니다: ${target.url}`);
     try {
-      const res = await fetch(target.url, { method: 'HEAD' });
-      const size = Number(res.headers.get('content-length')) || null;
+      const res = await fetch(target.url);
       if (!res.ok) problem(`업데이트 파일 → HTTP ${res.status} (latest.json 보다 먼저 올려야 합니다)`);
-      else info(`업데이트 파일: HTTP ${res.status}${size ? ` · ${size} bytes` : ''}`);
-      const localFile = path.join(outDir, remote.version, decodeURIComponent(target.url.split('/').pop()));
-      if (res.ok && size && existsSync(localFile) && statSync(localFile).size !== size) {
-        problem(`업데이트 파일 크기 ${size} ≠ dist 결과 ${statSync(localFile).size} — 다른 파일이 올라가 있습니다.`);
+      else {
+        const bytes = Buffer.from(await res.arrayBuffer());
+        const hash = sha256(bytes);
+        info(`업데이트 파일: HTTP ${res.status} · ${bytes.length} bytes · sha256 ${hash}`);
+        const localFile = path.join(outDir, remote.version, decodeURIComponent(target.url.split('/').pop()));
+        if (existsSync(localFile) && sha256(readFileSync(localFile)) !== hash) problem('업데이트 파일 내용이 dist 결과와 다릅니다 — 다른 파일이 올라가 있습니다.');
       }
     } catch (error) {
       problem(`업데이트 파일을 확인하지 못했습니다(${error.cause?.code || error.message})`);

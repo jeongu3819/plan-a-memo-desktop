@@ -1,7 +1,7 @@
 /**
- * 새 버전 알림 · 설치 — 사용자가 [업데이트 설치]를 눌렀을 때만 설치한다(강제 설치·강제 재시작 없음).
+ * 새 버전 알림 · 설치 — 사용자가 [업데이트]를 눌렀을 때만 설치한다(강제 설치·강제 재시작 없음).
  *
- *   [업데이트 설치] → 남은 입력 저장(flushAll) · 저장 실패/이미지 넣는 중이면 멈춤
+ *   [업데이트] → 남은 입력 저장(flushAll) · 저장 안 된 글/저장 실패/이미지 넣는 중이면 멈춤
  *   → Rust: 설치 전 Backup → 내려받기(진행률) → 서명 검증 → 설치 프로그램 실행(앱이 닫히고 설치 후 다시 열림)
  * 실패하면 원인을 보여 주고 지금 버전을 그대로 쓴다. 릴리스 노트는 배포된 업데이트 정보(latest.json)의 내용 그대로다.
  */
@@ -11,6 +11,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { UpdateInfo, UpdateProgress } from '../../domain/types';
 import { errorMessage, updateService } from '../../tauri/api';
 import { usePersonalMemo } from '../memo/MemoProvider';
+import { hasUnsavedQuickInput } from '../memo/QuickInput';
 import {
   MEMO_CARD_BORDER,
   MEMO_MUTED,
@@ -81,8 +82,11 @@ export default function UpdateDialog({ info, onClose }: { info: UpdateInfo | nul
       if (store.anyUploading()) {
         throw new Error('이미지를 넣는 중입니다. 끝난 뒤 다시 설치해주세요.');
       }
-      if (store.failedCount() > 0) {
+      if (store.failedCount() > 0 || store.unsavedCount() > 0) {
         throw new Error('저장하지 못한 메모가 있어 설치를 멈췄습니다. 메모의 [다시 시도]로 저장을 먼저 확인해주세요.');
+      }
+      if (hasUnsavedQuickInput()) {
+        throw new Error('입력칸에 저장되지 않은 글이 있어 설치를 멈췄습니다. 글을 저장한 뒤 다시 시도해주세요.');
       }
       await updateService.install();
       // 성공하면 앱이 곧 닫힌다(설치 프로그램이 설치 후 다시 실행한다).
@@ -112,7 +116,7 @@ export default function UpdateDialog({ info, onClose }: { info: UpdateInfo | nul
       data-personal-memo-overlay="true"
       data-testid="update-dialog"
     >
-      <DialogTitle>새로운 업데이트가 있습니다</DialogTitle>
+      <DialogTitle>새로운 버전이 있습니다{info ? ` — v${info.version}` : ''}</DialogTitle>
       {info && (
         <DialogContent>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, p: 1.5, borderRadius: '10px', bgcolor: MEMO_WRITE_AREA }}>
@@ -146,7 +150,7 @@ export default function UpdateDialog({ info, onClose }: { info: UpdateInfo | nul
       <DialogActions>
         <Button variant="outlined" onClick={onClose} disabled={installing}>나중에</Button>
         <Button variant="contained" onClick={() => void install()} disabled={installing} data-testid="update-install">
-          {error ? '다시 시도' : '업데이트 설치'}
+          {error ? '다시 시도' : '업데이트'}
         </Button>
       </DialogActions>
     </Dialog>

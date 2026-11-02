@@ -205,6 +205,7 @@ function AboutSection({ open }: { open: boolean }) {
     setResult(null);
     try {
       const found = await updateService.check();
+      if (found) ui.openUpdate(found);
       setResult(
         found
           ? { kind: 'available', text: `새 버전 ${found.version} 이 있습니다.`, info: found }

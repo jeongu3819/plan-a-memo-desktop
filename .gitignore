@@ -24,6 +24,9 @@ release/
 # E2E 스크린샷
 e2e/output/
 
+# 릴리스 — 이 PC 의 SSH 대상(scripts/release.staging.local.example.json 참고)
+scripts/*.local.json
+
 # 업데이트 서명 개인키 — 절대 커밋하지 않는다(공개키 src-tauri/updater/*.pub 만 커밋)
 *.key
 *.key.pub

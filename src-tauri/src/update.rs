@@ -4,9 +4,9 @@
 //!   업데이트 정보(latest.json)의 `channel` 이 이 앱의 채널과 다르면 설치를 제안하지 않는다.
 //!   채널마다 서명키도 따로 쓰므로 다른 채널의 설치 파일은 서명 검증에서도 걸린다.
 //! * 확인은 자동(시작 후 잠시 뒤·6시간마다, 1시간 안에는 다시 묻지 않음) + 설정의 [업데이트 확인].
-//!   새 버전을 알리기만 하고, 설치는 사용자가 [업데이트 설치]를 눌렀을 때만 한다.
+//!   새 버전을 알리기만 하고, 설치는 사용자가 [업데이트]를 눌렀을 때만 한다.
 //! * 설치 전: 화면이 남은 입력을 저장(flushAll)한 뒤 요청 → 여기서 Backup('pre-update') → 내려받기·서명 검증
-//!   → 설치 프로그램 실행(앱 종료, 설치가 끝나면 다시 실행). 서명이 맞지 않거나 내려받기에 실패하면 지금 버전 그대로.
+//!   → 진행 중인 Sync 를 잠시 기다림 → 설치 프로그램 실행(앱 종료, 설치가 끝나면 다시 실행). 서명이 맞지 않거나 내려받기에 실패하면 지금 버전 그대로.
 //! * 메모 데이터는 설치 폴더 밖(사용자 폴더)에 있다 — 업데이트는 프로그램 파일만 바꾼다. 서버로 메모를 올리지 않는다.
 
 use std::sync::Mutex;
@@ -23,6 +23,8 @@ use crate::state::AppState;
 const AUTO_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 const AUTO_MIN_GAP: Duration = Duration::from_secs(3600);
 const MANUAL_MIN_GAP: Duration = Duration::from_secs(5);
+/// 설치 직전 진행 중인 Sync 를 기다리는 최대 시간. 넘기면 그대로 진행한다 — 보내던 요청은 Outbox 에 남아 다음 실행 때 같은 request_id 로 다시 보낸다.
+const SYNC_IDLE_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,7 +166,7 @@ impl UpdateState {
         true
     }
 
-    /// 사용자가 [업데이트 설치]를 눌렀을 때만. 화면은 그 전에 남은 입력을 저장한다.
+    /// 사용자가 [업데이트]를 눌렀을 때만. 화면은 그 전에 남은 입력을 저장한다.
     pub async fn install(&self, app: &AppHandle) -> AppResult<()> {
         let update = {
             let mut inner = self.inner.lock().unwrap();
@@ -219,6 +221,7 @@ impl UpdateState {
             .map_err(|e| update_error(&e, "download"))?;
         // 3) 설치 프로그램 실행 → 앱 종료(설치가 끝나면 설치 프로그램이 다시 실행한다)
         let _ = app.emit("update://progress", UpdateProgress { downloaded, total: Some(downloaded), phase: "installing" });
+        let _sync_idle = state.sync.wait_idle(SYNC_IDLE_WAIT).await;
         log::info!("installing update {} -> {}", update.current_version, update.version);
         update.install(bytes).map_err(|e| update_error(&e, "install"))?;
         Ok(())
@@ -238,6 +241,8 @@ fn info_of(update: &Update) -> UpdateInfo {
 fn update_error(error: &tauri_plugin_updater::Error, stage: &str) -> AppError {
     use tauri_plugin_updater::Error as E;
     let mapped = match error {
+        // 응답은 왔는데 JSON 이 아니다(웹 서버의 HTML 응답 등) — 연결 문제가 아니라 업데이트 정보 문제.
+        E::Reqwest(e) if e.is_decode() => AppError::new("update_manifest", "업데이트 정보를 읽지 못했습니다. 잠시 후 다시 시도해주세요."),
         // 서명 불일치 · 서명된 버전과 공지된 버전이 다름(오래된 설치 파일로 바꿔치기 방지) · 서명에 버전 없음
         E::Minisign(_) | E::Base64(_) | E::SignatureUtf8(_) | E::SignedVersionMismatch { .. } | E::MissingSignedVersion => {
             AppError::new("update_signature", "업데이트 파일의 서명을 확인하지 못해 설치하지 않았습니다. 지금 버전을 그대로 사용합니다.")

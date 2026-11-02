@@ -1,0 +1,8 @@
+{
+  "ssh": {
+    "host": "<서버 주소>",
+    "user": "<SSH 사용자>",
+    "identityFile": "~/.ssh/<SSH 키 파일>",
+    "remoteDir": "/var/www/memo-updates"
+  }
+}

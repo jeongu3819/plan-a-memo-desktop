@@ -1,0 +1,4 @@
+{
+  "baseUrl": "https://staging.planawork.com/memo-updates",
+  "signingKey": "~/.plan-a-memo-keys/staging.key"
+}

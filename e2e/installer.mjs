@@ -144,10 +144,16 @@ class InstalledApp {
 
 // ── 업데이트 서버(127.0.0.1) ───────────────────────────────────────────
 let manifest = null;
+/** 업데이트 정보 대신 돌려줄 응답(서버 설정 오류 재현) — { status, type, body } */
+let manifestOverride = null;
 const served = new Map();
 const server = createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
   if (url === '/latest.json') {
+    if (manifestOverride) {
+      res.writeHead(manifestOverride.status, { 'Content-Type': manifestOverride.type }).end(manifestOverride.body);
+      return;
+    }
     if (!manifest) {
       res.writeHead(204).end();
       return;
@@ -221,7 +227,7 @@ let keys;
 let setupA;
 let setupB;
 const storeDir = path.join(work, 'store');
-const today = new Date().toISOString().slice(0, 10);
+const today = new Date().toLocaleDateString('sv'); // 이 PC 의 오늘(YYYY-MM-DD) — 화면의 날짜 칸과 같다
 let app;
 
 try {
@@ -280,6 +286,14 @@ try {
         input: { id: crypto.randomUUID(), location: { kind: 'day', date: today }, section: 'main', kind: 'checklist', contentHtml: text },
       });
     }
+    // 이미지·History 도 만들어 업데이트 전후를 비교한다
+    const imageFile = path.join(work, 'keep-image.png');
+    writeFileSync(imageFile, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'));
+    await app.invoke('attachment_import_file', { path: imageFile, itemId: null });
+    const firstItem = (await app.invoke('memo_day', { date: today })).items[0];
+    await app.invoke('item_update_content', { id: firstItem.id, html: firstItem.contentHtml });
+    await app.invoke('item_update_content', { id: firstItem.id, html: '업데이트 전 메모 1 ' });
+    await app.invoke('item_update_content', { id: firstItem.id, html: '업데이트 전 메모 1' });
     // 설치 폴더 안은 저장 위치로 고를 수 없다
     const inside = await app.invoke('storage_inspect', { path: path.join(DEFAULT_DIR, 'memo') });
     assert.ok(inside.problem, '설치 폴더 안 거절');
@@ -311,6 +325,32 @@ try {
     assert.equal(await app.invoke('update_check'), null);
     manifest = manifestFor({ version: V1 });
     assert.equal(await recheck(), null);
+  });
+
+  await step('웹 서버의 HTML 응답(SPA fallback) · 404 · 깨진 JSON → 업데이트 정보 오류', async () => {
+    for (const response of [
+      { status: 200, type: 'text/html', body: '<!doctype html><title>PLAN-A Work</title>' },
+      { status: 404, type: 'text/plain', body: 'not found' },
+      { status: 200, type: 'application/json', body: '{"version":' },
+    ]) {
+      manifestOverride = response;
+      await sleep(5500);
+      const error = await app.invokeError('update_check');
+      assert.equal(error?.code, 'update_manifest', `${response.status} ${response.type}`);
+    }
+    manifestOverride = null;
+  });
+
+  await step('업데이트 서버 접속 불가 → 연결 오류 안내, 지금 버전 유지', async () => {
+    await new Promise(r => {
+      server.close(r);
+      server.closeAllConnections();
+    });
+    await sleep(5500);
+    const error = await app.invokeError('update_check');
+    assert.equal(error?.code, 'update_network');
+    assert.equal((await app.invoke('app_info')).version, V1);
+    await new Promise(r => server.listen(UPDATE_PORT, '127.0.0.1', r));
   });
 
   await step('다른 채널의 업데이트 정보 → 설치 제안 안 함', async () => {
@@ -358,11 +398,85 @@ try {
     assert.equal(error?.code, 'update_signature');
   });
 
-  await step('정상 업데이트 → 설치 전 Backup · 앱 종료 · 설치 · 다시 실행 · 버전 9.0.1', async () => {
+  const snapshotFile = path.join(work, 'data-snapshot.json');
+  const dataCheck = mode => {
+    const r = spawnSync(process.execPath, [path.join(repo, 'scripts', 'update-data-check.mjs'), mode, '--storage', storeDir, '--out', snapshotFile], { encoding: 'utf8' });
+    assert.equal(r.status, 0, `update-data-check ${mode}: ${r.stdout}${r.stderr}`);
+    return r.stdout;
+  };
+
+  await step('화면 — 쓰던 글은 설정을 누르는 순간 메모로 저장된다', async () => {
     manifest = manifestFor({});
-    await recheck();
+    const { page } = app;
+    await page.reload(); // 저장 위치를 명령으로 만들었으므로 화면을 다시 읽는다
+    await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 30000 });
+    await page.click(`[data-testid="memo-cell-${today}"]`, { position: { x: 300, y: 100 } });
+    const quickInput = page.locator('[data-testid="memo-section-main"] [data-testid="personal-memo-quick-input"]');
+    await quickInput.click();
+    await quickInput.type('쓰던 글');
+    await page.locator('[data-testid="open-settings"]').click();
+    await waitFor(async () => (await app.invoke('memo_day', { date: today })).items.some(i => i.contentHtml === '쓰던 글'), '쓰던 글 저장', 10000);
+    assert.equal(await quickInput.inputValue(), '');
+  });
+
+  await step('화면 — 입력칸에 글이 남아 있으면(저장 실패로 되돌아온 글) [업데이트]를 눌러도 설치하지 않는다', async () => {
+    const { page } = app;
+    // 저장에 실패하면 글이 입력칸으로 돌아온다 — 포커스 없이 값만 있는 그 상태를 만든다
+    const setValue = value =>
+      page.locator('[data-testid="memo-section-main"] [data-testid="personal-memo-quick-input"]').evaluate((el, next) => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, next);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }, value);
+    await sleep(5500); // 수동 확인 최소 간격
+    await page.locator('[data-testid="update-check"]').click();
+    const dialog = page.locator('[data-testid="update-dialog"]');
+    await dialog.waitFor({ timeout: 30000 });
+    await setValue('저장되지 못한 글');
+    await dialog.locator('[data-testid="update-install"]').click();
+    await page.locator('[data-testid="update-error"]').waitFor({ timeout: 15000 });
+    assert.match(await page.locator('[data-testid="update-error"]').innerText(), /저장되지 않은 글/);
+    assert.equal((await app.invoke('app_info')).version, V1);
+    await setValue('');
+    await dialog.locator('button:has-text("나중에")').click();
+    await dialog.waitFor({ state: 'hidden' });
+  });
+
+  await step('화면 — [업데이트 확인] 클릭 → 새로운 버전 v9.0.1 · 변경사항 · [나중에] [업데이트]', async () => {
+    const { page } = app;
+    assert.match(await page.locator('[data-testid="app-version"]').innerText(), new RegExp(`현재 버전 ${V1}`));
+    await sleep(5500);
+    await page.locator('[data-testid="update-check"]').click();
+    const dialog = page.locator('[data-testid="update-dialog"]');
+    await dialog.waitFor({ timeout: 30000 });
+    const text = await dialog.innerText();
+    assert.match(text, new RegExp(`새로운 버전이 있습니다 — v${V2}`));
+    assert.match(text, /메모 UI 개선/);
+    assert.equal(await dialog.locator('button:has-text("나중에")').count(), 1);
+    assert.equal(await dialog.locator('[data-testid="update-install"]').innerText(), '업데이트');
+    // 열림 효과가 끝나면 창이 완전히 불투명하게 보여야 한다(뒤의 설정 화면이 비치지 않는다)
+    const container = dialog.locator('.MuiDialog-container');
+    await waitFor(async () => (await container.evaluate(el => getComputedStyle(el).opacity)) === '1', '업데이트 창 표시', 5000);
+    await sleep(400);
+    await page.screenshot({ path: path.join(artifacts, 'update-dialog.png') });
+    dataCheck('snapshot');
+  });
+
+  await step('화면 — [업데이트] 클릭 → 진행 표시 · 서명 확인 · 앱 종료 · 설치 · 다시 실행 · 버전 9.0.1', async () => {
+    const { page } = app;
     const pid = app.proc.pid;
-    await app.invokeError('update_install').catch(() => null); // 성공하면 앱이 종료되어 연결이 끊긴다
+    await page.locator('[data-testid="update-install"]').click();
+    // 앱이 닫혀 연결이 끊길 때까지 화면에 보인 단계를 모은다
+    const phases = new Set();
+    try {
+      for (;;) {
+        phases.add(await page.locator('[data-testid="update-progress"]').innerText({ timeout: 2000 }));
+        await sleep(100);
+      }
+    } catch {
+      /* 앱 종료 */
+    }
+    log(`화면에 보인 단계: ${[...phases].join(' / ') || '(없음)'}`);
+    assert.ok(phases.size > 0, '진행 표시가 보여야 한다');
     await waitFor(() => reg(UNINST_KEY, 'DisplayVersion') === V2, '등록 정보 9.0.1', 120000);
     await waitFor(() => fileVersion(path.join(DEFAULT_DIR, exeName)) === V2, '실행 파일 9.0.1', 60000);
     // 설치 프로그램이 앱을 다시 실행한다
@@ -388,10 +502,14 @@ try {
     assert.equal(info.storage.state, 'ready');
     assert.equal(info.storage.path, storeDir);
     const day = await app.invoke('memo_day', { date: today });
-    assert.deepEqual(day.items.map(i => i.contentHtml), ['업데이트 전 메모 1', '업데이트 전 메모 2']);
+    assert.deepEqual(day.items.map(i => i.contentHtml), ['업데이트 전 메모 1', '업데이트 전 메모 2', '쓰던 글']);
     const backups = await app.invoke('backup_list');
     assert.ok(backups.some(b => b.fileName.includes('pre-update')), 'pre-update Backup');
+    // 같은 버전을 다시 확인 → 새 업데이트로 보지 않는다
+    manifest = manifestFor({});
+    assert.equal(await app.invoke('update_check'), null);
     await app.close();
+    log(dataCheck('compare').trim().split('\n').join('\n  '));
   });
 
   await step('제거 → 실행 파일·uninstall.exe·등록 정보 삭제, 메모 데이터 보존', async () => {

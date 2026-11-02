@@ -8,9 +8,12 @@
 //   2. 환경 값: PLANA_ENV 설정, staging 은 tauri.staging.conf.json 을 덮어 별도 앱(com.plana.memo.staging)으로
 //   3. PLAN-A Work 서버 확인(production 은 주소를 못 찾거나 Desktop 연결 API 가 없으면 멈춘다 — --skip-server-check 로만 건너뜀)
 //   4. 업데이트: src-tauri/updater/<채널>.pub(공개키) + PLANA_UPDATE_BASE_URL 이 있으면 앱에 업데이트 확인을 넣는다.
+//      staging 주소는 scripts/release.staging.json 이 기본값이다(PLANA_UPDATE_BASE_URL 로 바꿀 수 있다).
 //      TAURI_SIGNING_PRIVATE_KEY(개인키 — 빌드 PC 환경 변수로만, 저장소에 두지 않는다)가 있으면 서명 파일(.sig)과
 //      latest.json(릴리스 노트 release-notes/<버전>.md 포함)을 만든다.
 //   5. 결과: release/<채널>/ — 설치 파일, (서명 시) 버전 폴더의 업데이트 파일·.sig·latest.json
+//
+// Node·Tauri CLI 는 PATH 의 Shim 대신 실제 설치 폴더에서 실행한다(lib/release-lib.mjs resolveNodeHome).
 //
 // 이 스크립트는 아무것도 업로드하지 않는다(배포는 docs/release.md 절차대로 사람이 한다).
 
@@ -20,6 +23,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { lookup } from 'node:dns/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { limitBuildJobs, loadStagingConfig, nodeBin, resolveNodeHome, tauriCli, toolEnv } from './lib/release-lib.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -126,10 +130,11 @@ function checkUpdateEndpoint(value, ch) {
 /** config.rs valid_pubkey 와 같은 검사 — base64 를 풀면 minisign 공개키 주석이 있어야 한다. */
 const isMinisignPubkey = value => Buffer.from(value, 'base64').toString('utf8').includes('minisign public key');
 
-const env = { ...process.env, PLANA_ENV: channel };
+const nodeHome = resolveNodeHome(root);
+const env = { ...limitBuildJobs(toolEnv(nodeHome)), PLANA_ENV: channel };
 delete env.PLAN_A_ENV;
 const pubkeyFile = path.join(root, 'src-tauri', 'updater', `${channel}.pub`);
-const baseUrl = (process.env.PLANA_UPDATE_BASE_URL || '').replace(/\/+$/, '');
+const baseUrl = (process.env.PLANA_UPDATE_BASE_URL || (channel === 'staging' ? loadStagingConfig(root).baseUrl : '')).replace(/\/+$/, '');
 let updatesEnabled = false;
 if (existsSync(pubkeyFile) && baseUrl) {
   env.PLANA_UPDATER_PUBKEY = readFileSync(pubkeyFile, 'utf8').trim();
@@ -164,7 +169,7 @@ if (signing && !existsSync(notesFile)) {
 
 // ── 5. 빌드 ────────────────────────────────────────────────────────────
 info(`환경 ${channel} · ${productName} (${identifier}) · v${version} · 서버 ${origin}`);
-const tauriArgs = ['tauri', 'build'];
+const tauriArgs = [tauriCli(root), 'build'];
 for (const overlay of overlays) tauriArgs.push('--config', overlay);
 if (updatesEnabled) {
   // 공개키는 설정에도 넣는다 — 서명할 때 Tauri CLI 가 개인키와 짝이 맞는지 이 값으로 확인한다(앱은 같은 값을 Rust 에서도 받는다).
@@ -173,9 +178,9 @@ if (updatesEnabled) {
   const patchFile = path.join(root, 'src-tauri', 'target', `dist-${channel}.conf.json`);
   mkdirSync(path.dirname(patchFile), { recursive: true });
   writeFileSync(patchFile, JSON.stringify(patch));
-  tauriArgs.push('--config', JSON.stringify(path.relative(root, patchFile)));
+  tauriArgs.push('--config', path.relative(root, patchFile));
 }
-const result = spawnSync('npx', tauriArgs, { cwd: root, env, stdio: 'inherit', shell: true });
+const result = spawnSync(nodeBin(nodeHome), tauriArgs, { cwd: root, env, stdio: 'inherit' });
 if (result.status !== 0) fail('tauri build 실패');
 
 // ── 6. 결과 정리 ───────────────────────────────────────────────────────
@@ -219,7 +224,9 @@ if (signing) {
       },
     },
   };
-  writeFileSync(path.join(outDir, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+  writeFileSync(path.join(outDir, 'latest.json'), manifestText);
+  writeFileSync(path.join(versionDir, 'latest.json'), manifestText); // 버전마다 따로 — 다음 빌드가 덮어써도 이 버전을 게시할 수 있다
   info(`업데이트: release/${channel}/${version}/${uploadName} (+ .sig) · release/${channel}/latest.json`);
   info(`올릴 곳: ${baseUrl}/${channel}/${version}/ 에 두 파일, 그다음 ${baseUrl}/${channel}/latest.json (순서 지킬 것 — docs/release.md)`);
 }

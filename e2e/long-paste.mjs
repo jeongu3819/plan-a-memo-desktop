@@ -455,6 +455,7 @@ step('upcoming', async () => {
   await openToday();
   const card = app.page.locator(`[data-testid="upcoming-card-${d7}"]`);
   await card.waitFor();
+  await card.locator('[data-testid="upcoming-toggle"]').click();
   const input = card.locator('[data-testid="upcoming-group-am"] [data-testid="personal-memo-quick-input"]');
   await quickPaste('다가오는 같은 요일 입력칸', input, 'structured-M', 'lp-07-upcoming-quick');
   await editorPaste(
@@ -554,6 +555,7 @@ step('save-failure', async () => {
 step('sync-mock', async () => {
   if (!isMockRun()) return console.log('   (실제 서버 모드 — 건너뜀)');
   await openNext();
+  await app.page.click('[data-testid="sync-header-button"]');
   await app.page.click('[data-testid="sync-link-button"]');
   await app.page.waitForSelector('[data-testid="account-dialog"]');
   await app.page.click('[data-testid="account-connect"]');

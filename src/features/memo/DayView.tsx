@@ -3,31 +3,32 @@
  *   넓으면 메인(위, 전체 폭) + 오전·오후(아래, 나란히). 구역 이동·순서 변경은 끌기와 메뉴 둘 다 된다.
  * 하루 전체(또는 List 전체)가 문서 1건이므로 연결 버튼도 화면 위에 하나만 있다.
  *
+ * 연결·History·지난 미완료 가져오기는 머리 줄 도구(연동·가져오기 아이콘)에 있다 — 본문 위에 따로 줄을 두지 않는다.
+ *
+ * 끌어서 옮기기: 끄는 동안 메모는 제자리에 있고(자리가 밀리지 않아 흔들리지 않는다) 커서를 따라가는 조각과 삽입선만 움직인다.
+ * 삽입 위치는 메모 가운데선 + 여유 폭으로 정하고(domain/memoDrop), 놓은 순서는 저장을 기다리지 않고 바로 화면에 반영한다.
+ *
  * 날짜 상세에서는 보고 있는 날짜의 메인·오전·오후가 주인공이다 — 세 구역이 창 높이의 대부분을 채우고(입력칸이 남은
  * 자리를 채운다), 아래의 '지난 미완료 가져오기' 안내와 '다가오는 ○요일'(다음 같은 요일 메모장 — 그 자리에서 작성)은
  * 그 아래 보조 영역으로 스크롤해서 본다. 메모가 많으면 구역은 내용만큼 더 자란다.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Box, Button, CircularProgress, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
-import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
-import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Box, Button, CircularProgress, Typography } from '@mui/material';
 import {
-  closestCenter,
   DndContext,
+  DragOverlay,
   PointerSensor,
-  useDroppable,
+  useDraggable,
   useSensor,
   useSensors,
-  type DragEndEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core';
-import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import type { DocumentInfo, ItemSection, Location, MemoItem, MemoSection } from '../../domain/types';
-import { koreanMonthDay, locationLabel } from '../../domain/location';
+import type { ItemSection, Location, MemoItem, MemoSection } from '../../domain/types';
+import { insertIndex, planDrop } from '../../domain/memoDrop';
+import { textOf } from '../../services/text';
 import { MEMO_CARD, MEMO_CARD_BORDER, MEMO_CARD_SHADOW, MEMO_MUTED, MEMO_RADIUS, NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { clearDomHighlights, paintDomHighlights } from '../../vendor/plan-a-work/components/personalMemo/memoSearchHighlight';
 import { useDay, useNextList } from '../../services/queries';
-import { LinkControl } from '../sync/SyncMark';
 import { usePersonalMemo } from './MemoProvider';
 import { SECTION_LABELS } from './MemoMenu';
 import MemoRow from './MemoRow';
@@ -43,10 +44,29 @@ const SECTION_PLACEHOLDERS: Record<MemoSection, string> = {
   pm: '오후에 처리할 일을 적어보세요',
 };
 
-function SortableMemo({ item, location }: { item: MemoItem; location: Location }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: `memo:${item.id}`, data: { item } });
+/** 커서에서 이만큼 벗어난 구역까지는 그 구역에 놓는 것으로 본다(px). 더 멀면 삽입선이 없고 놓아도 아무 일도 없다. */
+const SECTION_REACH = 32;
+/**
+ * 끄는 동안 자동 스크롤은 창의 정말 가장자리에서만, 천천히. 기본값(위아래 20%)은 위쪽 메모들 사이에 놓으려 할 때도
+ * 화면이 저절로 움직여 삽입 위치가 어긋난다.
+ */
+const DRAG_AUTO_SCROLL = { threshold: { x: 0, y: 0.08 }, acceleration: 6 };
+
+interface DropTarget {
+  section: ItemSection;
+  index: number;
+}
+interface DropLine {
+  section: ItemSection;
+  top: number;
+  left: number;
+  width: number;
+}
+
+function DraggableMemo({ item, location }: { item: MemoItem; location: Location }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `memo:${item.id}`, data: { item } });
   return (
-    <Box ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }}>
+    <Box ref={setNodeRef} data-drop-row={item.id}>
       <MemoRow
         item={item}
         location={location}
@@ -59,7 +79,7 @@ function SortableMemo({ item, location }: { item: MemoItem; location: Location }
   );
 }
 
-function Section({
+const Section = memo(function Section({
   title,
   items,
   location,
@@ -69,6 +89,7 @@ function Section({
   autoFocus,
   area,
   grow,
+  isOver,
 }: {
   title: string | null;
   items: MemoItem[];
@@ -80,14 +101,14 @@ function Section({
   area: string;
   /** Next List — 메모가 있어도 입력칸을 minRows 로 둔다. 날짜 상세는 메모가 있으면 한 줄부터(남은 자리는 채운다). */
   grow: boolean;
+  isOver: boolean;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: `section:${section}` });
   const checklist = items.filter(m => m.kind === 'checklist');
   const done = checklist.filter(m => m.completed).length;
   return (
     <Box
-      ref={setNodeRef}
       data-testid={`memo-section-${section}`}
+      data-drop-section={section}
       tabIndex={-1}
       aria-label={title || `${NEXT_LABEL} 메모`}
       sx={{
@@ -119,12 +140,10 @@ function Section({
           )}
         </Box>
       )}
-      <SortableContext items={items.map(m => `memo:${m.id}`)} strategy={verticalListSortingStrategy}>
-        {items.map(item => (
-          <SortableMemo key={item.id} item={item} location={location} />
-        ))}
-      </SortableContext>
-      <Box sx={{ mt: items.length ? 1 : 0, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {items.map(item => (
+        <DraggableMemo key={item.id} item={item} location={location} />
+      ))}
+      <Box data-drop-input sx={{ mt: items.length ? 1 : 0, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <QuickInput
           location={location}
           section={section}
@@ -136,30 +155,25 @@ function Section({
       </Box>
     </Box>
   );
-}
+});
 
 export default function DayView({
   location,
   focusSection = null,
   editItemId = null,
   highlight = null,
-  listName = null,
 }: {
   location: Location;
   focusSection?: MemoSection | null;
   editItemId?: string | null;
   highlight?: { itemId: string; tokens: string[] } | null;
-  listName?: string | null;
 }) {
-  const { actions, setEditingId, openHistory } = usePersonalMemo();
-  const [toolsAnchor, setToolsAnchor] = useState<HTMLElement | null>(null);
-  const [carryoverOpen, setCarryoverOpen] = useState(false);
+  const { actions, setEditingId } = usePersonalMemo();
   const isNext = location.kind === 'next';
   const dayQuery = useDay(isNext ? null : location.date);
   const listQuery = useNextList(isNext ? location.listId : null, isNext);
   const query = isNext ? listQuery : dayQuery;
   const items: MemoItem[] = useMemo(() => query.data?.items ?? [], [query.data]);
-  const document: DocumentInfo | null = isNext ? listQuery.data?.list.document ?? null : dayQuery.data?.document ?? null;
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -201,36 +215,105 @@ export default function DayView({
     return map;
   }, [items]);
 
-  const onDragEnd = (event: DragEndEvent) => {
-    const item = (event.active.data.current as { item?: MemoItem })?.item;
-    const overId = String(event.over?.id || '');
-    if (!item || !overId) return;
-    const sections: ItemSection[] = isNext ? ['next'] : SECTIONS;
-    let target: ItemSection;
-    let overItemId: string | null = null;
-    if (overId.startsWith('memo:')) {
-      overItemId = overId.slice(5);
-      const found = sections.find(s => bySection[s].some(m => m.id === overItemId));
-      if (!found) return;
-      target = found;
-    } else if (overId.startsWith('section:')) {
-      target = overId.slice(8) as ItemSection;
-    } else {
+  // ── 끌어서 옮기기 ───────────────────────────────────────────────
+  const [activeItem, setActiveItem] = useState<MemoItem | null>(null);
+  const [dropLine, setDropLine] = useState<DropLine | null>(null);
+  const dropTarget = useRef<DropTarget | null>(null);
+  const pointer = useRef({ x: 0, y: 0 });
+  const stopTracking = useRef<(() => void) | null>(null);
+  const bySectionRef = useRef(bySection);
+  bySectionRef.current = bySection;
+
+  // 커서 자리에서 구역과 틈을 계산해 삽입선을 옮긴다. 값이 바뀔 때만 다시 그린다.
+  const updateDrop = useCallback((active: MemoItem) => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const { x, y } = pointer.current;
+    let nearest: { el: HTMLElement; distance: number } | null = null;
+    grid.querySelectorAll<HTMLElement>('[data-drop-section]').forEach(el => {
+      const rect = el.getBoundingClientRect();
+      const distance = Math.hypot(Math.max(rect.left - x, 0, x - rect.right), Math.max(rect.top - y, 0, y - rect.bottom));
+      if (!nearest || distance < nearest.distance) nearest = { el, distance };
+    });
+    const found = nearest as { el: HTMLElement; distance: number } | null;
+    if (!found || found.distance > SECTION_REACH) {
+      dropTarget.current = null;
+      setDropLine(null);
       return;
     }
-    const current = bySection[target].map(m => m.id);
-    let ids: string[];
-    if (item.section === target) {
-      const from = current.indexOf(item.id);
-      const to = overItemId === null ? current.length - 1 : current.indexOf(overItemId);
-      if (from < 0 || to < 0 || from === to) return;
-      ids = arrayMove(current, from, to);
-    } else {
-      ids = current.filter(id => id !== item.id);
-      const at = overItemId === null ? ids.length : Math.max(0, ids.indexOf(overItemId));
-      ids.splice(at, 0, item.id);
+    const section = found.el.dataset.dropSection as ItemSection;
+    const rows = Array.from(found.el.querySelectorAll<HTMLElement>('[data-drop-row]')).map(el => el.getBoundingClientRect());
+    const previous = dropTarget.current?.section === section ? dropTarget.current.index : null;
+    const index = insertIndex(rows.map(rect => rect.top + rect.height / 2), y, previous);
+    dropTarget.current = { section, index };
+    const ids = bySectionRef.current[section].map(m => m.id);
+    // 제자리에 놓는 위치에는 선을 그리지 않는다(놓아도 바뀌는 것이 없다).
+    if (active.section === section && !planDrop(ids, active.id, index)) {
+      setDropLine(null);
+      return;
     }
-    actions.reorder(location, target, ids);
+    const box = found.el.getBoundingClientRect();
+    const input = found.el.querySelector<HTMLElement>('[data-drop-input]')?.getBoundingClientRect();
+    const top = !rows.length
+      ? input?.top ?? box.top + 40
+      : index === 0
+        ? rows[0].top
+        : index >= rows.length
+          ? rows[rows.length - 1].bottom
+          : (rows[index - 1].bottom + rows[index].top) / 2;
+    const left = box.left + 8;
+    const width = box.width - 16;
+    setDropLine(line =>
+      line && line.section === section && line.top === top && line.left === left && line.width === width ? line : { section, top, left, width },
+    );
+  }, []);
+
+  const endDrag = useCallback(() => {
+    stopTracking.current?.();
+    stopTracking.current = null;
+    setActiveItem(null);
+    setDropLine(null);
+  }, []);
+  useEffect(() => () => stopTracking.current?.(), []);
+
+  const onDragStart = (event: DragStartEvent) => {
+    const active = (event.active.data.current as { item?: MemoItem })?.item;
+    if (!active) return;
+    const start = event.activatorEvent as PointerEvent;
+    pointer.current = { x: start.clientX, y: start.clientY };
+    dropTarget.current = { section: active.section, index: bySection[active.section].findIndex(m => m.id === active.id) };
+    setActiveItem(active);
+    // 여러 번의 움직임·스크롤을 한 프레임에 한 번만 계산한다(스크롤만 해도 삽입선이 맞게 따라온다).
+    let frame = 0;
+    const schedule = () => {
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          updateDrop(active);
+        });
+      }
+    };
+    const onMove = (move: PointerEvent) => {
+      pointer.current = { x: move.clientX, y: move.clientY };
+      schedule();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('scroll', schedule, true);
+    stopTracking.current = () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('scroll', schedule, true);
+    };
+  };
+
+  const onDragEnd = () => {
+    const active = activeItem;
+    if (active) updateDrop(active); // 마지막 프레임을 놓치지 않게 놓은 자리에서 한 번 더
+    const target = dropTarget.current;
+    endDrag();
+    if (!active || !target) return;
+    const ids = planDrop(bySection[target.section].map(m => m.id), active.id, target.index);
+    if (ids) actions.reorder(location, target.section, ids);
   };
 
   if (query.isPending && !query.data) return <CircularProgress size={22} sx={{ m: 2 }} />;
@@ -243,21 +326,13 @@ export default function DayView({
     );
   }
 
-  const label = location.kind === 'day' ? koreanMonthDay(location.date) : listName || NEXT_LABEL;
-  const dayTools =
-    location.kind === 'day' ? (
-      <Tooltip title="이 날짜 메뉴">
-        <IconButton size="small" aria-label="이 날짜 메뉴" data-testid="day-tools-menu" onClick={event => setToolsAnchor(event.currentTarget)} sx={{ color: 'text.secondary' }}>
-          <MoreHorizIcon sx={{ fontSize: 18 }} />
-        </IconButton>
-      </Tooltip>
-    ) : null;
   return (
     <Box
       data-testid="personal-memo-day"
       sx={{
         display: 'flex', flexDirection: 'column', gap: 1, minHeight: 0,
         ...(isNext ? { flex: 1 } : { flex: '0 0 auto' }),
+        ...(activeItem ? { userSelect: 'none', '& *': { cursor: 'grabbing !important' } } : {}),
         '& [data-search-hit="true"]': {
           bgcolor: 'rgba(250, 204, 21, 0.16)',
           boxShadow: '0 0 0 2px rgba(234, 179, 8, 0.45)',
@@ -265,14 +340,7 @@ export default function DayView({
         },
       }}
     >
-      <LinkControl
-        document={document}
-        location={location}
-        label={label}
-        onOpenHistory={() => openHistory(location, locationLabel(location, listName))}
-        tools={dayTools}
-      />
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+      <DndContext sensors={sensors} autoScroll={DRAG_AUTO_SCROLL} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={endDrag}>
         <Box
           ref={gridRef}
           data-testid="personal-memo-day-sections"
@@ -284,7 +352,7 @@ export default function DayView({
             gridTemplateColumns: isNext ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))',
             // 날짜 상세: 메인(위)·오전/오후(아래)가 창 높이의 대부분을 채운다 — 아래 보조 영역의 제목이 살짝 보일 만큼 남긴다.
             // 메모가 많으면 각 줄이 내용만큼 더 자란다(min-content).
-            ...(isNext ? {} : { minHeight: 'max(420px, calc(100vh - 236px))' }),
+            ...(isNext ? {} : { minHeight: 'max(420px, calc(100vh - 200px))' }),
             gridTemplateRows: isNext ? 'minmax(min-content, 1fr)' : 'minmax(min-content, 1fr) minmax(min-content, 1.2fr)',
             gridTemplateAreas: isNext ? '"main"' : '"main main" "am pm"',
           }}
@@ -298,6 +366,7 @@ export default function DayView({
               section="next"
               minRows={6}
               grow
+              isOver={dropLine?.section === 'next'}
               autoFocus={!!focusSection && !editItemId}
               hint="언젠가 할 일, 떠오른 아이디어를 적어두세요"
             />
@@ -312,31 +381,52 @@ export default function DayView({
                 section={section}
                 minRows={3}
                 grow={false}
+                isOver={dropLine?.section === section}
                 autoFocus={focusSection === section && !editItemId}
                 hint={SECTION_PLACEHOLDERS[section]}
               />
             ))
           )}
         </Box>
+        {/* 화면에 떠 있어 메모 자리를 밀지 않는다. */}
+        {dropLine && (
+          <Box
+            data-testid="memo-drop-line"
+            aria-hidden
+            style={{ top: dropLine.top, left: dropLine.left, width: dropLine.width }}
+            sx={{ position: 'fixed', height: 2, mt: '-1px', bgcolor: 'primary.main', borderRadius: 1, pointerEvents: 'none', zIndex: theme => theme.zIndex.modal + 1 }}
+          >
+            <Box
+              component="span"
+              sx={{
+                position: 'absolute', left: '50%', top: 1, transform: 'translate(-50%, -50%)', px: 1, lineHeight: '18px', borderRadius: '9px', whiteSpace: 'nowrap',
+                fontSize: '0.68rem', fontWeight: 700, color: '#fff', bgcolor: 'primary.main',
+              }}
+            >
+              여기에 놓기
+            </Box>
+          </Box>
+        )}
+        <DragOverlay dropAnimation={null} style={{ pointerEvents: 'none' }}>
+          {activeItem && (
+            <Box
+              data-testid="memo-drag-preview"
+              sx={{
+                width: 'fit-content', maxWidth: 420, px: 1.5, py: 0.75, borderRadius: '8px', bgcolor: MEMO_CARD, cursor: 'grabbing',
+                border: '1px solid rgba(37, 99, 235, 0.45)', boxShadow: '0 6px 18px rgba(28, 25, 23, 0.16)',
+                fontSize: '0.86rem', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflowWrap: 'anywhere',
+              }}
+            >
+              {textOf(activeItem.contentHtml) || '(이미지·표 메모)'}
+            </Box>
+          )}
+        </DragOverlay>
       </DndContext>
       {location.kind === 'day' && (
         <>
           <CarryReviews date={location.date} />
-          <CarryoverNotice date={location.date} manual={carryoverOpen} onCloseManual={() => setCarryoverOpen(false)} />
+          <CarryoverNotice date={location.date} />
           <UpcomingWeekday date={location.date} />
-          <Menu anchorEl={toolsAnchor} open={!!toolsAnchor} onClose={() => setToolsAnchor(null)} data-personal-memo-overlay="true">
-            <MenuItem
-              dense
-              data-testid="day-tools-carryover"
-              onClick={() => {
-                setToolsAnchor(null);
-                setCarryoverOpen(true);
-              }}
-            >
-              <ListItemIcon><PlaylistAddIcon fontSize="small" /></ListItemIcon>
-              <ListItemText primary="지난 미완료 가져오기" secondary="지난주 같은 요일의 완료하지 않은 체크리스트" />
-            </MenuItem>
-          </Menu>
         </>
       )}
     </Box>

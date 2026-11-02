@@ -7,7 +7,7 @@ use std::io::Read;
 use common::*;
 use plan_a_memo_lib::attachments;
 use plan_a_memo_lib::memo::service::{self, MoveItem, MovePolicy};
-use plan_a_memo_lib::memo::{export, history, repo, search, Location, DEFAULT_LIST_ID};
+use plan_a_memo_lib::memo::{export, history, repo, search, trash, Location, DEFAULT_LIST_ID};
 use plan_a_memo_lib::sync::link;
 
 #[test]
@@ -225,7 +225,7 @@ fn favorites_are_local_only_and_do_not_bump_revision() {
 }
 
 #[test]
-fn next_lists_create_rename_delete_moves_items_to_default() {
+fn next_lists_create_rename_delete_keeps_items_in_trash() {
     let (_d, s) = temp_storage();
     let list = s.with_conn(|c| service::create_list(c, None, "앱 개발")).unwrap();
     add(&s, next(Some(&list.id)), "next", "음성 메모");
@@ -234,11 +234,256 @@ fn next_lists_create_rename_delete_moves_items_to_default() {
     let renamed = s.with_conn(|c| service::rename_list(c, &list.id, "앱 개발 2")).unwrap();
     assert_eq!(renamed.name, "앱 개발 2");
     assert!(s.with_conn(|c| service::rename_list(c, DEFAULT_LIST_ID, "x")).is_err());
-    let result = s.with_conn(|c| service::delete_list(c, &list.id)).unwrap();
-    assert_eq!(result.moved_count, 2);
+    let result = s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    assert_eq!(result.item_count, 2);
+    assert!(!result.already);
     let default = s.with_conn(|c| service::get_list(c, None)).unwrap();
-    assert_eq!(default.items.len(), 2, "List 를 지워도 메모는 기본 Next 로");
+    assert_eq!(default.items.len(), 0, "메모는 Next 로 섞이지 않고 List 와 함께 휴지통으로");
     assert_eq!(s.with_conn(|c| service::lists(c)).unwrap().len(), 1);
+    assert!(s.with_conn(|c| trash::move_to_trash(c, DEFAULT_LIST_ID)).is_err(), "기본 Next 는 지울 수 없다");
+}
+
+#[test]
+fn trash_hides_items_everywhere_and_restore_brings_back_everything() {
+    let (_d, s) = temp_storage();
+    let list = s.with_conn(|c| service::create_list(c, None, "메모장 개선")).unwrap();
+    let other = s.with_conn(|c| service::create_list(c, None, "다른 List")).unwrap();
+    let order_before: Vec<String> = s.with_conn(|c| service::lists(c)).unwrap().into_iter().map(|l| l.id).collect();
+    let a = add(&s, next(Some(&list.id)), "next", "<p><b>굵은</b> 복구 대상</p>");
+    let b = add(&s, next(Some(&list.id)), "next", "완료한 항목");
+    s.with_conn(|c| service::set_completed(c, &b.id, true)).unwrap();
+    s.with_conn(|c| service::set_favorite(c, &a.id, true)).unwrap();
+
+    let first = s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    let again = s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    assert!(again.already, "두 번 실행해도 오류·중복 없음");
+    assert_eq!(again.purge_after, first.purge_after, "보존 기한이 늘어나지 않는다");
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM list_trash"), 1);
+
+    assert_eq!(s.with_conn(|c| service::lists(c)).unwrap().len(), 2);
+    assert_eq!(s.with_conn(|c| search::search(c, "복구")).unwrap().items.len(), 0, "휴지통 메모는 검색되지 않는다");
+    assert_eq!(s.with_conn(|c| service::favorites(c)).unwrap().len(), 0, "휴지통 메모는 즐겨찾기에 없다");
+    assert!(s.with_conn(|c| service::get_list(c, Some(&list.id))).is_err());
+    let entries = s.with_conn(|c| trash::entries(c)).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!((entries[0].name.as_str(), entries[0].item_count, entries[0].was_linked), ("메모장 개선", 2, false));
+    assert!(entries[0].blocked.is_none());
+    let days = chrono::DateTime::parse_from_rfc3339(&entries[0].purge_after).unwrap() - chrono::DateTime::parse_from_rfc3339(&entries[0].deleted_at).unwrap();
+    assert_eq!(days.num_days(), trash::RETENTION_DAYS);
+
+    let restored = s.with_conn(|c| trash::restore(c, &list.id)).unwrap();
+    assert_eq!(restored.item_count, 2);
+    assert!(restored.document.as_ref().is_some_and(|d| !d.sync_enabled), "복구해도 연결하지 않는다");
+    let order_after: Vec<String> = s.with_conn(|c| service::lists(c)).unwrap().into_iter().map(|l| l.id).collect();
+    assert_eq!(order_after, order_before, "원래 List 순서로");
+    let memo = s.with_conn(|c| service::get_list(c, Some(&list.id))).unwrap();
+    assert_eq!(memo.items[0].content_html, "<p><b>굵은</b> 복구 대상</p>", "서식 그대로");
+    assert!(memo.items[0].favorite, "즐겨찾기 그대로");
+    assert!(memo.items[1].completed, "완료 상태 그대로");
+    assert_eq!(s.with_conn(|c| search::search(c, "복구")).unwrap().items.len(), 1);
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM list_trash"), 0);
+    assert_eq!(s.with_conn(|c| trash::restore(c, &list.id)).unwrap().id, list.id, "복구를 두 번 눌러도 그대로");
+    let _ = other;
+}
+
+#[test]
+fn expired_trash_is_purged_after_backup_and_only_then() {
+    let (_d, s) = temp_storage();
+    let expired = s.with_conn(|c| service::create_list(c, None, "기한 지남")).unwrap();
+    let kept = s.with_conn(|c| service::create_list(c, None, "기한 남음")).unwrap();
+    add(&s, next(Some(&expired.id)), "next", "지워질 메모");
+    add(&s, next(Some(&kept.id)), "next", "남을 메모");
+    add(&s, day("2026-10-07"), "main", "날짜 메모");
+    s.with_conn(|c| trash::move_to_trash(c, &expired.id)).unwrap();
+    s.with_conn(|c| trash::move_to_trash(c, &kept.id)).unwrap();
+    let now = plan_a_memo_lib::util::now();
+    let purged = s.with_conn(|c| trash::purge_expired(c, &s.paths, &now)).unwrap();
+    assert!(purged.is_empty(), "7일 전에는 아무것도 지우지 않는다");
+    s.with_conn(|c| {
+        Ok(c.execute("UPDATE list_trash SET purge_after = '2000-01-01T00:00:00.000Z' WHERE list_id = ?1", [&expired.id])?)
+    })
+    .unwrap();
+    let backups_before = plan_a_memo_lib::storage::backup::list(&s.paths).len();
+    let purged = s.with_conn(|c| trash::purge_expired(c, &s.paths, &now)).unwrap();
+    assert_eq!(purged, vec![expired.id.clone()]);
+    assert_eq!(plan_a_memo_lib::storage::backup::list(&s.paths).len(), backups_before + 1, "지우기 전에 Backup");
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM next_lists WHERE name = '기한 지남'"), 0);
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM memo_items WHERE content_text LIKE '%지워질%'"), 0);
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM memo_items WHERE content_text LIKE '%남을%'"), 1, "기한 남은 List 는 그대로");
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM memo_items WHERE content_text LIKE '%날짜 메모%'"), 1, "다른 메모는 그대로");
+    assert_eq!(s.with_conn(|c| trash::entries(c)).unwrap().len(), 1);
+    // 사용자가 고른 영구 삭제 — 두 번 실행해도 오류 없음.
+    s.with_conn(|c| trash::purge(c, &s.paths, &kept.id)).unwrap();
+    s.with_conn(|c| trash::purge(c, &s.paths, &kept.id)).unwrap();
+    assert!(s.with_conn(|c| trash::entries(c)).unwrap().is_empty());
+    assert!(s.with_conn(|c| trash::restore(c, &kept.id)).is_err(), "영구 삭제 후에는 복구할 수 없다");
+}
+
+#[test]
+fn image_cleanup_keeps_images_of_trashed_lists() {
+    let (_d, s) = temp_storage();
+    let list = s.with_conn(|c| service::create_list(c, None, "이미지 List")).unwrap();
+    let info = s.with_conn(|c| attachments::import_bytes(c, &s.paths, PNG, None, None)).unwrap();
+    add(&s, next(Some(&list.id)), "next", &format!("<p><img src=\"attachment://{}\"></p>", info.id));
+    s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    s.with_conn(|c| {
+        Ok(c.execute("UPDATE attachments SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1", [&info.id])?)
+    })
+    .unwrap();
+    let report = s.with_conn(|c| attachments::cleanup_unreferenced(c, &s.paths, false)).unwrap();
+    assert_eq!(report.removed, 0, "휴지통에 있는 동안 이미지를 지우지 않는다");
+    let restored = s.with_conn(|c| trash::restore(c, &list.id)).unwrap();
+    assert_eq!(restored.item_count, 1);
+    assert!(s.with_conn(|c| attachments::read_bytes(c, &s.paths, &info.id)).is_ok(), "복구한 메모의 이미지 파일이 그대로 있다");
+}
+
+#[test]
+fn past_memos_stop_at_today_but_search_and_week_still_find_future_memos() {
+    let (_d, s) = temp_storage();
+    add(&s, day("2026-10-28"), "main", "지난 메모");
+    add(&s, day("2026-11-01"), "main", "어제 메모");
+    add(&s, day("2026-11-02"), "main", "오늘 메모");
+    add(&s, day("2026-11-09"), "main", "다음 주 메모");
+    add(&s, day("2026-11-30"), "main", "이번 달 말 메모");
+    add(&s, day("2026-12-25"), "main", "다음 달 메모");
+    let today = "2026-11-02";
+    let months = s.with_conn(|c| service::day_months(c, today)).unwrap();
+    let summary: Vec<(&str, i64)> = months.iter().map(|m| (m.month.as_str(), m.item_count)).collect();
+    assert_eq!(summary, vec![("2026-11", 2), ("2026-10", 1)], "미래 메모는 세지 않고, 미래 달은 카드가 없다");
+    let days = s.with_conn(|c| service::days_in_month(c, "2026-11", today)).unwrap();
+    assert_eq!(days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), vec!["2026-11-02", "2026-11-01"], "오늘까지만");
+    assert!(s.with_conn(|c| service::days_in_month(c, "2026-12", today)).unwrap().is_empty());
+    assert!(s.with_conn(|c| service::day_months(c, "2026-13-40")).is_err());
+    // 하루 지나면 그날 메모가 지난 메모에 들어온다.
+    let next = s.with_conn(|c| service::days_in_month(c, "2026-11", "2026-11-09")).unwrap();
+    assert_eq!(next[0].date, "2026-11-09");
+    // 메모 자체는 그대로 — 검색·날짜 상세에서 찾는다.
+    assert_eq!(s.with_conn(|c| search::search(c, "이번 달 말")).unwrap().items.len(), 1);
+    let date = search::DateQuery { year: None, month: 11, day: 30, prefer_year: 2026, rest: String::new() };
+    assert_eq!(s.with_conn(|c| search::search_with(c, "11/30", Some(&date), 200)).unwrap().days.len(), 1);
+    assert_eq!(s.with_conn(|c| service::get_day(c, "2026-11-30")).unwrap().items.len(), 1);
+}
+
+#[test]
+fn history_survives_the_trash_and_is_removed_by_purge() {
+    let (_d, s) = temp_storage();
+    let list = s.with_conn(|c| service::create_list(c, None, "기록 List")).unwrap();
+    let location = next(Some(&list.id));
+    let item = add(&s, location.clone(), "next", "처음 내용");
+    s.with_conn(|c| service::update_content(c, &item.id, "고친 내용")).unwrap();
+    s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    s.with_conn(|c| trash::restore(c, &list.id)).unwrap();
+    let versions = s.with_conn(|c| history::list_for_location(c, &location)).unwrap();
+    assert!(versions.iter().any(|v| v.preview.contains("처음 내용")), "복구 후 수정 전 내용이 History 에 있다");
+    assert!(versions.iter().any(|v| v.reason == "list_delete" || v.reason_label.contains("삭제")), "삭제 전 내용도");
+    s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    s.with_conn(|c| trash::purge(c, &s.paths, &list.id)).unwrap();
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM document_versions WHERE content_text LIKE '%처음 내용%'"), 0, "영구 삭제 — History 도 지운다");
+    assert_eq!(s.with_conn(|c| search::search(c, "처음")).unwrap().history.len(), 0);
+}
+
+#[test]
+fn purge_removes_only_this_lists_images_and_waits_for_backups() {
+    let (_d, s) = temp_storage();
+    let gone = s.with_conn(|c| service::create_list(c, None, "지울 List")).unwrap();
+    let other = s.with_conn(|c| service::create_list(c, None, "남을 List")).unwrap();
+    let only = s.with_conn(|c| attachments::import_bytes(c, &s.paths, PNG, None, None)).unwrap();
+    let mut other_png = PNG.to_vec();
+    other_png.extend_from_slice(b"shared"); // PNG 뒤의 군더더기 — 내용이 달라 다른 첨부가 된다
+    let shared = s.with_conn(|c| attachments::import_bytes(c, &s.paths, &other_png, None, None)).unwrap();
+    add(&s, next(Some(&gone.id)), "next", &format!("<p><img src=\"attachment://{}\"><img src=\"attachment://{}\"></p>", only.id, shared.id));
+    add(&s, next(Some(&other.id)), "next", &format!("<p><img src=\"attachment://{}\"></p>", shared.id));
+    s.with_conn(|c| trash::move_to_trash(c, &gone.id)).unwrap();
+    assert_eq!(s.with_conn(|c| attachments::sweep_purged(c, &s.paths)).unwrap(), 0, "휴지통에 있는 동안은 대상이 아니다");
+
+    s.with_conn(|c| trash::purge(c, &s.paths, &gone.id)).unwrap();
+    assert!(s.with_conn(|c| attachments::read_bytes(c, &s.paths, &shared.id)).is_ok(), "다른 List 가 쓰는 이미지는 지우지 않는다");
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM purged_attachments"), 1, "다른 List 가 쓰는 이미지는 대기에서 빠진다");
+    assert!(s.with_conn(|c| attachments::read_bytes(c, &s.paths, &only.id)).is_ok(), "영구 삭제 전 Backup 이 참조하는 동안은 파일을 남긴다");
+
+    // Backup 이 정리되면 다음 정리에서 지워진다.
+    for entry in std::fs::read_dir(s.paths.backups_dir()).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    assert_eq!(s.with_conn(|c| attachments::sweep_purged(c, &s.paths)).unwrap(), 1);
+    assert!(s.with_conn(|c| attachments::read_bytes(c, &s.paths, &only.id)).is_err(), "이제 파일까지 지워졌다");
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM purged_attachments"), 0);
+    assert!(s.with_conn(|c| attachments::read_bytes(c, &s.paths, &shared.id)).is_ok());
+}
+
+#[test]
+fn renaming_or_deleting_a_trashed_or_missing_list_is_safe() {
+    let (_d, s) = temp_storage();
+    let list = s.with_conn(|c| service::create_list(c, None, "List")).unwrap();
+    s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    assert!(s.with_conn(|c| service::rename_list(c, &list.id, "새 이름")).is_err(), "휴지통의 List 는 이름을 바꿀 수 없다");
+    assert_eq!(s.with_conn(|c| trash::entries(c)).unwrap()[0].name, "List");
+    assert!(s.with_conn(|c| trash::move_to_trash(c, "00000000-0000-4000-8000-00000000ffff")).is_err());
+    assert!(s.with_conn(|c| trash::restore(c, "00000000-0000-4000-8000-00000000ffff")).is_err());
+    s.with_conn(|c| trash::purge(c, &s.paths, "00000000-0000-4000-8000-00000000ffff")).unwrap();
+}
+
+#[test]
+fn search_finds_dates_and_body_together() {
+    let (_d, s) = temp_storage();
+    add(&s, day("2026-11-02"), "main", "<p>AWS 설정</p>");
+    add(&s, day("2026-11-02"), "pm", "회의록");
+    add(&s, day("2025-11-02"), "am", "작년 메모");
+    add(&s, day("2026-10-20"), "main", "11/2 까지 제출");
+    let date = |year: Option<i32>, rest: &str| search::DateQuery { year, month: 11, day: 2, prefer_year: 2026, rest: rest.into() };
+
+    let r = s.with_conn(|c| search::search_with(c, "11/2", Some(&date(None, "")), 200)).unwrap();
+    let dates: Vec<&str> = r.days.iter().map(|d| d.date.as_str()).collect();
+    assert_eq!(dates, vec!["2026-11-02", "2025-11-02"], "연도 없으면 올해 먼저, 다른 해는 그 뒤");
+    assert_eq!(r.days[0].items.len(), 2, "그 날짜의 메모 모두");
+    assert_eq!(r.items.len(), 1, "본문에 '11/2' 라고 적은 메모도 빠지지 않는다");
+    assert!(r.items[0].excerpt.contains("11/2"));
+
+    let r = s.with_conn(|c| search::search_with(c, "2026-11-02", Some(&date(Some(2026), "")), 200)).unwrap();
+    assert_eq!(r.days.len(), 1, "연도를 적으면 그 해만");
+    assert_eq!(r.days[0].date, "2026-11-02");
+
+    let r = s.with_conn(|c| search::search_with(c, "11/2 aws", Some(&date(Some(2026), "aws")), 200)).unwrap();
+    assert_eq!(r.days[0].items.len(), 1, "날짜 + 단어 — 그 날짜에서 그 단어가 있는 메모만");
+
+    let r = s.with_conn(|c| search::search_with(c, "1/1", Some(&search::DateQuery { year: None, month: 1, day: 1, prefer_year: 2026, rest: String::new() }), 200)).unwrap();
+    assert!(r.days.is_empty(), "메모가 없는 날짜는 결과에 없다");
+}
+
+#[test]
+fn search_limit_truncates_and_more_returns_the_rest() {
+    let (_d, s) = temp_storage();
+    for i in 0..5 {
+        add(&s, day("2026-10-07"), "main", &format!("반복 단어 {i}"));
+    }
+    let r = s.with_conn(|c| search::search_with(c, "반복", None, 3)).unwrap();
+    assert_eq!(r.items.len(), 3);
+    assert!(r.truncated);
+    let r = s.with_conn(|c| search::search_with(c, "반복", None, 10)).unwrap();
+    assert_eq!(r.items.len(), 5);
+    assert!(!r.truncated);
+}
+
+#[test]
+fn months_group_by_memo_date_not_edit_time() {
+    let (_d, s) = temp_storage();
+    let old = add(&s, day("2026-10-28"), "main", "10월 메모");
+    add(&s, day("2026-10-28"), "pm", "10월 메모 2");
+    add(&s, day("2026-10-20"), "am", "10월 메모 3");
+    add(&s, day("2026-11-02"), "main", "11월 메모");
+    add(&s, day("2025-12-31"), "main", "작년 12월");
+    let gone = add(&s, day("2026-09-01"), "main", "지운 메모");
+    s.with_conn(|c| service::delete_item(c, &gone.id)).unwrap();
+    add(&s, next(None), "next", "Next 메모는 월 카드에 없다");
+    s.with_conn(|c| service::update_content(c, &old.id, "11월에 고친 10월 메모")).unwrap();
+
+    let months = s.with_conn(|c| service::day_months(c, "2026-11-02")).unwrap();
+    let summary: Vec<(&str, i64, i64)> = months.iter().map(|m| (m.month.as_str(), m.day_count, m.item_count)).collect();
+    assert_eq!(summary, vec![("2026-11", 1, 1), ("2026-10", 2, 3), ("2025-12", 1, 1)], "최신 월부터 · 빈 월 없음 · 수정해도 원래 월");
+    let days = s.with_conn(|c| service::days_in_month(c, "2026-10", "2026-11-02")).unwrap();
+    assert_eq!(days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(), vec!["2026-10-28", "2026-10-20"]);
+    assert_eq!(days[0].item_count, 2);
+    assert!(s.with_conn(|c| service::days_in_month(c, "2026-13", "2026-11-02")).is_err());
 }
 
 #[test]
@@ -408,4 +653,38 @@ fn long_pasted_memo_is_stored_and_reopened_without_loss() {
     assert_eq!(err.code(), "validation");
     assert!(err.to_string().contains("2MB"));
     assert_eq!(s.with_conn(|c| service::get_list(c, None)).unwrap().items[0].content_html, appended);
+}
+
+#[test]
+fn search_and_months_stay_fast_with_many_memos() {
+    let (_d, s) = temp_storage();
+    s.with_conn(|c| {
+        let tx = c.transaction()?;
+        for n in 0..1000 {
+            let date = (chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() + chrono::Duration::days(n)).format("%Y-%m-%d").to_string();
+            tx.execute("INSERT INTO documents (id, kind, memo_date, created_at, updated_at) VALUES (?1, 'DAY', ?2, 't', 't')", [format!("doc-{n}"), date])?;
+            for i in 0..20 {
+                tx.execute(
+                    "INSERT INTO memo_items (id, document_id, section, content_html, content_text, sort_order, created_at, updated_at) VALUES (?1, ?2, 'main', ?3, ?3, ?4, 't', 't')",
+                    rusqlite::params![format!("item-{n}-{i}"), format!("doc-{n}"), format!("<p>반복되는 메모 본문 {n} {i} 프로젝트 정리</p>"), i],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+    let date = search::DateQuery { year: None, month: 3, day: 9, prefer_year: 2026, rest: String::new() };
+    let timed = |label: &str, run: &dyn Fn() -> usize, expect: usize| {
+        let start = std::time::Instant::now();
+        let found = run();
+        let elapsed = start.elapsed();
+        println!("{label}: {found}건 {elapsed:?}");
+        assert_eq!(found, expect, "{label}");
+        assert!(elapsed.as_millis() < 3000, "{label} {elapsed:?}");
+    };
+    timed("본문 검색 20000건 중 첫 200건", &|| s.with_conn(|c| search::search(c, "프로젝트")).unwrap().items.len(), 200);
+    timed("날짜 검색", &|| s.with_conn(|c| search::search_with(c, "3/9", Some(&date), 200)).unwrap().days.len(), 3);
+    timed("월 카드", &|| s.with_conn(|c| service::day_months(c, "2026-11-02")).unwrap().len(), 33);
+    timed("한 달 펼치기", &|| s.with_conn(|c| service::days_in_month(c, "2025-03", "2026-11-02")).unwrap().len(), 31);
 }

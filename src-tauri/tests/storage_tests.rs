@@ -252,7 +252,7 @@ fn upgrade_from_v1_database_keeps_everything_and_backs_up_first() {
         .unwrap();
     }
     let (storage, report) = Storage::open(&root, false).unwrap();
-    assert_eq!(report.applied_migrations, vec![2, 3, 4], "v1 → 최신(v2 memo-sync-v1, v3 날짜 도구, v4 memo-sync-v2) 차례로");
+    assert_eq!(report.applied_migrations, vec![2, 3, 4, 5, 6], "v1 → 최신(v2 memo-sync-v1, v3 날짜 도구, v4 memo-sync-v2, v5 List 휴지통, v6 이미지 정리 대기) 차례로");
     assert!(report.backup_before_migration.is_some(), "migration 전 Backup");
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM memo_items WHERE content_html = '<b>회의</b>'"), 1);
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM conflicts WHERE id = 'c1' AND status = 'open'"), 1, "충돌 기록 보존(테이블 교체)");
@@ -263,4 +263,57 @@ fn upgrade_from_v1_database_keeps_everything_and_backs_up_first() {
         .with_conn(|c| Ok(c.execute("UPDATE conflicts SET status = 'resolved_elsewhere', source = 'web' WHERE id = 'c1'", [])?))
         .unwrap();
     assert!(storage.with_conn(|c| Ok(c.execute("UPDATE conflicts SET source = 'other' WHERE id = 'c1'", [])?)).is_err());
+}
+
+#[test]
+fn migration_v5_backs_up_first_and_the_backup_restores_v4_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("PLAN-A Memo");
+    let paths = StoragePaths::new(&root);
+    paths.ensure_dirs().unwrap();
+    {
+        let mut conn = rusqlite::Connection::open(paths.db_path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL);",
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 4) {
+            tx.execute_batch(m.sql).unwrap();
+            tx.execute("INSERT INTO schema_migrations VALUES (?1, ?2, 'x', 't')", rusqlite::params![m.version, m.name]).unwrap();
+        }
+        tx.execute_batch(
+            "INSERT INTO next_lists (id, name, is_default, sort_order, deleted_at, created_at, updated_at)
+               VALUES ('old-list', '예전에 지운 List', 0, 5, 't', 't', 't');
+             INSERT INTO documents (id, kind, memo_date, created_at, updated_at) VALUES ('d1', 'DAY', '2026-10-07', 't', 't');
+             INSERT INTO memo_items (id, document_id, section, content_html, content_text, created_at, updated_at)
+               VALUES ('i1', 'd1', 'am', '<b>회의</b>', '회의', 't', 't');",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let (storage, report) = Storage::open(&root, false).unwrap();
+    assert_eq!(report.applied_migrations, vec![5, 6]);
+    assert_eq!(count(&storage, "SELECT COUNT(*) FROM memo_items WHERE id = 'i1'"), 1, "기존 메모 그대로");
+    let entries = storage.with_conn(|c| plan_a_memo_lib::memo::trash::entries(c)).unwrap();
+    assert!(entries.is_empty(), "예전에 지운 List 가 휴지통에 나타나거나 지워지지 않는다");
+    assert_eq!(count(&storage, "SELECT COUNT(*) FROM next_lists WHERE id = 'old-list'"), 1);
+
+    // 롤백: 자동 Backup 은 v4 그대로이고, 그 파일로 메모를 되살릴 수 있다.
+    let backup = report.backup_before_migration.expect("migration 전 Backup");
+    let old = rusqlite::Connection::open(&backup).unwrap();
+    let version: i64 = old.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, 4);
+    let has_trash: i64 = old.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'list_trash'", [], |r| r.get(0)).unwrap();
+    assert_eq!(has_trash, 0);
+    let memo: String = old.query_row("SELECT content_html FROM memo_items WHERE id = 'i1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(memo, "<b>회의</b>");
+    drop(old);
+    let restored_root = dir.path().join("restored");
+    let restored = StoragePaths::new(&restored_root);
+    restored.ensure_dirs().unwrap();
+    std::fs::copy(&backup, restored.db_path()).unwrap();
+    let (reopened, report) = Storage::open(&restored_root, false).unwrap();
+    assert_eq!(report.applied_migrations, vec![5, 6], "Backup 으로 되돌린 뒤 다시 열어도 같은 Migration");
+    assert_eq!(count(&reopened, "SELECT COUNT(*) FROM memo_items WHERE id = 'i1'"), 1);
 }

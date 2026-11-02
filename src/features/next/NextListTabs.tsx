@@ -1,11 +1,14 @@
 /**
- * Next 의 List 탭 줄 — 기본 Next + 주제별 List (Web PersonalMemoNextLists 와 같은 모양).
- * List 만들기 · 이름 바꾸기 · 삭제(메모는 기본 Next 로) · 끌어서 순서 바꾸기.
- * List 하나가 문서 1건이므로 연결도 List 단위다(연결 버튼은 List 페이지 위쪽).
+ * Next 의 List 탭 — 기본 Next + 주제별 List.
+ *   · 탭은 폭에 맞춰 자동 줄바꿈된다(가로 스크롤 없음). 많으면 두 줄만 보이고 [List 더 보기 · N개] 로 펼친다.
+ *     선택한 List 가 가려지면 오른쪽에 함께 보여 준다(선택은 접기·펼치기와 무관하다).
+ *   · 우클릭 · 선택한 List 의 ⋮ : 이름 변경 · 삭제. 탭에 마우스를 올리면 삭제 ×.
+ *   · 삭제는 확인을 거쳐 휴지통으로(7일 복구, 설정 → 휴지통). 끌어서 순서 바꾸기.
+ *   · 연결된 List 의 이름 변경·삭제는 모든 기기가 함께 쓰는 기능이라 PLAN-A Work 공통 관리 기능이 준비될 때까지 막아 둔다(이유를 메뉴에 보인다).
+ * List 하나가 문서 1건이므로 연결도 List 단위다(머리 줄의 연동 아이콘).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Box,
   Button,
   ButtonBase,
@@ -23,29 +26,32 @@ import {
   Typography,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import CloseIcon from '@mui/icons-material/Close';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
-import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
-import { arrayMove, horizontalListSortingStrategy, SortableContext, useSortable } from '@dnd-kit/sortable';
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { arrayMove, rectSortingStrategy, SortableContext, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useQueryClient } from '@tanstack/react-query';
 import type { NextListInfo } from '../../domain/types';
-import { errorMessage, nextListService } from '../../tauri/api';
+import { errorMessage, nextListService, trashService } from '../../tauri/api';
 import { refreshMemo, useLists } from '../../services/queries';
 import { dayTone, MEMO_CARD, MEMO_CARD_BORDER, MEMO_CARD_BORDER_HOVER, MEMO_CARD_SHADOW, MEMO_MUTED, NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { usePersonalMemo } from '../memo/MemoProvider';
 import SyncMark from '../sync/SyncMark';
+import { hiddenTabIndexes, LIST_COLLAPSED_HEIGHT, LIST_TAB_GAP, LIST_TAB_HEIGHT } from './listTabRows';
 
-const LINKED_RENAME_NOTICE =
-  '이 List 는 PLAN-A Work 와 연결되어 있습니다. 이름은 이 PC 에만 바뀌고 PLAN-A Work 의 List 이름은 바뀌지 않습니다(PLAN-A Work 에 이름 변경 기능이 아직 없음). 메모 내용은 계속 동기화됩니다.';
+const LINKED_RENAME_MESSAGE = '연결된 List의 이름 변경은 PLAN-A Work 공통 관리 기능이 준비된 후 사용할 수 있습니다.';
+const LINKED_DELETE_MESSAGE = '연결된 List의 삭제는 PLAN-A Work 공통 관리 기능이 준비된 후 사용할 수 있습니다. 연동을 해제하면 이 PC의 List로 삭제할 수 있습니다.';
 
 export function ListNameDialog({
   open,
   title,
   initial = '',
   submitLabel,
-  notice,
   onClose,
   onSubmit,
 }: {
@@ -53,8 +59,6 @@ export function ListNameDialog({
   title: string;
   initial?: string;
   submitLabel: string;
-  /** 입력란 위 안내(예: 연결된 List 이름은 이 PC 에만 바뀜) */
-  notice?: string;
   onClose: () => void;
   onSubmit: (name: string) => Promise<void>;
 }) {
@@ -83,11 +87,6 @@ export function ListNameDialog({
     <Dialog open={open} onClose={onClose} data-personal-memo-overlay="true" data-testid="memo-list-name-dialog" fullWidth maxWidth="xs">
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
-        {notice && (
-          <Alert severity="info" sx={{ mb: 1.5, fontSize: '0.8rem' }} data-testid="memo-list-name-notice">
-            {notice}
-          </Alert>
-        )}
         <TextField
           autoFocus
           fullWidth
@@ -117,33 +116,26 @@ export function ListNameDialog({
   );
 }
 
-function ListTab({ card, selected, onSelect }: { card: NextListInfo; selected: boolean; onSelect: () => void }) {
+const tabSx = (selected: boolean) => {
   const tone = dayTone('next');
-  const sortable = useSortable({ id: card.id, disabled: card.isDefault });
+  return {
+    position: 'relative',
+    flexShrink: 0, gap: 0.75, px: 1.5, height: LIST_TAB_HEIGHT, boxSizing: 'border-box', borderRadius: '8px',
+    border: '1px solid', borderColor: selected ? 'rgba(109, 40, 217, 0.30)' : MEMO_CARD_BORDER,
+    bgcolor: selected ? tone.soft : MEMO_CARD, color: selected ? tone.text : 'text.primary',
+    boxShadow: selected ? 'none' : MEMO_CARD_SHADOW,
+    fontWeight: selected ? 700 : 600, fontSize: '0.82rem', maxWidth: 240,
+    transition: 'background-color 0.15s, border-color 0.15s',
+    '&:hover': { borderColor: selected ? 'rgba(109, 40, 217, 0.45)' : MEMO_CARD_BORDER_HOVER },
+    '&:hover .list-tab-close, &:focus-visible .list-tab-close': { opacity: 1 },
+    '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+  } as const;
+};
+
+function TabFace({ card, selected }: { card: NextListInfo; selected: boolean }) {
+  const tone = dayTone('next');
   return (
-    <ButtonBase
-      ref={sortable.setNodeRef}
-      style={{ transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition }}
-      {...(card.isDefault ? {} : sortable.attributes)}
-      {...(card.isDefault ? {} : sortable.listeners)}
-      role="tab"
-      aria-selected={selected}
-      data-testid="memo-next-list-tab"
-      onClick={() => {
-        if (!selected) onSelect();
-      }}
-      sx={{
-        flexShrink: 0, gap: 0.75, px: 1.5, height: 32, borderRadius: '8px',
-        border: '1px solid', borderColor: selected ? 'rgba(109, 40, 217, 0.30)' : MEMO_CARD_BORDER,
-        bgcolor: selected ? tone.soft : MEMO_CARD, color: selected ? tone.text : 'text.primary',
-        boxShadow: selected ? 'none' : MEMO_CARD_SHADOW,
-        fontWeight: selected ? 700 : 600, fontSize: '0.82rem', maxWidth: 240,
-        opacity: sortable.isDragging ? 0.6 : 1,
-        transition: 'background-color 0.15s, border-color 0.15s',
-        '&:hover': { borderColor: selected ? 'rgba(109, 40, 217, 0.45)' : MEMO_CARD_BORDER_HOVER },
-        '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
-      }}
-    >
+    <>
       <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {card.isDefault ? NEXT_LABEL : card.name}
       </Box>
@@ -155,8 +147,91 @@ function ListTab({ card, selected, onSelect }: { card: NextListInfo; selected: b
           <SyncMark document={card.document} location={{ kind: 'next', listId: card.isDefault ? null : card.id }} compact />
         </Box>
       )}
+    </>
+  );
+}
+
+function ListTab({
+  card,
+  selected,
+  onSelect,
+  onContextMenu,
+  onDelete,
+}: {
+  card: NextListInfo;
+  selected: boolean;
+  onSelect: () => void;
+  onContextMenu: (event: React.MouseEvent) => void;
+  onDelete: () => void;
+}) {
+  const tone = dayTone('next');
+  const sortable = useSortable({ id: card.id, disabled: card.isDefault });
+  const name = card.isDefault ? NEXT_LABEL : card.name;
+  return (
+    <ButtonBase
+      ref={sortable.setNodeRef}
+      style={{ transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition, opacity: sortable.isDragging ? 0.6 : 1 }}
+      {...(card.isDefault ? {} : sortable.attributes)}
+      {...(card.isDefault ? {} : sortable.listeners)}
+      role="tab"
+      aria-selected={selected}
+      title={name}
+      data-testid="memo-next-list-tab"
+      data-list-id={card.id}
+      onClick={() => {
+        if (!selected) onSelect();
+      }}
+      onContextMenu={onContextMenu}
+      onKeyDown={event => {
+        if (event.key === 'Delete' && !card.isDefault) {
+          event.preventDefault();
+          onDelete();
+        }
+      }}
+      sx={tabSx(selected)}
+    >
+      <TabFace card={card} selected={selected} />
+      {!card.isDefault && !card.document?.syncEnabled && (
+        // 탭 안의 작은 ×. 끌기·탭 선택과 겹치지 않게 눌림을 여기서 끝낸다. 키보드는 탭에서 Delete.
+        <Box
+          component="span"
+          className="list-tab-close"
+          role="button"
+          aria-label={`${name} List 삭제`}
+          data-testid="memo-next-list-delete"
+          onPointerDown={event => event.stopPropagation()}
+          onClick={event => {
+            event.stopPropagation();
+            onDelete();
+          }}
+          sx={{
+            position: 'absolute', right: 2, top: '50%', transform: 'translateY(-50%)', width: 18, height: 18, borderRadius: '50%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 0.1s',
+            bgcolor: selected ? tone.soft : MEMO_CARD, color: MEMO_MUTED,
+            '&:hover': { color: 'error.main', bgcolor: 'rgba(220, 38, 38, 0.08)' },
+          }}
+        >
+          <CloseIcon sx={{ fontSize: 13 }} />
+        </Box>
+      )}
     </ButtonBase>
   );
+}
+
+/** List 관리 메뉴의 항목 — 우클릭과 ⋮ 가 같다. 연결된 List 는 이유를 보이며 막는다. */
+function listManageItems(card: NextListInfo, onRename: () => void, onDelete: () => void, testIds: { rename?: string; remove?: string } = {}) {
+  const linked = !!card.document?.syncEnabled;
+  const reasonSx = { '&.Mui-disabled': { opacity: 0.8 }, whiteSpace: 'normal', maxWidth: 320 };
+  return [
+    <MenuItem key="rename" dense disabled={linked} data-testid={testIds.rename} onClick={onRename} sx={reasonSx}>
+      <ListItemIcon><EditOutlinedIcon fontSize="small" /></ListItemIcon>
+      <ListItemText primary="이름 변경" secondary={linked ? LINKED_RENAME_MESSAGE : undefined} />
+    </MenuItem>,
+    <MenuItem key="delete" dense disabled={linked} data-testid={testIds.remove} onClick={onDelete} sx={{ ...reasonSx, color: linked ? undefined : 'error.main' }}>
+      <ListItemIcon><DeleteOutlineIcon fontSize="small" color={linked ? undefined : 'error'} /></ListItemIcon>
+      <ListItemText primary="삭제" secondary={linked ? LINKED_DELETE_MESSAGE : undefined} />
+    </MenuItem>,
+  ];
 }
 
 export default function NextListTabs({ activeListId, onSelect }: { activeListId: string | null; onSelect: (listId: string | null) => void }) {
@@ -165,13 +240,37 @@ export default function NextListTabs({ activeListId, onSelect }: { activeListId:
   const { data } = useLists();
   const cards = data ?? [];
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ card: NextListInfo; top: number; left: number } | null>(null);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<NextListInfo | null>(null);
-  // 연결된 List — memo-sync-v1 에 이미 있는 List 의 이름을 바꾸는 API 가 없다(이름은 이 PC 에만 바뀐다).
-  const renamingLinked = !!renaming?.document?.syncEnabled;
   const [deleting, setDeleting] = useState<NextListInfo | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const activeCard = cards.find(c => !c.isDefault && c.id === activeListId) ?? null;
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  // 접기/펼치기 — 화면 표시만 바꾼다(List 데이터·선택은 그대로).
+  const [expanded, setExpanded] = useState(false);
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const cardKey = cards.map(c => `${c.id}:${c.name}:${c.itemCount}`).join('|');
+  useLayoutEffect(() => {
+    const box = tabsRef.current;
+    if (!box) return undefined;
+    const measure = () => {
+      const tabs = Array.from(box.querySelectorAll<HTMLElement>('[data-testid="memo-next-list-tab"]'));
+      const hidden = hiddenTabIndexes(tabs.map(tab => tab.offsetTop)).map(index => tabs[index].dataset.listId ?? '');
+      setHiddenIds(current => (current.join('|') === hidden.join('|') ? current : hidden));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [cardKey]);
+  const activeId = activeListId ?? cards.find(c => c.isDefault)?.id;
+  const pinned = !expanded && hiddenIds.includes(activeId ?? '') ? cards.find(c => c.id === activeId) ?? null : null;
+  useEffect(() => {
+    if (!hiddenIds.length) setExpanded(false);
+  }, [hiddenIds.length]);
 
   const onDragEnd = (event: DragEndEvent) => {
     const topics = cards.filter(c => !c.isDefault).map(c => c.id);
@@ -184,56 +283,132 @@ export default function NextListTabs({ activeListId, onSelect }: { activeListId:
       .catch(error => notify({ message: errorMessage(error, '순서를 바꾸지 못했습니다.'), variant: 'error' }));
   };
 
+  const moveToTrash = async () => {
+    const card = deleting;
+    if (!card || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      await nextListService.remove(card.id);
+      setDeleting(null);
+      // 보고 있던 List 가 사라졌으면 기본 Next 로.
+      if (card.id === activeListId) onSelect(null);
+      refreshMemo(queryClient);
+      notify({
+        message: `'${card.name}' List 를 휴지통으로 옮겼습니다. 7일 동안 복구할 수 있습니다(설정 → 휴지통).`,
+        actionLabel: '되돌리기',
+        onAction: () =>
+          void trashService
+            .restore(card.id)
+            .then(() => refreshMemo(queryClient))
+            .catch(error => notify({ message: errorMessage(error, '되돌리지 못했습니다.'), variant: 'error' })),
+      });
+    } catch (error) {
+      setDeleting(null);
+      refreshMemo(queryClient);
+      notify({ message: errorMessage(error, 'List 를 삭제하지 못했습니다.'), variant: 'error' });
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const openContextMenu = (card: NextListInfo) => (event: React.MouseEvent) => {
+    event.preventDefault();
+    // 기본 Next 는 이름을 바꾸거나 지울 수 없어 메뉴가 없다.
+    if (!card.isDefault) setContextMenu({ card, top: event.clientY, left: event.clientX });
+  };
+
   return (
-    <Box
-      data-testid="memo-next-lists"
-      role="tablist"
-      aria-label="Next List"
-      sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'nowrap', overflowX: 'auto', pb: 0.25, flexShrink: 0 }}
-    >
-      <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-        <SortableContext items={cards.map(c => c.id)} strategy={horizontalListSortingStrategy}>
-          {cards.map(card => (
-            <ListTab
-              key={card.id}
-              card={card}
-              selected={card.isDefault ? activeListId === null : card.id === activeListId}
-              onSelect={() => onSelect(card.isDefault ? null : card.id)}
-            />
-          ))}
-        </SortableContext>
-      </DndContext>
-      <Tooltip title="새 List 만들기">
-        <Button
-          size="small"
-          startIcon={<AddIcon sx={{ fontSize: 16 }} />}
-          onClick={() => setCreating(true)}
-          data-testid="memo-next-list-create"
-          sx={{ flexShrink: 0, borderRadius: '8px', fontSize: '0.78rem', px: 1.25, height: 32, minWidth: 0 }}
-        >
-          List
-        </Button>
-      </Tooltip>
-      {activeCard && (
-        <>
-          <Box sx={{ flex: 1 }} />
-          <Tooltip title="List 관리">
-            <IconButton size="small" aria-label={`${activeCard.name} List 관리`} data-testid="memo-next-list-menu" onClick={e => setMenuAnchor(e.currentTarget)}>
-              <MoreVertIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-          <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={() => setMenuAnchor(null)} data-personal-memo-overlay="true">
-            <MenuItem dense onClick={() => { setMenuAnchor(null); setRenaming(activeCard); }}>
-              <ListItemIcon><EditOutlinedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText primary="이름 바꾸기" />
-            </MenuItem>
-            <MenuItem dense onClick={() => { setMenuAnchor(null); setDeleting(activeCard); }} sx={{ color: 'error.main' }}>
-              <ListItemIcon><DeleteOutlineIcon fontSize="small" color="error" /></ListItemIcon>
-              <ListItemText primary="List 삭제" />
-            </MenuItem>
-          </Menu>
-        </>
-      )}
+    <Box data-testid="memo-next-lists" sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75, flexShrink: 0 }}>
+      <Box
+        ref={tabsRef}
+        role="tablist"
+        aria-label="Next List"
+        data-testid="memo-next-list-tabs"
+        data-expanded={expanded ? 'true' : 'false'}
+        sx={{
+          flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: `${LIST_TAB_GAP}px`, alignContent: 'flex-start',
+          // 넘치는 줄만 가린다(탭 그림자가 잘리지 않을 만큼의 여유는 패딩으로).
+          ...(expanded ? {} : { maxHeight: LIST_COLLAPSED_HEIGHT + 4, overflow: 'hidden' }),
+          p: '2px', m: '-2px',
+        }}
+      >
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={cards.map(c => c.id)} strategy={rectSortingStrategy}>
+            {cards.map(card => (
+              <ListTab
+                key={card.id}
+                card={card}
+                selected={card.isDefault ? activeListId === null : card.id === activeListId}
+                onSelect={() => onSelect(card.isDefault ? null : card.id)}
+                onContextMenu={openContextMenu(card)}
+                onDelete={() => (card.document?.syncEnabled ? notify({ message: LINKED_DELETE_MESSAGE }) : setDeleting(card))}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
+      </Box>
+      <Box data-testid="memo-next-list-actions" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0, minHeight: LIST_TAB_HEIGHT }}>
+        {pinned && (
+          <ButtonBase data-testid="memo-next-list-pinned" title={pinned.name} onContextMenu={openContextMenu(pinned)} sx={{ ...tabSx(true), maxWidth: 160 }}>
+            <TabFace card={pinned} selected />
+          </ButtonBase>
+        )}
+        {(hiddenIds.length > 0 || expanded) && (
+          <Button
+            size="small"
+            data-testid="memo-next-list-more"
+            aria-expanded={expanded}
+            endIcon={expanded ? <ExpandLessIcon sx={{ fontSize: 16 }} /> : <ExpandMoreIcon sx={{ fontSize: 16 }} />}
+            onClick={() => setExpanded(value => !value)}
+            sx={{ borderRadius: '8px', fontSize: '0.76rem', px: 1, height: LIST_TAB_HEIGHT, minWidth: 0, whiteSpace: 'nowrap', color: MEMO_MUTED }}
+          >
+            {expanded ? '접기' : `List 더 보기 · ${hiddenIds.length}개`}
+          </Button>
+        )}
+        <Tooltip title="새 List 만들기">
+          <Button
+            size="small"
+            startIcon={<AddIcon sx={{ fontSize: 16 }} />}
+            onClick={() => setCreating(true)}
+            data-testid="memo-next-list-create"
+            sx={{ flexShrink: 0, borderRadius: '8px', fontSize: '0.78rem', px: 1.25, height: LIST_TAB_HEIGHT, minWidth: 0 }}
+          >
+            List
+          </Button>
+        </Tooltip>
+        {activeCard && (
+          <>
+            <Tooltip title="List 관리">
+              <IconButton size="small" aria-label={`${activeCard.name} List 관리`} data-testid="memo-next-list-menu" onClick={e => setMenuAnchor(e.currentTarget)}>
+                <MoreVertIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={() => setMenuAnchor(null)} data-personal-memo-overlay="true">
+              {listManageItems(
+                activeCard,
+                () => { setMenuAnchor(null); setRenaming(activeCard); },
+                () => { setMenuAnchor(null); setDeleting(activeCard); },
+              )}
+            </Menu>
+          </>
+        )}
+      </Box>
+      <Menu
+        open={!!contextMenu}
+        onClose={() => setContextMenu(null)}
+        anchorReference="anchorPosition"
+        anchorPosition={contextMenu ? { top: contextMenu.top, left: contextMenu.left } : undefined}
+        data-personal-memo-overlay="true"
+        data-testid="memo-next-list-context"
+      >
+        {contextMenu &&
+          listManageItems(
+            contextMenu.card,
+            () => { setRenaming(contextMenu.card); setContextMenu(null); },
+            () => { setDeleting(contextMenu.card); setContextMenu(null); },
+            { rename: 'memo-next-list-rename', remove: 'memo-next-list-context-delete' },
+          )}
+      </Menu>
       <ListNameDialog
         open={creating}
         title="새 List"
@@ -249,51 +424,30 @@ export default function NextListTabs({ activeListId, onSelect }: { activeListId:
       />
       <ListNameDialog
         open={!!renaming}
-        title="List 이름 바꾸기"
+        title="List 이름 변경"
         initial={renaming?.name ?? ''}
-        submitLabel="바꾸기"
-        notice={renamingLinked ? LINKED_RENAME_NOTICE : undefined}
+        submitLabel="저장"
         onClose={() => setRenaming(null)}
         onSubmit={async name => {
           await nextListService.rename(renaming!.id, name);
           refreshMemo(queryClient);
           setRenaming(null);
-          if (renamingLinked) notify({ message: '이 PC 의 List 이름을 바꿨습니다. PLAN-A Work 의 List 이름은 그대로입니다.' });
         }}
       />
-      <Dialog open={!!deleting} onClose={() => setDeleting(null)} data-personal-memo-overlay="true" data-testid="memo-list-delete-confirm">
-        <DialogTitle>'{deleting?.name}' List 를 삭제할까요?</DialogTitle>
+      <Dialog open={!!deleting} onClose={() => setDeleting(null)} data-personal-memo-overlay="true" data-testid="memo-list-delete-confirm" maxWidth="xs" fullWidth>
+        <DialogTitle>List를 삭제하시겠습니까?</DialogTitle>
         <DialogContent>
-          <Typography sx={{ fontSize: '0.88rem' }}>
+          <Typography sx={{ fontSize: '0.88rem' }}>'{deleting?.name}' List를 삭제합니다.</Typography>
+          <Typography sx={{ fontSize: '0.88rem', mt: 0.75 }}>
             {deleting?.itemCount
-              ? `안에 있는 메모 ${deleting.itemCount}개는 지워지지 않고 Next 로 옮겨집니다.`
-              : '비어 있는 List 입니다.'}
+              ? `이 List에 포함된 메모 ${deleting.itemCount}개는 휴지통으로 이동하며, 7일 동안 복구할 수 있습니다.`
+              : '비어 있는 List 입니다. 휴지통에서 7일 동안 복구할 수 있습니다.'}
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleting(null)} autoFocus>취소</Button>
-          <Button
-            color="error"
-            variant="contained"
-            onClick={() => {
-              const card = deleting;
-              setDeleting(null);
-              if (!card) return;
-              void nextListService
-                .remove(card.id)
-                .then(result => {
-                  onSelect(null);
-                  refreshMemo(queryClient);
-                  notify({
-                    message: result.movedCount
-                      ? `'${card.name}' List 를 삭제했습니다. 메모 ${result.movedCount}개는 Next 로 옮겼습니다.`
-                      : `'${card.name}' List 를 삭제했습니다.`,
-                  });
-                })
-                .catch(error => notify({ message: errorMessage(error, 'List 를 삭제하지 못했습니다.'), variant: 'error' }));
-            }}
-          >
-            List 삭제
+          <Button color="error" variant="contained" disabled={deleteBusy} data-testid="memo-list-delete-submit" onClick={() => void moveToTrash()}>
+            휴지통으로 이동
           </Button>
         </DialogActions>
       </Dialog>

@@ -104,6 +104,35 @@ OS 예약 상태(작업 스케줄러 작업 이름 · 등록한 시각 · 오류
 **지난 미완료 복사의 첨부**: 복사본의 이미지는 새 첨부(새 id·새 파일)로 복제한다 — 원본 메모를 지우거나 정리해도 복사본의 이미지가
 남고, 복사본이 원본 첨부의 주인 표시(`attachments.item_id`)를 가져가지 않는다.
 
+## Migration v5 — List 휴지통 (`migrations/0005_list_trash.sql`)
+
+새 테이블 `list_trash`(list_id · was_linked · deleted_at · purge_after)만 추가한다. 적용 전 자동 Backup(`pre-migration-v5`), 실패하면 transaction 이
+통째로 되돌아간다. 되돌리려면 그 Backup 을 `data/memo.sqlite3` 자리에 두고 이전 앱으로 연다(v5 표만 없다). 이 PC 의 메타데이터라 PLAN-A Work 로 보내지 않는다.
+
+* **보관**: List·문서의 `deleted_at` 만 설정한다. 메모·History·첨부 행은 그대로라 복구하면 내용·서식·이미지·완료 상태·순서가 그대로 돌아온다.
+  목록·검색·즐겨찾기·내보내기에는 나오지 않고, Backup 에는 포함되며, 이미지 정리는 참조로 본다(지우지 않는다).
+* **예전에 지운 List**(메모는 Next 로 옮겨짐)는 `list_trash` 행이 없어 휴지통에 나타나지 않고 지워지지도 않는다.
+* **영구 삭제**: 7일 뒤 앱 시작 · 휴지통을 열 때, 또는 사용자가 확인했을 때. 직전에 Backup(`pre-trash-purge`)을 만들고 문서를 지운다 — 메모·그 문서의 History·연결 기록이 함께
+  지워진다(ON DELETE CASCADE). 이미지는 아래 v6 참고.
+* **미루는 경우**: PLAN-A Work 로 전달할 삭제·연결 해제가 남았거나 비교가 열려 있으면 기간이 지나도 지우지 않는다.
+* **연결된 List**: 삭제를 받지 않는다(`linked_list_managed`). 이전 빌드에서 이미 지운 연결 List(`was_linked=1`)는 복구·영구 삭제·기간 만료 없이 내용을 보관하고, Outbox 의 삭제 전달은 폐기하지 않는다.
+
+## Migration v6 — 영구 삭제한 List 의 이미지 정리 대기 (`migrations/0006_purged_attachments.sql`)
+
+새 테이블 `purged_attachments`(attachment_id · purged_at)만 추가한다. 적용 전 자동 Backup(`pre-migration-v5` 또는 `-v6`).
+
+영구 삭제하면 그 List 가 쓰던 이미지를 여기에 올리고 `attachments::sweep_purged`(영구 삭제 직후 · 앱 시작 · 휴지통을 열 때)가 처리한다:
+
+| 이미지 상태 | 처리 |
+|---|---|
+| 다른 메모·History·비교가 쓴다 | 지우지 않고 대기에서만 뺀다 |
+| 남은 Backup 이 참조한다 | 그 Backup 이 없어질 때까지 기다린다(Backup 은 DB 만 복사하므로 파일을 지우면 복원한 메모의 이미지가 깨진다) |
+| 아무도 쓰지 않는다 | DB 기록 → 파일 순서로 지운다 |
+| 읽을 수 없는 Backup 이 있다 | 이번에는 아무것도 지우지 않는다 |
+
+**영구 삭제와 Backup 은 별개다.** 영구 삭제해도 기존 Backup 파일에는 삭제 이전 내용이 남고, 그 Backup 이 참조하는 이미지 파일도 남는다(최대 20개 · 1GB, 오래된 것부터 정리).
+개인정보를 즉시 지워야 하는 경우의 정책(Backup 강제 삭제 등)은 아직 정하지 않았다.
+
 ## 쓰지 않는 이미지 정리
 
 설정 → Backup → [쓰지 않는 이미지 정리]. 먼저 개수·용량만 보여 주고 확인을 받는다. 지우는 조건(모두 만족):

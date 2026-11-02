@@ -34,6 +34,7 @@ pub fn reason_label(reason: &str) -> &'static str {
         "delete" => "삭제 전",
         "move" => "이동 전",
         "list_delete" => "List 삭제 전",
+        "list_restore" => "휴지통에서 복구 전",
         "restore" => "복원 전",
         "carryover" => "지난 미완료 가져오기 전",
         "remote_apply" => "PLAN-A Work 변경 반영 전",

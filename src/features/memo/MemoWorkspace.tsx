@@ -1,25 +1,28 @@
 /**
  * PLAN-A Memo 메인 화면 — Web 개인 메모 창(PersonalMemoWorkspaceDialog + Workspace)을 창 전체로.
  *
- *   ┌ October 10, 2026          (주간)  ‹ 10/5 – 10/11 ›  │ [🔍] [오늘] [⚙]
- *   │ 오늘도 좋은 하루예요~!    (날짜 상세) ← 주간 ‹ 토 10/10 Today › │ [🔍] [오늘] [⚙]
+ *   ┌ October 10, 2026          (주간)  ‹ 이번 주 ›  │ [🔍] [오늘] [☁] [≡+] [⚙]
+ *   │ 오늘도 좋은 하루예요~!    (날짜 상세) ← 주간 ‹ 토 10/10 Today › │ [🔍] [오늘] [☁] [≡+] [⚙]
  *   └ 주간(2×4) ↔ 날짜 상세 ↔ 검색·List(찾아보기)를 같은 자리에서 전환
  *
- * 머리는 한 줄 — 왼쪽 표지(날짜·인사말), 오른쪽 조작 묶음(화면 이동 │ 도구). 본문 위에 따로 이동 줄을 두지 않는다
- * (날짜 상세의 저장 상태·연결·History 줄이 그 바로 아래 둘째 줄이 된다 — DayView 의 LinkControl).
- * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다(Web PersonalMemoWorkspace 와 같은 배치): 검색 — 아이콘 자리가 입력칸으로
- * 펼쳐지고 결과·찾아보기(즐겨찾기 · Next List · 지난 날짜 · History)는 본문에 · 오늘(**오늘 날짜의 상세**) · 설정.
+ * 머리는 한 줄 — 왼쪽 표지(날짜·인사말), 오른쪽 조작 묶음(화면 이동 │ 도구). 본문 위에 따로 줄을 두지 않는다.
+ * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다: 검색 — 아이콘 자리가 입력칸으로 펼쳐지고 결과·찾아보기(즐겨찾기 · Next List ·
+ * 지난 메모 · History)는 본문에 · 오늘(**오늘 날짜의 상세**) · 연동(연결 상태·동기화·해제) · 지난 미완료 가져오기(날짜 상세에서만) · 설정.
+ * History 는 연동과 상관없는 메모 기록이다 — 가운데 날짜·List 이름을 누르면 나오는 보조 메뉴(메모가 없는 날에도)와 메모 행 메뉴에 있다.
+ * 주간의 ‹ › 가운데는 '이번 주·지난주·다음 주' — 더 먼 주는 실제 기간, 실제 기간은 항상 툴팁으로 볼 수 있다.
  * 날짜 이동은 도구 왼쪽의 ‹ › 뿐이다(주간은 기간, 날짜 상세는 그 날짜를 가운데 표시) — 같은 요일 고르기 메뉴는 두지 않는다
  * (날짜 상세 아래 '다가오는 같은 요일' 카드가 대신한다).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, Button, Chip, IconButton, InputBase, Tooltip, Typography } from '@mui/material';
+import { Box, Button, ButtonBase, Chip, IconButton, InputBase, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
 import { GlobalStyles } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import HistoryIcon from '@mui/icons-material/History';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { listen } from '@tauri-apps/api/event';
@@ -28,7 +31,6 @@ import {
   dayLabelWithYear,
   localDayString,
   longEnglishDate,
-  shortDate,
   weekStart,
 } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import {
@@ -46,11 +48,14 @@ import {
 } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { MEMO_SEARCH_HIGHLIGHT } from '../../vendor/plan-a-work/components/personalMemo/memoSearchHighlight';
 import type { DueReminder, Location, MemoSection } from '../../domain/types';
-import { isNextKey, locationKey, parseLocationKey } from '../../domain/location';
+import { isNextKey, koreanMonthDay, locationKey, locationLabel, parseLocationKey } from '../../domain/location';
+import { weekLabel, weekRangeText } from '../../domain/memoBrowse';
 import { koreanLongDate } from '../../domain/dayTools';
 import { dayToolsService, isTauri } from '../../tauri/api';
-import { useLists, useSyncOverview } from '../../services/queries';
+import { useDay, useLists, useNextList, useSyncOverview } from '../../services/queries';
 import { useAppUi } from '../../app/AppUi';
+import { SyncHeaderButton } from '../sync/SyncMark';
+import { CarryoverButton } from './CarryoverNotice';
 import { usePersonalMemo } from './MemoProvider';
 import { MemoSaveIndicator } from './MemoSaveIndicator';
 import WeekView, { type OpenDayOptions } from './WeekView';
@@ -147,7 +152,7 @@ function MissedReminders({ items, onOpen, onDismiss }: { items: DueReminder[]; o
 }
 
 export default function MemoWorkspace() {
-  const { today, store, notify, setEditingId } = usePersonalMemo();
+  const { today, store, notify, setEditingId, openHistory } = usePersonalMemo();
   const ui = useAppUi();
   const lists = useLists();
   const [view, setViewState] = useState<View>({ kind: 'week', monday: weekStart(today) });
@@ -156,6 +161,7 @@ export default function MemoWorkspace() {
   const searchInput = useRef<HTMLInputElement>(null);
   const [beforeBrowse, setBeforeBrowse] = useState<View | null>(null);
   const [missed, setMissed] = useState<DueReminder[]>([]);
+  const [docMenu, setDocMenu] = useState<HTMLElement | null>(null);
 
   // 화면 전환 — 편집 중인 메모는 닫으며 저장한다(저장 실패한 초안은 저장소에 남아 다시 시도할 수 있다).
   // 이미지를 넣는 중에는 옮기지 않는다(넣던 이미지를 잃지 않게).
@@ -181,6 +187,10 @@ export default function MemoWorkspace() {
   const location: Location | null = dayKey ? parseLocationKey(dayKey) : null;
   const listName =
     location?.kind === 'next' && location.listId ? lists.data?.find(l => l.id === location.listId)?.name ?? null : null;
+  // 연동 아이콘이 보여 줄 지금 화면의 문서(본문과 같은 조회 — 캐시를 함께 쓴다).
+  const dayDoc = useDay(location?.kind === 'day' ? location.date : null);
+  const listDoc = useNextList(location?.kind === 'next' ? location.listId : null, location?.kind === 'next');
+  const document = location?.kind === 'day' ? dayDoc.data?.document ?? null : location?.kind === 'next' ? listDoc.data?.list.document ?? null : null;
 
   const openDay = (key: string, options: OpenDayOptions = {}) => {
     setLastDay(key);
@@ -258,7 +268,7 @@ export default function MemoWorkspace() {
     }
   };
 
-  // 오른쪽 도구 — 어느 화면에서나 [검색] [오늘] [설정]. 찾아보기 화면에서 검색을 다시 누르면 검색창으로 돌아간다.
+  // 오른쪽 도구 — 어느 화면에서나 [검색] [오늘] [연동] [가져오기] [설정]. 찾아보기 화면에서 검색을 다시 누르면 검색창으로 돌아간다.
   const tools = (
     <Box data-testid="memo-header-tools" sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
       {isBrowse ? (
@@ -275,7 +285,7 @@ export default function MemoWorkspace() {
           <InputBase
             inputRef={searchInput}
             value={browseQuery}
-            placeholder="메모 검색"
+            placeholder="메모 · 날짜 검색 (11.2)"
             onChange={event => setBrowseQuery(event.target.value)}
             onKeyDown={event => {
               if (event.nativeEvent.isComposing || event.key !== 'Escape') return;
@@ -313,6 +323,13 @@ export default function MemoWorkspace() {
           오늘
         </Button>
       </Tooltip>
+      <SyncHeaderButton
+        document={document}
+        location={location}
+        label={location?.kind === 'day' ? koreanMonthDay(location.date) : listName || NEXT_LABEL}
+        sx={HEADER_ICON_SX}
+      />
+      <CarryoverButton date={location?.kind === 'day' ? location.date : null} sx={HEADER_ICON_SX} />
       <Tooltip title="설정" disableInteractive>
         <IconButton aria-label="설정" data-testid="open-settings" onClick={ui.openSettings} sx={HEADER_ICON_SX}>
           <SettingsOutlinedIcon sx={{ fontSize: 18 }} />
@@ -321,7 +338,7 @@ export default function MemoWorkspace() {
     </Box>
   );
 
-  // 도구 왼쪽의 화면 이동 — 주간: ‹ 기간 › · 날짜 상세: ← 주간 ‹ 날짜 Today › · 찾아보기: ← 메모장.
+  // 도구 왼쪽의 화면 이동 — 주간: ‹ 이번 주 › · 날짜 상세: ← 주간 ‹ 날짜 Today › · 찾아보기: ← 메모장.
   const navControls = isBrowse ? (
     <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={leaveBrowse} data-testid="memo-browse-back" sx={{ height: 32, color: MEMO_SECTION_TITLE }}>
       메모장
@@ -365,27 +382,59 @@ export default function MemoWorkspace() {
             </IconButton>
           </Tooltip>
         )}
-        {/* 날짜·기간은 표시만 — 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치). */}
+        {/* 기간은 표시만 — 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치). 날짜·List 이름은 보조 메뉴를 연다. */}
         {!isDay && (
-          <Typography
-            data-testid="personal-memo-week-range"
-            sx={{ fontWeight: 600, fontSize: '0.84rem', px: 0.5, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: 'text.primary' }}
-          >
-            {shortDate(view.monday)} – {shortDate(addDays(view.monday, 6))}
-          </Typography>
+          <Tooltip title={weekRangeText(view.monday, today)} disableInteractive>
+            <Typography
+              data-testid="personal-memo-week-range"
+              sx={{ fontWeight: 600, fontSize: '0.84rem', px: 0.5, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: 'text.primary' }}
+            >
+              {weekLabel(view.monday, today)}
+            </Typography>
+          </Tooltip>
         )}
         {isDay && (
-          <Typography
-            data-testid="personal-memo-view-label"
-            sx={{
-              fontWeight: 700, fontSize: '0.9rem', px: onNext ? 1.5 : 0.75, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
-              color: onNext ? 'text.primary' : dayTone(dayKey!).text,
-            }}
-          >
-            {onNext ? NEXT_LABEL : dayLabelWithYear(dayKey!, today)}
-          </Typography>
+          <Tooltip title="이 메모의 변경 이력" disableInteractive disableHoverListener={!!docMenu}>
+            <ButtonBase
+              aria-label={`${onNext ? NEXT_LABEL : dayLabelWithYear(dayKey!, today)} 메뉴`}
+              aria-haspopup="menu"
+              data-testid="memo-doc-menu"
+              onClick={event => setDocMenu(event.currentTarget)}
+              sx={{
+                gap: 0.25, height: 28, px: 0.5, borderRadius: '6px',
+                '&:hover': { bgcolor: 'action.hover' },
+                '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+              }}
+            >
+              <Typography
+                data-testid="personal-memo-view-label"
+                sx={{
+                  fontWeight: 700, fontSize: '0.9rem', px: onNext ? 1 : 0.25, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+                  color: onNext ? 'text.primary' : dayTone(dayKey!).text,
+                }}
+              >
+                {onNext ? NEXT_LABEL : dayLabelWithYear(dayKey!, today)}
+              </Typography>
+              {dayKey === today && <TodayBadge />}
+              <ExpandMoreIcon sx={{ fontSize: 16, color: MEMO_SECTION_TITLE }} />
+            </ButtonBase>
+          </Tooltip>
         )}
-        {isDay && dayKey === today && <TodayBadge />}
+        {isDay && location && (
+          <Menu anchorEl={docMenu} open={!!docMenu} onClose={() => setDocMenu(null)} data-personal-memo-overlay="true" data-testid="memo-doc-menu-list">
+            <MenuItem
+              dense
+              data-testid="memo-open-history"
+              onClick={() => {
+                setDocMenu(null);
+                openHistory(location, locationLabel(location, listName));
+              }}
+            >
+              <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary="변경 이력(History)" secondary="이전 내용 보기 · 복원 (연동 없이 사용)" />
+            </MenuItem>
+          </Menu>
+        )}
         {!onNext && (
           <Tooltip title={isDay ? '다음 날' : '다음 주'}>
             <IconButton
@@ -470,7 +519,6 @@ export default function MemoWorkspace() {
               focusSection={view.focusSection ?? null}
               editItemId={view.editItemId ?? null}
               highlight={view.highlight ?? null}
-              listName={listName}
             />
           </>
         ) : (

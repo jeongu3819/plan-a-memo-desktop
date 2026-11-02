@@ -2,20 +2,22 @@
  * 연결 상태 — 평소에는 조용하게. 문제가 있을 때만 '전달 대기 · 로그인 필요 · 동기화 오류 · 내용 확인 필요'.
  *
  *   SyncMark  : 주간 칸의 작은 표시(연결 안 됨이면 아무것도 그리지 않는다)
- *   LinkControl : 날짜 상세·Next List 의 [PLAN-A Work와 연결] / ✓ 연결됨(메뉴)
+ *   SyncHeaderButton : 머리 줄의 연동 아이콘 — 지금 화면(날짜·List)의 연결 상태를 아이콘으로 보이고, 눌러서 연결·동기화·해제.
+ *     문제가 있으면 아이콘에 색 점이 붙는다(메뉴를 열지 않아도 동기화 실패를 알 수 있다).
  */
-import { useState, type ReactNode } from 'react';
-import { Box, Button, Chip, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
+import { useState } from 'react';
+import { Box, Chip, Divider, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
 import CloudDoneOutlinedIcon from '@mui/icons-material/CloudDoneOutlined';
+import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import CloudUploadOutlinedIcon from '@mui/icons-material/CloudUploadOutlined';
-import CloudOffOutlinedIcon from '@mui/icons-material/CloudOffOutlined';
+import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SyncIcon from '@mui/icons-material/Sync';
 import LinkOffIcon from '@mui/icons-material/LinkOff';
-import HistoryIcon from '@mui/icons-material/History';
 import { useQueryClient } from '@tanstack/react-query';
 import type { DocumentInfo, Location } from '../../domain/types';
 import { koreanMonthDay } from '../../domain/location';
-import { refreshMemo } from '../../services/queries';
+import { refreshMemo, useSyncOverview } from '../../services/queries';
 import { AppError, errorMessage, syncService } from '../../tauri/api';
 import { useAppUi } from '../../app/AppUi';
 import { usePersonalMemo } from '../memo/MemoProvider';
@@ -70,30 +72,39 @@ export default function SyncMark({ document, compact = false }: { document: Docu
   );
 }
 
-/** 날짜 상세 / Next List 의 연결 버튼(문서 전체가 연결 단위 — 항목별 버튼은 없다). */
-export function LinkControl({
+/** 머리 줄의 연동 아이콘(문서 전체가 연결 단위 — 항목별 버튼은 없다). 주간·찾아보기처럼 문서가 없는 화면에서는 전체 현황과 연결 관리만. */
+export function SyncHeaderButton({
   document,
   location,
   label,
-  onOpenHistory,
-  tools = null,
+  sx,
 }: {
   document: DocumentInfo | null;
-  location: Location;
+  location: Location | null;
   /** '10월 7일' · '앱 개발' */
   label: string;
-  onOpenHistory: () => void;
-  /** History 옆 보조 메뉴(날짜 상세의 '이 날짜 메뉴') */
-  tools?: ReactNode;
+  sx: object;
 }) {
   const ui = useAppUi();
   const { notify } = usePersonalMemo();
   const queryClient = useQueryClient();
+  const { data: overview } = useSyncOverview();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
   const linked = !!document?.syncEnabled;
+  const problem = syncProblem(document);
+  // 문서가 없는 화면 — 어딘가에 문제가 있으면 여기서도 알린다.
+  const overviewProblem = !location && !!overview && overview.conflicts + overview.errors + overview.authRequired > 0;
+  const dotColor = problem ? (problem.color === 'default' ? '#9CA3AF' : problem.color === 'error' ? '#DC2626' : '#D97706') : overviewProblem ? '#DC2626' : null;
+  const state = problem || overviewProblem ? 'problem' : linked ? 'linked' : 'local';
+  const statusText = !location
+    ? `연동 중인 메모 ${overview?.linkedDocuments ?? 0}개${overviewProblem ? ' · 확인 필요' : ''}`
+    : problem?.label ?? (linked ? '연동 중' : '이 PC에만 저장');
+  const linkLabel = location?.kind === 'next' ? '이 List 연결하기' : '현재 날짜 연결하기';
 
   const link = async () => {
+    if (!location) return;
+    setAnchor(null);
     setBusy(true);
     try {
       await syncService.link(location);
@@ -111,6 +122,7 @@ export function LinkControl({
   };
 
   const unlink = async () => {
+    if (!location) return;
     setAnchor(null);
     try {
       await syncService.unlink(location);
@@ -132,58 +144,89 @@ export function LinkControl({
     }
   };
 
+  const solveProblem = () => {
+    setAnchor(null);
+    if (problem?.conflict && document) ui.openConflicts(document.id);
+    else if (document?.syncStatus === 'auth_required') ui.openAccount('PLAN-A Work 계정 연결이 필요합니다.');
+    else ui.openSettings();
+  };
+
   return (
-    <Box data-testid="sync-link-control" sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minHeight: 28 }}>
-      {linked ? (
-        <>
-          <Button
-            size="small"
-            data-testid="sync-linked-button"
-            startIcon={<CloudDoneOutlinedIcon sx={{ fontSize: 16 }} />}
-            onClick={event => setAnchor(event.currentTarget)}
-            sx={{ fontSize: '0.76rem', color: '#4B5563', borderRadius: '8px', px: 1.25 }}
-          >
-            연동 중
-          </Button>
-          {/* 문제가 있을 때만(전달 대기·로그인 필요·오류·충돌) 옆에 작게 */}
-          {syncProblem(document) && <SyncMark document={document} location={location} />}
-        </>
-      ) : (
-        <>
-          <Typography sx={{ fontSize: '0.72rem', color: 'text.secondary', display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <CloudOffOutlinedIcon sx={{ fontSize: 14 }} /> 이 PC에만 저장
-          </Typography>
-          <Button
-            size="small"
-            variant="outlined"
-            disabled={busy}
-            data-testid="sync-link-button"
-            startIcon={<CloudUploadOutlinedIcon sx={{ fontSize: 16 }} />}
-            onClick={() => void link()}
-            sx={{ fontSize: '0.76rem', borderRadius: '8px', py: 0.25, px: 1.25 }}
-          >
-            연동
-          </Button>
-        </>
-      )}
-      <Box sx={{ flex: 1 }} />
-      <Tooltip title="변경 이력(History)">
-        <Button size="small" startIcon={<HistoryIcon sx={{ fontSize: 16 }} />} onClick={onOpenHistory} sx={{ fontSize: '0.76rem', color: 'text.secondary' }}>
-          History
-        </Button>
+    <>
+      <Tooltip
+        disableInteractive
+        disableHoverListener={!!anchor}
+        title={
+          <>
+            <b>PLAN-A Work 연동</b>
+            <br />
+            현재 날짜 또는 List를 PLAN-A Work와 연결하고 동기화 상태를 관리합니다.
+            <br />
+            지금: {statusText}
+          </>
+        }
+      >
+        <IconButton
+          aria-label={`PLAN-A Work 연동 — ${statusText}`}
+          aria-haspopup="menu"
+          data-testid="sync-header-button"
+          data-sync-state={state}
+          disabled={busy}
+          onClick={event => setAnchor(event.currentTarget)}
+          sx={{ ...sx, position: 'relative', ...(state === 'linked' ? { color: 'primary.main' } : {}) }}
+        >
+          {state === 'linked' ? <CloudDoneOutlinedIcon sx={{ fontSize: 18 }} /> : <CloudOutlinedIcon sx={{ fontSize: 18 }} />}
+          {dotColor && (
+            <Box aria-hidden data-testid="sync-header-dot" sx={{ position: 'absolute', top: 4, right: 4, width: 8, height: 8, borderRadius: '50%', bgcolor: dotColor, border: '1px solid #fff', boxSizing: 'content-box' }} />
+          )}
+        </IconButton>
       </Tooltip>
-      {tools}
-      <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)} data-personal-memo-overlay="true">
-        <MenuItem dense onClick={() => void syncNow()}>
-          <ListItemIcon><SyncIcon fontSize="small" /></ListItemIcon>
-          <ListItemText primary="지금 동기화" />
-        </MenuItem>
-        <MenuItem dense onClick={() => void unlink()}>
-          <ListItemIcon><LinkOffIcon fontSize="small" /></ListItemIcon>
-          <ListItemText primary="이 PC 연동 해제" secondary="이 PC 의 메모는 그대로 · 다른 기기 연동은 유지" />
+      <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)} data-personal-memo-overlay="true" data-testid="sync-header-menu">
+        <Box sx={{ px: 2, pt: 0.5, pb: 1, maxWidth: 300 }}>
+          <Typography sx={{ fontSize: '0.8rem', fontWeight: 700 }}>PLAN-A Work 연동</Typography>
+          <Typography data-testid="sync-status-line" sx={{ fontSize: '0.74rem', color: 'text.secondary', mt: 0.25 }}>
+            {location ? `${label} · ${statusText}` : statusText}
+          </Typography>
+          {problem && <Typography sx={{ fontSize: '0.72rem', color: 'text.secondary', mt: 0.25 }}>{problem.tip}</Typography>}
+        </Box>
+        <Divider />
+        {location && !linked && (
+          <MenuItem dense data-testid="sync-link-button" onClick={() => void link()}>
+            <ListItemIcon><CloudUploadOutlinedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary={linkLabel} />
+          </MenuItem>
+        )}
+        {problem && problem.color !== 'default' && (
+          <MenuItem dense data-testid="sync-solve-problem" onClick={solveProblem}>
+            <ListItemIcon><ReportProblemOutlinedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary={problem.conflict ? '내용 비교하기' : document?.syncStatus === 'auth_required' ? '다시 로그인' : '오류 확인'} />
+          </MenuItem>
+        )}
+        {(linked || !location) && (
+          <MenuItem dense data-testid="sync-now" onClick={() => void syncNow()}>
+            <ListItemIcon><SyncIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="지금 동기화" />
+          </MenuItem>
+        )}
+        {location && linked && (
+          <MenuItem dense data-testid="sync-unlink" onClick={() => void unlink()}>
+            <ListItemIcon><LinkOffIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="이 PC 연동 해제" secondary="이 PC 의 메모는 그대로 · 다른 기기 연동은 유지" />
+          </MenuItem>
+        )}
+        <MenuItem
+          dense
+          data-testid="sync-manage"
+          onClick={() => {
+            setAnchor(null);
+            ui.openSettings();
+          }}
+        >
+          <ListItemIcon><SettingsOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="연결 관리" secondary="계정 · 연동 현황(설정)" />
         </MenuItem>
       </Menu>
-    </Box>
+    </>
   );
 }
 

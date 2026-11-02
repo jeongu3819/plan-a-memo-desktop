@@ -5,9 +5,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { DraftStore } from '../../services/draftStore';
-import { patchItemInCaches, refreshMemo } from '../../services/queries';
+import { keys, patchItemInCaches, refreshMemo } from '../../services/queries';
 import { errorMessage, memoItemService } from '../../tauri/api';
 import type { ItemSection, Location, MemoItem, MemoKind, MovePolicy } from '../../domain/types';
+import { applyReorder } from '../../domain/memoDrop';
 import { koreanMonthDay } from '../../domain/location';
 import { movedMessage } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import MemoNotice, { type Notice } from './MemoNotice';
@@ -156,9 +157,18 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
         });
       },
       move: request => doMove(request, null),
-      reorder: (location, section, ids) => void run(() => memoItemService.reorder(location, section, ids), '순서를 바꾸지 못했습니다.'),
+      reorder: (location, section, ids) => {
+        // 놓은 자리를 바로 보여 준다(이전 자리로 돌아갔다가 다시 움직이지 않게). 저장에 실패하면 원래 순서로 되돌린다.
+        const key = location.kind === 'day' ? keys.day(location.date) : keys.list(location.listId);
+        const previous = queryClient.getQueryData<{ items: MemoItem[] }>(key);
+        void queryClient.cancelQueries({ queryKey: key });
+        if (previous) queryClient.setQueryData(key, { ...previous, items: applyReorder(previous.items, section, ids) });
+        void run(() => memoItemService.reorder(location, section, ids), '순서를 바꾸지 못했습니다.').then(saved => {
+          if (!saved && previous) queryClient.setQueryData(key, previous);
+        });
+      },
     }),
-    [doMove, notify, run, setEditingId, store],
+    [doMove, notify, queryClient, run, setEditingId, store],
   );
 
   // 창을 닫을 때·앱이 숨겨질 때 남은 입력을 저장한다.

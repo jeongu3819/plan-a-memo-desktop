@@ -2,8 +2,11 @@
  * 날짜 상세 아래 '다가오는 토요일' — **보고 있는 날짜** 기준 다음 같은 요일(+7·+14일)의 메모장.
  * 카드 제목은 몇 주 뒤든 '다음 토요일 · 10/17' — 날짜로 구분하고 '다음 주·2주 후' 같은 상대 표현은 쓰지 않는다.
  *
- * · 카드 하나가 그 날짜의 **그 자리 메모장**이다(메인·오전·오후). 입력·체크·편집·삭제는 카드의 날짜(그 날짜의 DAY 문서)로
- *   저장되고, 보고 있는 날짜·화면은 바뀌지 않는다 — 날짜 상세로 옮겨 가는 버튼이 없다(Web MemoUpcomingDays 와 같다).
+ * · 현재 날짜가 주인공이므로 카드는 접힌 채로 시작한다. 메모가 없으면 제목·'메모 없음'·[알림]·[기록] 한 줄, 메모가 있으면 앞의 몇 개만
+ *   보인다(그 자리에서 체크·편집·삭제 가능). [기록] 을 누르면 메인·오전·오후 입력칸이 펼쳐지고, 사용자가 [접기] 를 누르기 전에는 접히지 않는다.
+ *   접을 때 쓰던 글은 입력칸이 닫히며 저장된다(QuickInput) — 접는다고 지워지지 않는다.
+ * · 입력·체크·편집·삭제는 카드의 날짜(그 날짜의 DAY 문서)로 저장되고, 보고 있는 날짜·화면은 바뀌지 않는다
+ *   — 날짜 상세로 옮겨 가는 버튼이 없다(Web MemoUpcomingDays 와 같다).
  * · 각 카드는 자기 날짜 하루만 읽고 쓴다(보고 있는 날짜에 복사하지 않는다 — 다른 주와 섞이지 않는다).
  * · 표시만 할 뿐 연동(PLAN-A Work)·업로드를 시작하지 않는다. 연동된 날짜면 그 날짜의 변경으로 평소처럼 동기화된다.
  * · 더 먼 같은 요일은 [이후 ○요일 더 보기]로 메모가 있는 날만 더 읽는다.
@@ -12,6 +15,8 @@ import { useMemo, useState } from 'react';
 import { Box, Button, CircularProgress, IconButton, Tooltip, Typography } from '@mui/material';
 import NotificationsNoneOutlinedIcon from '@mui/icons-material/NotificationsNoneOutlined';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
+import EditNoteIcon from '@mui/icons-material/EditNote';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import type { Location, MemoItem, MemoSection } from '../../domain/types';
 import { formatFireAt, upcomingCardTitle, upcomingSameWeekdays, weekdayName } from '../../domain/dayTools';
 import { shortDate } from '../../vendor/plan-a-work/utils/personalMemoDates';
@@ -33,6 +38,8 @@ import ReminderDialog from '../reminders/ReminderDialog';
 /** [더 보기] 한 번에 더 읽는 날짜 수. */
 const MORE_STEP = 4;
 const FUTURE_PLACEHOLDER = '진행할 일을 기록하세요';
+/** 접힌 카드에 미리 보여 주는 메모 수. */
+const PREVIEW_ROWS = 3;
 
 function ReminderButton({ date, onOpen }: { date: string; onOpen: () => void }) {
   const { today } = usePersonalMemo();
@@ -64,6 +71,11 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
   const items: MemoItem[] = data?.items ?? [];
   const checklist = items.filter(m => m.kind === 'checklist');
   const open = checklist.filter(m => !m.completed).length;
+  // 사용자가 누를 때만 바뀐다 — 첫 메모를 저장해 '메모 없음' 이 아니게 되어도, 다 지워도 저절로 접히거나 펼쳐지지 않는다.
+  const [expanded, setExpanded] = useState(false);
+  const [focusMain, setFocusMain] = useState(false);
+  const empty = !isPending && items.length === 0;
+  const preview = items.slice(0, PREVIEW_ROWS);
 
   return (
     <Box
@@ -83,10 +95,13 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
         '&:focus-within': { borderColor: 'rgba(37, 99, 235, 0.45)' },
       }}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minHeight: 28, mb: 0.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minHeight: 28, ...(expanded || !empty ? { mb: 0.5 } : {}) }}>
         <Typography component="h3" data-testid="upcoming-card-title" sx={{ fontSize: '0.86rem', fontWeight: 700, color: 'text.primary' }}>
           {upcomingCardTitle(date, today)}
         </Typography>
+        {empty && !expanded && (
+          <Typography data-testid="upcoming-empty" sx={{ fontSize: '0.74rem', color: MEMO_MUTED, ml: 0.5 }}>메모 없음</Typography>
+        )}
         <ReminderButton date={date} onOpen={() => onReminder(date)} />
         <Box sx={{ flex: 1 }} />
         {checklist.length > 0 && (
@@ -95,9 +110,33 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
           </Typography>
         )}
         {isPending && <CircularProgress size={14} />}
+        <Button
+          size="small"
+          data-testid="upcoming-toggle"
+          aria-expanded={expanded}
+          startIcon={expanded ? <ExpandLessIcon sx={{ fontSize: 16 }} /> : <EditNoteIcon sx={{ fontSize: 16 }} />}
+          onClick={() => {
+            setFocusMain(!expanded);
+            setExpanded(!expanded);
+          }}
+          sx={{ flexShrink: 0, height: 26, px: 1, fontSize: '0.74rem', color: MEMO_SECTION_TITLE, borderRadius: '8px' }}
+        >
+          {expanded ? '접기' : '기록'}
+        </Button>
       </Box>
 
-      {!isPending && (
+      {!isPending && !expanded && !empty && (
+        <Box data-testid={`upcoming-preview-${date}`}>
+          {preview.map(item => (
+            <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable />
+          ))}
+          {items.length > preview.length && (
+            <Typography sx={{ fontSize: '0.72rem', color: MEMO_MUTED, px: 0.75, pt: 0.25 }}>외 {items.length - preview.length}개 — [기록] 을 누르면 모두 보입니다</Typography>
+          )}
+        </Box>
+      )}
+
+      {!isPending && expanded && (
         <Box
           data-testid={`upcoming-sections-${date}`}
           sx={{
@@ -117,7 +156,7 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
                   <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable />
                 ))}
                 <Box sx={{ mt: rows.length ? 0.5 : 0.25 }}>
-                  <QuickInput location={location} section={section} placeholder={FUTURE_PLACEHOLDER} />
+                  <QuickInput location={location} section={section} placeholder={FUTURE_PLACEHOLDER} autoFocus={focusMain && section === 'main'} />
                 </Box>
               </Box>
             );
@@ -146,7 +185,6 @@ export default function UpcomingWeekday({ date }: { date: string }) {
         <Typography component="h2" sx={{ fontSize: '0.92rem', fontWeight: 700, color: MEMO_SECTION_TITLE, letterSpacing: '-0.01em' }}>
           다가오는 {name}
         </Typography>
-        <Typography sx={{ fontSize: '0.74rem', color: MEMO_MUTED }}>이 자리에서 바로 적으면 그 날짜에 저장됩니다</Typography>
       </Box>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
         {[...base, ...moreDates].map(day => (

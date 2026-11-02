@@ -23,6 +23,9 @@ import type {
   DayMemo,
   DaySummary,
   DocumentInfo,
+  MonthSummary,
+  TrashEntry,
+  TrashResult,
   ExportOptions,
   ExportResult,
   ItemSection,
@@ -47,6 +50,7 @@ import type {
   VersionSummary,
   WeekMemo,
 } from '../domain/types';
+import type { DateQuery } from '../domain/memoBrowse';
 
 export class AppError extends Error {
   code: string;
@@ -104,6 +108,9 @@ export const dayMemoService = {
   week: (monday: string) => call<WeekMemo>('memo_week', { monday }),
   day: (date: string) => call<DayMemo>('memo_day', { date }),
   days: (before: string | null) => call<DaySummary[]>('memo_days', { before }),
+  /** 지난 메모 — until(이 PC 의 오늘)까지만 */
+  months: (until: string) => call<MonthSummary[]>('memo_day_months', { until }),
+  daysInMonth: (month: string, until: string) => call<DaySummary[]>('memo_days_in_month', { month, until }),
 };
 
 export const nextListService = {
@@ -111,8 +118,15 @@ export const nextListService = {
   lists: () => call<NextListInfo[]>('memo_lists'),
   create: (name: string, id?: string) => call<NextListInfo>('list_create', { name, id: id ?? null }),
   rename: (id: string, name: string) => call<NextListInfo>('list_rename', { id, name }),
-  remove: (id: string) => call<{ id: string; movedCount: number }>('list_delete', { id }),
+  /** List 와 메모를 휴지통으로(7일 보관). 두 번 불러도 안전하다. */
+  remove: (id: string) => call<TrashResult>('list_delete', { id }),
   reorder: (ids: string[]) => call<NextListInfo[]>('lists_reorder', { ids }),
+};
+
+export const trashService = {
+  list: () => call<TrashEntry[]>('trash_list'),
+  restore: (id: string) => call<NextListInfo>('trash_restore', { id }),
+  purge: (id: string) => call<void>('trash_purge', { id }),
 };
 
 export const memoItemService = {
@@ -131,7 +145,7 @@ export const memoItemService = {
 };
 
 export const searchService = {
-  search: (query: string) => call<SearchResult>('memo_search', { query }),
+  search: (query: string, date: DateQuery | null, limit: number) => call<SearchResult>('memo_search', { query, date, limit }),
   favorites: () => call<LocatedItem[]>('memo_favorites'),
 };
 

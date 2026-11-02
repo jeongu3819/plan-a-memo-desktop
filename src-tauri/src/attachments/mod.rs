@@ -199,13 +199,9 @@ fn referenced_ids(conn: &Connection) -> AppResult<std::collections::HashSet<Stri
     Ok(ids)
 }
 
-/// 아무 데서도 참조하지 않는 오래된 이미지 파일을 정리한다. `dry_run` 이면 세기만 한다.
-/// Backup DB 가 참조하는 이미지는 남긴다(Backup 을 복원했을 때 이미지가 없어지지 않게).
-/// History 를 지우지 않는다 — History 가 참조하는 이미지는 언제나 남는다.
-pub fn cleanup_unreferenced(conn: &Connection, paths: &StoragePaths, dry_run: bool) -> AppResult<CleanupReport> {
-    let mut report = CleanupReport { dry_run, ..Default::default() };
-    let live = referenced_ids(conn)?;
-    let mut backup_refs = std::collections::HashSet::new();
+/// 남아 있는 모든 Backup 이 참조하는 이미지. 읽을 수 없는 Backup 이 하나라도 있으면 None — 호출자는 아무것도 지우지 않는다(안전 쪽).
+fn backup_references(paths: &StoragePaths) -> Option<std::collections::HashSet<String>> {
+    let mut refs = std::collections::HashSet::new();
     if let Ok(dir) = std::fs::read_dir(paths.backups_dir()) {
         for entry in dir.flatten() {
             let path = entry.path();
@@ -217,15 +213,57 @@ pub fn cleanup_unreferenced(conn: &Connection, paths: &StoragePaths, dry_run: bo
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
             );
             match opened.map_err(AppError::from).and_then(|backup| referenced_ids(&backup)) {
-                Ok(ids) => backup_refs.extend(ids),
-                // 읽을 수 없는 Backup 이 있으면 무엇도 지우지 않는다(안전 쪽).
+                Ok(ids) => refs.extend(ids),
                 Err(_) => {
                     log::warn!("cleanup skipped: a backup could not be read");
-                    return Ok(report);
+                    return None;
                 }
             }
         }
     }
+    Some(refs)
+}
+
+/// 영구 삭제한 List 의 이미지 정리(앱 시작 · 영구 삭제 · 휴지통을 열 때).
+/// 다른 메모·History 가 쓰는 이미지는 지우지 않고 대기에서 뺀다. 남은 Backup 이 참조하면 그 Backup 이 없어질 때까지 기다린다.
+pub fn sweep_purged(conn: &Connection, paths: &StoragePaths) -> AppResult<usize> {
+    let pending: Vec<String> =
+        conn.prepare("SELECT attachment_id FROM purged_attachments")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let live = referenced_ids(conn)?;
+    let Some(backup_refs) = backup_references(paths) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for id in pending {
+        if !live.contains(&id) && backup_refs.contains(&id) {
+            continue;
+        }
+        if !live.contains(&id) {
+            if let Some(row) = get_row(conn, &id)? {
+                let path = resolve_path(paths, &row.relative_path)?;
+                // DB 기록을 먼저 지우고 파일을 지운다 — 파일만 남는 쪽이 안전하다.
+                conn.execute("DELETE FROM attachments WHERE id = ?1", [&id])?;
+                let _ = std::fs::remove_file(path);
+                removed += 1;
+            }
+        }
+        conn.execute("DELETE FROM purged_attachments WHERE attachment_id = ?1", [&id])?;
+    }
+    Ok(removed)
+}
+
+/// 아무 데서도 참조하지 않는 오래된 이미지 파일을 정리한다. `dry_run` 이면 세기만 한다.
+/// Backup DB 가 참조하는 이미지는 남긴다(Backup 을 복원했을 때 이미지가 없어지지 않게).
+/// History 를 지우지 않는다 — History 가 참조하는 이미지는 언제나 남는다.
+pub fn cleanup_unreferenced(conn: &Connection, paths: &StoragePaths, dry_run: bool) -> AppResult<CleanupReport> {
+    let mut report = CleanupReport { dry_run, ..Default::default() };
+    let live = referenced_ids(conn)?;
+    let Some(backup_refs) = backup_references(paths) else {
+        return Ok(report);
+    };
     let cutoff = (chrono::Utc::now() - chrono::Duration::days(CLEANUP_MIN_AGE_DAYS)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let rows: Vec<(String, String, i64, String)> = conn
         .prepare("SELECT id, relative_path, size, created_at FROM attachments")?

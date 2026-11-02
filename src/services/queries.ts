@@ -12,6 +12,7 @@ import {
   nextListService,
   searchService,
   syncService,
+  trashService,
 } from '../tauri/api';
 import type { DayMemo, Location, MemoItem, NextListMemo, WeekMemo } from '../domain/types';
 import { locationKey } from '../domain/location';
@@ -22,8 +23,10 @@ export const keys = {
   day: (date: string) => ['memo', 'day', date] as const,
   list: (listId: string | null) => ['memo', 'list', listId ?? 'default'] as const,
   lists: ['memo', 'lists'] as const,
-  days: ['memo', 'days'] as const,
-  search: (q: string) => ['memo', 'search', q] as const,
+  months: (until: string) => ['memo', 'months', until] as const,
+  monthDays: (month: string, until: string) => ['memo', 'month-days', month, until] as const,
+  trash: ['memo', 'trash'] as const,
+  search: (q: string, limit: number) => ['memo', 'search', q, limit] as const,
   favorites: ['memo', 'favorites'] as const,
   history: (location: Location) => ['memo', 'history', locationKey(location)] as const,
   // 날짜 상세 도구 — 'memo' 아래에 두어 메모를 쓰면(refreshMemo) 함께 다시 읽는다.
@@ -54,6 +57,13 @@ export const useDay = (date: string | null) =>
 
 export const useNextList = (listId: string | null, enabled = true) =>
   useQuery({ queryKey: keys.list(listId), queryFn: () => nextListService.list(listId), enabled });
+
+export const useDayMonths = (until: string) => useQuery({ queryKey: keys.months(until), queryFn: () => dayMemoService.months(until) });
+
+export const useDaysInMonth = (month: string, until: string) =>
+  useQuery({ queryKey: keys.monthDays(month, until), queryFn: () => dayMemoService.daysInMonth(month, until) });
+
+export const useTrash = (enabled: boolean) => useQuery({ queryKey: keys.trash, queryFn: trashService.list, enabled });
 
 export const useLists = () => useQuery({ queryKey: keys.lists, queryFn: nextListService.lists });
 

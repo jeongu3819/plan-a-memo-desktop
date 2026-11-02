@@ -91,13 +91,49 @@ export interface HistoryHit {
   excerpt: string;
 }
 
+export interface DaySearchHit {
+  date: string;
+  items: SearchHit[];
+  tokens: string[];
+}
+
 export interface SearchResult {
   query: string;
   tokens: string[];
+  /** 검색어가 날짜로 읽힐 때 그 날짜의 메모 */
+  days: DaySearchHit[];
   items: SearchHit[];
   lists: Array<{ id: string; name: string; isDefault: boolean }>;
   history: HistoryHit[];
   truncated: boolean;
+}
+
+export interface MonthSummary {
+  /** 'YYYY-MM' */
+  month: string;
+  dayCount: number;
+  itemCount: number;
+}
+
+/** 휴지통의 List — 7일 동안 복구할 수 있다. */
+export interface TrashEntry {
+  listId: string;
+  name: string;
+  itemCount: number;
+  wasLinked: boolean;
+  deletedAt: string;
+  purgeAfter: string;
+  /** 영구 삭제를 미루는 이유(PLAN-A Work 전달 전 · 연결돼 있던 List 등) */
+  blocked: string | null;
+  /** 이 PC 에서 복구할 수 있는가(연결돼 있던 List 는 공통 관리 기능 전까지 아니다) */
+  restorable: boolean;
+}
+
+export interface TrashResult {
+  id: string;
+  itemCount: number;
+  purgeAfter: string;
+  already: boolean;
 }
 
 export interface DaySummary {

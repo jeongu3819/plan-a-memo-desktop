@@ -40,6 +40,8 @@ const COUNTED_TABLES: &[&str] = &[
     "sync_state",
     "conflicts",
     "settings",
+    "list_trash",
+    "purged_attachments",
 ];
 
 fn normalized(path: &Path) -> String {

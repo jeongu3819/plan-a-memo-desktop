@@ -746,7 +746,7 @@ fn v3_database_upgrades_to_v4_with_backup_and_keeps_day_tools() {
         .unwrap();
     }
     let (storage, report) = Storage::open(paths.root.as_path(), false).unwrap();
-    assert_eq!(report.applied_migrations, vec![4]);
+    assert_eq!(report.applied_migrations, vec![4, 5, 6]);
     assert!(report.backup_before_migration.is_some(), "적용 전 Backup");
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM memo_items"), 1);
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM item_copies"), 1);

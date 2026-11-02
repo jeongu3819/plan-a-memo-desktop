@@ -10,7 +10,7 @@ use plan_a_memo_lib::attachments;
 use plan_a_memo_lib::auth::{loopback, AuthProvider, AuthSession, DesktopAuth, MemoryCredentialStore};
 use plan_a_memo_lib::config::AppEnv;
 use plan_a_memo_lib::memo::service::{self, MoveItem, MovePolicy};
-use plan_a_memo_lib::memo::{history, repo, Location};
+use plan_a_memo_lib::memo::{history, repo, trash, Location};
 use plan_a_memo_lib::storage::Storage;
 use plan_a_memo_lib::sync::contract::{PushRequest, Side};
 use plan_a_memo_lib::sync::engine::{self, list_conflicts, ConflictChoice, SyncEngine, SyncReport, NOTICE_MOVED, NOTICE_OTHER_ACCOUNT};
@@ -662,21 +662,159 @@ async fn web_deleting_everything_is_applied_with_history() {
     assert!(versions.iter().any(|v| v.preview.contains("Web 이 지울 메모")), "History 에서 복원 가능");
 }
 
+/// 이전 빌드가 연결된 List 를 지운 상태 그대로 — List·문서 삭제 표시 + tombstone 대기 Outbox + was_linked 휴지통 행.
+fn legacy_linked_delete(storage: &Storage, list_id: &str) {
+    storage
+        .with_conn(|c| {
+            let tx = c.transaction()?;
+            let doc = repo::doc_for_location(&tx, &next(Some(list_id)))?.unwrap();
+            repo::record_version(&tx, &doc.id, "list_delete")?;
+            tx.execute("UPDATE documents SET deleted_at = 't' WHERE id = ?1", [&doc.id])?;
+            tx.execute("UPDATE next_lists SET deleted_at = 't' WHERE id = ?1", [list_id])?;
+            repo::touch(&tx, &doc.id)?;
+            tx.execute(
+                "INSERT INTO list_trash (list_id, was_linked, deleted_at, purge_after) VALUES (?1, 1, '2000-01-01T00:00:00.000Z', '2000-01-08T00:00:00.000Z')",
+                [list_id],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[tokio::test]
-async fn deleting_a_linked_list_sends_a_tombstone_then_unlinks() {
+async fn linked_list_rename_and_delete_are_refused_and_change_nothing() {
     let e = env_logged_in().await;
-    let list = e.storage.with_conn(|c| service::create_list(c, None, "지울 List")).unwrap();
-    add(&e.storage, next(Some(&list.id)), "next", "List 항목");
-    e.link(next(Some(&list.id)));
+    let list = e.storage.with_conn(|c| service::create_list(c, None, "연결 List")).unwrap();
+    let location = next(Some(&list.id));
+    add(&e.storage, location.clone(), "next", "메모");
+    e.link(location.clone());
     e.sync().await;
-    let link_id = e.link_id(&next(Some(&list.id)));
-    e.storage.with_conn(|c| service::delete_list(c, &list.id)).unwrap();
+    let link_id = e.link_id(&location);
+    let requests = e.mock.request_count();
+    let revision = e.storage.with_conn(|c| Ok(repo::doc_for_location(c, &location)?.unwrap().local_revision)).unwrap();
+
+    let renamed = e.storage.with_conn(|c| service::rename_list(c, &list.id, "새 이름")).unwrap_err();
+    assert_eq!(renamed.code(), trash::LINKED_MANAGED_CODE);
+    assert!(renamed.to_string().contains("공통 관리 기능이 준비된 후"));
+    let deleted = e.storage.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap_err();
+    assert_eq!(deleted.code(), trash::LINKED_MANAGED_CODE);
+
+    let info = e.storage.with_conn(|c| service::get_list(c, Some(&list.id))).unwrap();
+    assert_eq!(info.list.name, "연결 List", "이름 그대로");
+    assert_eq!(info.items.len(), 1, "메모 그대로");
+    assert_eq!(info.list.document.unwrap().local_revision, revision, "로컬 문서가 바뀌지 않았다");
+    assert!(e.storage.with_conn(|c| trash::entries(c)).unwrap().is_empty());
+    assert_eq!(e.outbox(), 0, "보낼 것이 생기지 않는다");
+    assert_eq!(e.link_id(&location), link_id, "연결 그대로");
+    e.sync().await;
+    assert!(e.mock.request_count() >= requests);
+    let doc = e.mock.document_of(1, &Unit::list(&list.id)).unwrap();
+    assert!(!doc.deleted, "서버에 삭제를 보내지 않는다");
+    assert_eq!(doc.title.as_deref(), Some("연결 List"));
+    assert!(e.mock.snapshot_state().links[&link_id].active);
+    assert_eq!(e.status(&location), "synced");
+}
+
+#[tokio::test]
+async fn after_unlink_the_list_is_managed_on_this_pc_and_server_copy_stays() {
+    let e = env_logged_in().await;
+    let list = e.storage.with_conn(|c| service::create_list(c, None, "해제할 List")).unwrap();
+    let location = next(Some(&list.id));
+    add(&e.storage, location.clone(), "next", "메모");
+    e.link(location.clone());
+    e.sync().await;
+    e.unlink(location.clone());
+    // 연결 해제 전달 전에도 이름 변경은 된다(이 PC 의 List). 영구 삭제는 해제 전달 뒤에.
+    e.storage.with_conn(|c| service::rename_list(c, &list.id, "이 PC 이름")).unwrap();
+    e.storage.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    assert!(e.storage.with_conn(|c| trash::entries(c)).unwrap()[0].blocked.is_some(), "연결 해제 전달 전에는 영구 삭제하지 않는다");
+    e.sync().await;
+    let entries = e.storage.with_conn(|c| trash::entries(c)).unwrap();
+    assert!(entries[0].blocked.is_none() && entries[0].restorable && !entries[0].was_linked);
+    let doc = e.mock.document_of(1, &Unit::list(&list.id)).unwrap();
+    assert!(!doc.deleted && doc.title.as_deref() == Some("해제할 List"), "서버 사본은 그대로 — 삭제·이름을 보내지 않는다");
+    assert_eq!(doc.items.len(), 1);
+    e.storage.with_conn(|c| trash::restore(c, &list.id)).unwrap();
+    e.sync().await;
+    assert_eq!(e.status(&location), "local_only", "복구해도 저절로 다시 연결하지 않는다");
+    assert_eq!(e.storage.with_conn(|c| service::get_list(c, Some(&list.id))).unwrap().list.name, "이 PC 이름");
+    // 이름이 달라도 다시 연결은 이어진다(서버 이름은 그대로 — 사용자 데이터를 덮어쓰지 않는다).
+    e.link(location.clone());
+    e.sync().await;
+    assert_eq!(e.status(&location), "synced");
+    assert_eq!(e.storage.with_conn(|c| service::get_list(c, Some(&list.id))).unwrap().list.name, "이 PC 이름");
+    assert_eq!(e.mock.document_of(1, &Unit::list(&list.id)).unwrap().title.as_deref(), Some("해제할 List"));
+}
+
+#[tokio::test]
+async fn local_only_list_trash_never_talks_to_the_server() {
+    let e = env_logged_in().await;
+    let list = e.storage.with_conn(|c| service::create_list(c, None, "이 PC List")).unwrap();
+    add(&e.storage, next(Some(&list.id)), "next", "올라가면 안 되는 메모");
+    e.sync().await;
+    let pushes = e.mock.pushes().len();
+    e.storage.with_conn(|c| service::rename_list(c, &list.id, "새 이름")).unwrap();
+    e.storage.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    e.sync().await;
+    e.storage.with_conn(|c| trash::restore(c, &list.id)).unwrap();
+    e.sync().await;
+    e.storage.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    e.storage.with_conn(|c| trash::purge(c, &e.storage.paths, &list.id)).unwrap();
+    e.sync().await;
+    assert_eq!(e.mock.pushes().len(), pushes, "아무것도 보내지 않는다");
+    assert!(e.mock.document_of(1, &Unit::list(&list.id)).is_none(), "서버에 문서가 생기지 않는다");
+    assert_eq!(e.outbox(), 0);
+}
+
+#[tokio::test]
+async fn previously_deleted_linked_list_is_preserved_and_its_queued_delete_is_not_dropped() {
+    let e = env_logged_in().await;
+    let list = e.storage.with_conn(|c| service::create_list(c, None, "이전 빌드에서 지움")).unwrap();
+    let location = next(Some(&list.id));
+    add(&e.storage, location.clone(), "next", "보존할 메모");
+    e.link(location.clone());
+    e.sync().await;
+    legacy_linked_delete(&e.storage, &list.id);
+    assert_eq!(e.outbox(), 1, "삭제 전달이 Outbox 에 있다");
+
+    // 전달 전 — 복구·영구 삭제·기간 만료 모두 하지 않고, Outbox 도 그대로다.
+    let check_preserved = || {
+        let entries = e.storage.with_conn(|c| trash::entries(c)).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].was_linked && !entries[0].restorable && entries[0].blocked.is_some());
+        assert_eq!(entries[0].item_count, 1, "메모 보존");
+        assert_eq!(e.storage.with_conn(|c| trash::restore(c, &list.id)).unwrap_err().code(), trash::LINKED_MANAGED_CODE);
+        assert!(e.storage.with_conn(|c| trash::purge(c, &e.storage.paths, &list.id)).is_err());
+        let purged = e.storage.with_conn(|c| trash::purge_expired(c, &e.storage.paths, "9999-01-01T00:00:00.000Z")).unwrap();
+        assert!(purged.is_empty(), "보존 기한이 지나도 지우지 않는다");
+    };
+    check_preserved();
+    assert_eq!(e.outbox(), 1, "복구·삭제 시도가 Outbox 를 바꾸지 않는다");
+
+    // 오프라인이면 Outbox 에 그대로 남는다.
+    e.mock.set_online(false);
+    e.sync().await;
+    assert_eq!(e.outbox(), 1, "전달 대기 유지");
+    check_preserved();
+    e.mock.set_online(true);
+
+    // 온라인 — 기존 재전송 규칙대로 전달된다. 내용은 여전히 보존.
     e.sync().await;
     let doc = e.mock.document_of(1, &Unit::list(&list.id)).unwrap();
-    assert!(doc.deleted && doc.items.is_empty(), "서버 문서는 tombstone(History 로 복원 가능)");
-    assert!(!e.mock.snapshot_state().links[&link_id].active);
-    let default = e.storage.with_conn(|c| service::get_list(c, None)).unwrap();
-    assert_eq!(default.items[0].content_html, "List 항목", "로컬 메모는 기본 Next 로 옮겨져 남는다");
+    assert!(doc.deleted && doc.items.is_empty(), "이미 내린 삭제 명령은 폐기하지 않는다");
+    check_preserved();
+    assert_eq!(count_items(&e.storage, &location), 1, "로컬 메모 그대로");
+    assert!(e.storage.with_conn(|c| service::lists(c)).unwrap().iter().all(|l| l.id != list.id), "목록에 저절로 되살아나지 않는다");
+}
+
+fn count_items(storage: &Storage, location: &Location) -> i64 {
+    storage
+        .with_conn(|c| {
+            let doc = repo::doc_for_location(c, location)?.unwrap();
+            Ok(c.query_row("SELECT COUNT(*) FROM memo_items WHERE document_id = ?1 AND deleted_at IS NULL", [&doc.id], |r| r.get(0))?)
+        })
+        .unwrap()
 }
 
 #[tokio::test]
@@ -1270,30 +1408,6 @@ async fn server_limits_and_unsupported_images_block_only_that_document() {
 }
 
 #[tokio::test]
-async fn renaming_a_linked_list_stays_on_this_pc() {
-    let e = env_logged_in().await;
-    let list = e.storage.with_conn(|c| service::create_list(c, None, "앱 개발")).unwrap();
-    add(&e.storage, next(Some(&list.id)), "next", "항목");
-    e.link(next(Some(&list.id)));
-    e.sync().await;
-    let renamed = e.storage.with_conn(|c| service::rename_list(c, &list.id, "앱 개발 2")).unwrap();
-    assert_eq!(renamed.name, "앱 개발 2");
-    assert_eq!(e.outbox(), 0, "이름 변경 API 가 없다 — 보낼 것이 없다");
-    assert_eq!(e.status(&next(Some(&list.id))), "synced");
-    let pushes = e.mock.pushes().len();
-    e.sync().await;
-    assert_eq!(e.mock.pushes().len(), pushes);
-    assert_eq!(e.mock.document_of(1, &Unit::list(&list.id)).unwrap().title.as_deref(), Some("앱 개발"), "서버 이름은 그대로");
-    // 이름이 바뀐 뒤 해제 → 다시 연결해도(서버 List 409 'List ID already in use') 연결은 이어진다
-    e.unlink(next(Some(&list.id)));
-    e.sync().await;
-    e.link(next(Some(&list.id)));
-    e.sync().await;
-    assert_eq!(e.status(&next(Some(&list.id))), "synced");
-    assert_eq!(e.server(&Unit::list(&list.id)), vec!["항목"]);
-}
-
-#[tokio::test]
 async fn loopback_listeners_never_share_a_port() {
     let first = loopback::LoopbackListener::bind().await.unwrap();
     let second = loopback::LoopbackListener::bind().await.unwrap();
@@ -1665,4 +1779,25 @@ async fn long_pasted_memo_syncs_whole_and_survives_conflict_history() {
     let kept = versions.iter().find(|v| v.reason == "conflict_local").expect("Desktop 내용은 History 에");
     let detail = e.storage.with_conn(|c| history::get(c, kept.id)).unwrap();
     assert!(detail.snapshot.items.iter().any(|i| i.content_html == edited), "History 스냅샷도 마지막 글자까지");
+}
+
+#[tokio::test]
+async fn reordering_a_linked_list_sends_the_new_order_and_survives_a_pull() {
+    let e = env_logged_in().await;
+    let list = e.storage.with_conn(|c| service::create_list(c, None, "정렬")).unwrap();
+    let location = next(Some(&list.id));
+    let a = add(&e.storage, location.clone(), "next", "가");
+    let b = add(&e.storage, location.clone(), "next", "나");
+    let c_item = add(&e.storage, location.clone(), "next", "다");
+    e.link(location.clone());
+    e.sync().await;
+    let ids = vec![c_item.id.clone(), a.id.clone(), b.id.clone()];
+    e.storage.with_conn(|c| service::reorder(c, &location, "next", &ids)).unwrap();
+    e.sync().await;
+    let unit = Unit::list(&list.id);
+    assert_eq!(e.server(&unit), vec!["다", "가", "나"], "서버도 같은 순서");
+    assert_eq!(e.status(&location), "synced");
+    e.sync().await;
+    let memo = e.storage.with_conn(|c| service::get_list(c, Some(&list.id))).unwrap();
+    assert_eq!(memo.items.iter().map(|i| i.content_html.as_str()).collect::<Vec<_>>(), vec!["다", "가", "나"], "다시 받아도 순서 그대로");
 }

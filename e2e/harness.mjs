@@ -105,7 +105,7 @@ export class App {
   }
 
   cleanup() {
-    if (!process.env.PLANA_E2E_KEEP) rmSync(this.workDir, { recursive: true, force: true });
+    if (!process.env.PLANA_E2E_KEEP) rmSync(this.workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
 }
 

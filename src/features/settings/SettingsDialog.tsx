@@ -1,5 +1,5 @@
 /**
- * 설정 — 저장 위치 · Backup(이미지 정리) · 내보내기 · PLAN-A Work 연결 · (개발용) Mock 서버 · 앱 정보(버전 · 업데이트 확인).
+ * 설정 — 저장 위치 · Backup(이미지 정리) · 내보내기 · 휴지통 · PLAN-A Work 연결 · (개발용) Mock 서버 · 앱 정보(버전 · 업데이트 확인).
  * Backup(앱 데이터 보존·복구)과 내보내기(사용자가 읽고 옮길 ZIP·TXT·CSV 파일)는 다른 일이라 카드를 나눈다.
  * 섹션마다 흰 카드 한 장(머리: 아이콘·제목·설명 / 몸: 줄 단위 항목) — 메모 칸과 같은 선·그림자·모서리.
  * 로그는 앱이 계속 남기지만(문제 확인용) 설정 화면에는 보이지 않는다. 실행 환경(staging/production)도 보이지 않는다.
@@ -26,12 +26,13 @@ import BackupOutlinedIcon from '@mui/icons-material/BackupOutlined';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { getName, getVersion } from '@tauri-apps/api/app';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AppInfo, LocationInspection, UpdateInfo } from '../../domain/types';
-import { keys, refreshMemo, useSyncOverview } from '../../services/queries';
-import { attachmentService, errorMessage, mockServerService, storageService, syncService, updateService } from '../../tauri/api';
+import type { AppInfo, LocationInspection, TrashEntry, UpdateInfo } from '../../domain/types';
+import { keys, refreshMemo, useSyncOverview, useTrash } from '../../services/queries';
+import { attachmentService, errorMessage, mockServerService, storageService, syncService, trashService, updateService } from '../../tauri/api';
 import { useAppUi } from '../../app/AppUi';
 import {
   MEMO_CARD,
@@ -97,6 +98,97 @@ function SettingsRow({ children, actions }: { children?: React.ReactNode; action
       {children && <Box sx={{ flex: '1 1 240px', minWidth: 0 }}>{children}</Box>}
       {actions && <Stack direction="row" spacing={1} sx={{ flexShrink: 0, ml: 'auto' }}>{actions}</Stack>}
     </Box>
+  );
+}
+
+const trashDate = (iso: string) => new Date(iso).toLocaleDateString('ko-KR');
+
+/**
+ * 휴지통 — 삭제한 List 와 메모를 7일 동안 보관한다. 복구하면 원래 자리로, 기간이 지나면 영구 삭제한다.
+ * 이전 빌드에서 지운 연결 List 는 복구·영구 삭제 없이 내용을 보관만 한다(공통 관리 기능이 준비될 때까지).
+ */
+function TrashSection({ open, onNotice }: { open: boolean; onNotice: (notice: { severity: 'success' | 'error' | 'info'; text: string }) => void }) {
+  const queryClient = useQueryClient();
+  const { data: entries } = useTrash(open);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [purging, setPurging] = useState<TrashEntry | null>(null);
+
+  const restore = async (entry: TrashEntry) => {
+    setBusy(entry.listId);
+    try {
+      await trashService.restore(entry.listId);
+      refreshMemo(queryClient);
+      onNotice({ severity: 'success', text: `'${entry.name}' List 를 복구했습니다.` });
+    } catch (error) {
+      onNotice({ severity: 'error', text: errorMessage(error, '복구하지 못했습니다.') });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const purge = async (entry: TrashEntry) => {
+    setPurging(null);
+    setBusy(entry.listId);
+    try {
+      await trashService.purge(entry.listId);
+      refreshMemo(queryClient);
+      onNotice({ severity: 'success', text: `'${entry.name}' List 를 영구 삭제했습니다.` });
+    } catch (error) {
+      refreshMemo(queryClient);
+      onNotice({ severity: 'error', text: errorMessage(error, '영구 삭제하지 못했습니다.') });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <SettingsSection icon={<DeleteOutlineIcon />} title="휴지통" description="삭제한 List 와 그 안의 메모·이미지·History 를 7일 동안 보관합니다. 기간이 지나면 자동으로 영구 삭제합니다.">
+      <Box data-testid="trash-section">
+        {!entries?.length && (
+          <SettingsRow>
+            <RowLabel title="비어 있음" detail="삭제한 List 가 없습니다." />
+          </SettingsRow>
+        )}
+        {entries?.map(entry => (
+          <SettingsRow
+            key={entry.listId}
+            actions={
+              <>
+                <Button size="small" variant="outlined" disabled={busy === entry.listId || !entry.restorable} data-testid="trash-restore" onClick={() => void restore(entry)}>복구</Button>
+                <Button size="small" color="error" disabled={busy === entry.listId || !!entry.blocked} data-testid="trash-purge" onClick={() => setPurging(entry)}>영구 삭제</Button>
+              </>
+            }
+          >
+            <Box data-testid="trash-entry" data-list-id={entry.listId}>
+              <RowLabel
+                title={`${entry.name} · 메모 ${entry.itemCount}개`}
+                detail={
+                  <>
+                    삭제 {trashDate(entry.deletedAt)} · 영구 삭제 예정 {trashDate(entry.purgeAfter)}
+                    {entry.blocked && <><br />{entry.blocked}</>}
+                  </>
+                }
+              />
+            </Box>
+          </SettingsRow>
+        ))}
+      </Box>
+      <Dialog open={!!purging} onClose={() => setPurging(null)} data-testid="trash-purge-confirm">
+        <DialogTitle>List를 영구 삭제하시겠습니까?</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ fontSize: '0.88rem' }}>
+            '{purging?.name}' List의 메모 {purging?.itemCount ?? 0}개, 이미지 및 History가 삭제됩니다. 이 작업은 휴지통에서 복구할 수 없습니다.
+          </DialogContentText>
+          <DialogContentText sx={{ fontSize: '0.76rem', mt: 1 }}>
+            삭제 직전에 Backup 을 만듭니다. 기존 Backup 파일에는 삭제 이전 내용이 남아 있고, 이미지 파일은 그 Backup 이 정리된 뒤 지워집니다.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPurging(null)} autoFocus>취소</Button>
+          <Button color="error" variant="contained" data-testid="trash-purge-confirm-button" onClick={() => purging && void purge(purging)}>영구 삭제</Button>
+        </DialogActions>
+      </Dialog>
+    </SettingsSection>
   );
 }
 
@@ -421,6 +513,8 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
             <RowLabel title="ZIP · TXT · CSV" detail="기간·Next 포함 여부를 고르고 저장할 위치를 정합니다." />
           </SettingsRow>
         </SettingsSection>
+
+        <TrashSection open={open} onNotice={setNotice} />
 
         <SettingsSection
           icon={<CloudOutlinedIcon />}

@@ -69,7 +69,7 @@ fn v2_database_upgrades_to_v3_with_backup_and_keeps_memos() {
     }
     let (storage, report) = Storage::open(&paths.root, false).unwrap();
     // v3(day_tools) 다음 v4(memo_sync_v2 — 새 테이블만)까지 한 번에 적용된다.
-    assert_eq!(report.applied_migrations, vec![3, 4]);
+    assert_eq!(report.applied_migrations, vec![3, 4, 5, 6]);
     let backup = report.backup_before_migration.expect("migration 전 자동 Backup");
     assert!(backup.contains("pre-migration-v3"));
     assert!(backup::list(&storage.paths).iter().any(|b| b.file_name.contains("pre-migration-v3")));

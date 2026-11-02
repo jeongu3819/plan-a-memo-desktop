@@ -1,9 +1,10 @@
 /**
  * 'List' 화면 — 찾아보는 화면(Web PersonalMemoBrowse 와 같은 역할).
- *   검색어가 없으면: 즐겨찾기 · Next List · 지난 날짜 메모
- *   검색어가 있으면: List 이름 · 메모 본문(DayMemo + Next) · History(지금은 없는 내용)
+ *   검색어가 없으면: 즐겨찾기 · Next List · 지난 메모(월 카드)
+ *   검색어가 있으면: 날짜(검색어가 날짜로 읽힐 때) · List 이름 · 메모 본문(DayMemo + Next) · History(지금은 없는 내용)
+ *   입력칸은 하나다 — 날짜와 본문을 따로 고르지 않는다. 월 카드가 접혀 있어도 모든 달을 찾는다.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, ButtonBase, CircularProgress, IconButton, InputAdornment, InputBase, Typography } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
@@ -11,8 +12,9 @@ import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import HistoryIcon from '@mui/icons-material/History';
 import { useQuery } from '@tanstack/react-query';
 import type { Location } from '../../domain/types';
+import { parseDateQuery } from '../../domain/memoBrowse';
 import { keys, useFavorites, useLists } from '../../services/queries';
-import { dayMemoService, searchService } from '../../tauri/api';
+import { searchService } from '../../tauri/api';
 import { textOf } from '../../services/text';
 import { weekdayOf, WEEKDAY_LABELS } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import {
@@ -29,6 +31,7 @@ import {
 } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { SECTION_LABELS } from '../memo/MemoMenu';
 import { usePersonalMemo } from '../memo/MemoProvider';
+import PastMemos from './PastMemos';
 import type { MemoSection } from '../../domain/types';
 
 export interface OpenTarget {
@@ -38,6 +41,8 @@ export interface OpenTarget {
 }
 
 const SEARCH_DEBOUNCE_MS = 250;
+/** 본문 검색 결과를 한 번에 더 읽는 수(Rust 기본 한도와 같다). */
+const SEARCH_STEP = 200;
 
 export function dottedDayLabel(day: string): string {
   const [y, m, d] = day.split('-');
@@ -123,16 +128,22 @@ export default function BrowseView({
   }, [focusSearch]);
 
   const searching = debounced.length > 0;
-  const results = useQuery({ queryKey: keys.search(debounced), queryFn: () => searchService.search(debounced), enabled: searching });
+  const [limit, setLimit] = useState(SEARCH_STEP);
+  useEffect(() => setLimit(SEARCH_STEP), [debounced]);
+  // 검색어·한도가 key 라 늦게 도착한 이전 검색 결과는 화면에 쓰이지 않는다. 입력하는 동안에는 직전 결과를 둔다(깜빡이지 않게).
+  const results = useQuery({
+    queryKey: [...keys.search(debounced, limit), today],
+    queryFn: () => searchService.search(debounced, parseDateQuery(debounced, today), limit),
+    enabled: searching,
+    placeholderData: previous => previous,
+  });
+  // 날짜 결과에 이미 보인 메모는 본문 결과에서 다시 보이지 않는다.
+  const textHits = useMemo(() => {
+    const shown = new Set(results.data?.days.flatMap(day => day.items.map(hit => hit.item.id)));
+    return results.data?.items.filter(hit => !shown.has(hit.item.id)) ?? [];
+  }, [results.data]);
   const lists = useLists();
   const favorites = useFavorites(!searching);
-  const [before, setBefore] = useState<string | null>(null);
-  const days = useQuery({ queryKey: [...keys.days, before ?? 'latest'], queryFn: () => dayMemoService.days(before), enabled: !searching });
-  const [allDays, setAllDays] = useState<NonNullable<typeof days.data>>([]);
-  useEffect(() => {
-    if (!days.data) return;
-    setAllDays(prev => (before ? [...prev.filter(d => !days.data!.some(n => n.date === d.date)), ...days.data!] : days.data!));
-  }, [days.data, before]);
 
   return (
     <Box data-testid="personal-memo-browse" sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, maxWidth: 880, width: '100%', mx: 'auto' }}>
@@ -164,6 +175,28 @@ export default function BrowseView({
           <CircularProgress size={20} sx={{ m: 2 }} />
         ) : results.data ? (
           <>
+            {results.data.days.map(day => (
+              <Box key={day.date} data-testid="memo-search-date-group">
+                <GroupTitle>{dottedDayLabel(day.date)} · 메모 {day.items.length}개</GroupTitle>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                  {day.items.map(hit => (
+                    <Card
+                      key={hit.item.id}
+                      testId="memo-search-date-hit"
+                      onClick={() => onOpen({ location: hit.location, itemId: hit.item.id, tokens: day.tokens })}
+                    >
+                      <Typography sx={{ fontSize: '0.74rem', color: MEMO_MUTED, mb: 0.25 }}>
+                        {placeLabel(hit.location, hit.listName, hit.item.section)}
+                        {hit.item.kind === 'checklist' && hit.item.completed ? ' · 완료' : ''}
+                      </Typography>
+                      <Typography sx={{ fontSize: '0.9rem' }}>
+                        {hit.excerpt ? <Highlighted text={hit.excerpt} tokens={day.tokens} /> : '(이미지·표 메모)'}
+                      </Typography>
+                    </Card>
+                  ))}
+                </Box>
+              </Box>
+            ))}
             {results.data.lists.length > 0 && (
               <>
                 <GroupTitle>List</GroupTitle>
@@ -176,12 +209,14 @@ export default function BrowseView({
                 ))}
               </>
             )}
-            <GroupTitle>메모 {results.data.items.length}{results.data.truncated ? '+' : ''}개</GroupTitle>
-            {results.data.items.length === 0 && (
-              <Typography sx={{ fontSize: '0.85rem', color: MEMO_MUTED, px: 0.5 }}>'{debounced}' 이(가) 들어간 메모가 없습니다.</Typography>
+            {(textHits.length > 0 || results.data.days.length === 0) && (
+              <GroupTitle>메모 {textHits.length}{results.data.truncated ? '+' : ''}개</GroupTitle>
+            )}
+            {textHits.length === 0 && results.data.days.length === 0 && (
+              <Typography sx={{ fontSize: '0.85rem', color: MEMO_MUTED, px: 0.5 }}>'{results.data.query}' 이(가) 들어간 메모가 없습니다.</Typography>
             )}
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-              {results.data.items.map(hit => (
+              {textHits.map(hit => (
                 <Card
                   key={hit.item.id}
                   testId="memo-search-hit"
@@ -197,6 +232,11 @@ export default function BrowseView({
                 </Card>
               ))}
             </Box>
+            {results.data.truncated && (
+              <Button size="small" data-testid="memo-search-more" onClick={() => setLimit(value => value + SEARCH_STEP)} sx={{ alignSelf: 'center', mt: 0.5 }}>
+                결과 더 보기
+              </Button>
+            )}
             {results.data.history.length > 0 && (
               <>
                 <GroupTitle><HistoryIcon sx={{ fontSize: 16 }} /> History — 지금은 없는 내용</GroupTitle>
@@ -249,29 +289,7 @@ export default function BrowseView({
           </Box>
 
           <GroupTitle>지난 메모</GroupTitle>
-          {allDays.length === 0 && !days.isPending && (
-            <Typography sx={{ fontSize: '0.85rem', color: MEMO_MUTED, px: 0.5 }}>아직 메모가 있는 날짜가 없습니다.</Typography>
-          )}
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-            {allDays.map(day => (
-              <Card key={day.date} testId="memo-day-summary" onClick={() => onOpen({ location: { kind: 'day', date: day.date } })}>
-                <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
-                  <Typography sx={{ fontWeight: 800, fontSize: '0.9rem', color: dayTone(day.date).text }}>{dottedDayLabel(day.date)}</Typography>
-                  {day.date === today && <Typography sx={{ fontSize: '0.7rem', color: 'primary.main', fontWeight: 800 }}>Today</Typography>}
-                  <Box sx={{ flex: 1 }} />
-                  <Typography sx={{ fontSize: '0.74rem', color: MEMO_MUTED }}>
-                    메모 {day.itemCount}개{day.checklistCount ? ` · 완료 ${day.doneCount}/${day.checklistCount}` : ''}
-                  </Typography>
-                </Box>
-                <Typography noWrap sx={{ fontSize: '0.84rem', color: 'text.secondary', mt: 0.25 }}>{day.previews.filter(Boolean).join(' · ')}</Typography>
-              </Card>
-            ))}
-          </Box>
-          {(days.data?.length ?? 0) >= 40 && (
-            <Button size="small" onClick={() => setBefore(allDays[allDays.length - 1]?.date ?? null)} sx={{ alignSelf: 'center', mt: 1 }}>
-              더 지난 메모 보기
-            </Button>
-          )}
+          <PastMemos today={today} onOpen={location => onOpen({ location })} />
         </>
       )}
     </Box>

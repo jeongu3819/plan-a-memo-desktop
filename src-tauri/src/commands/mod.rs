@@ -14,7 +14,7 @@ use crate::auth::loopback::{self, LoopbackListener};
 use crate::auth::{AuthProvider, AuthStatus, LoginStart, LogoutResult};
 use crate::error::{AppError, AppResult};
 use crate::memo::{
-    carryover, export, history, repo, search, service, DayMemo, LocatedItem, Location, MemoItem, NextListInfo, NextListMemo, WeekMemo,
+    carryover, export, history, repo, search, service, trash, DayMemo, LocatedItem, Location, MemoItem, NextListInfo, NextListMemo, WeekMemo,
 };
 use crate::reminders;
 use crate::state::{AppState, StorageStatus};
@@ -186,8 +186,23 @@ pub async fn memo_days(state: State<'_, AppState>, before: Option<String>) -> Cm
 }
 
 #[tauri::command]
-pub async fn memo_search(state: State<'_, AppState>, query: String) -> Cmd<search::SearchResult> {
-    state.storage()?.with_conn(|c| search::search(c, &query))
+pub async fn memo_day_months(state: State<'_, AppState>, until: String) -> Cmd<Vec<service::MonthSummary>> {
+    state.storage()?.with_conn(|c| service::day_months(c, &until))
+}
+
+#[tauri::command]
+pub async fn memo_days_in_month(state: State<'_, AppState>, month: String, until: String) -> Cmd<Vec<service::DaySummary>> {
+    state.storage()?.with_conn(|c| service::days_in_month(c, &month, &until))
+}
+
+#[tauri::command]
+pub async fn memo_search(
+    state: State<'_, AppState>,
+    query: String,
+    date: Option<search::DateQuery>,
+    limit: Option<usize>,
+) -> Cmd<search::SearchResult> {
+    state.storage()?.with_conn(|c| search::search_with(c, &query, date.as_ref(), limit.unwrap_or(search::ITEM_LIMIT)))
 }
 
 #[tauri::command]
@@ -262,8 +277,34 @@ pub async fn list_rename(state: State<'_, AppState>, id: String, name: String) -
 }
 
 #[tauri::command]
-pub async fn list_delete(state: State<'_, AppState>, id: String) -> Cmd<service::DeleteListResult> {
-    write(&state, |c| service::delete_list(c, &id))
+pub async fn list_delete(state: State<'_, AppState>, id: String) -> Cmd<trash::TrashResult> {
+    write(&state, |c| trash::move_to_trash(c, &id))
+}
+
+#[tauri::command]
+pub async fn trash_list(state: State<'_, AppState>) -> Cmd<Vec<trash::TrashEntry>> {
+    let storage = state.storage()?;
+    // 앱을 며칠씩 켜 둔 경우 — 휴지통을 열 때도 기간이 지난 항목을 정리한다.
+    storage.with_conn(|c| {
+        if let Err(error) = trash::purge_expired(c, &storage.paths, &crate::util::now()) {
+            log::warn!("trash purge failed: {}", error.code());
+        }
+        if let Err(error) = attachments::sweep_purged(c, &storage.paths) {
+            log::warn!("purged image sweep failed: {}", error.code());
+        }
+        trash::entries(c)
+    })
+}
+
+#[tauri::command]
+pub async fn trash_restore(state: State<'_, AppState>, id: String) -> Cmd<NextListInfo> {
+    write(&state, |c| trash::restore(c, &id))
+}
+
+#[tauri::command]
+pub async fn trash_purge(state: State<'_, AppState>, id: String) -> Cmd<()> {
+    let storage = state.storage()?;
+    storage.with_conn(|c| trash::purge(c, &storage.paths, &id))
 }
 
 #[tauri::command]

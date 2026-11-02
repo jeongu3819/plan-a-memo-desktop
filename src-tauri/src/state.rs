@@ -185,6 +185,10 @@ fn after_open(storage: &Storage) {
         if has_items && stale {
             backup::create(conn, &storage.paths, "daily")?;
         }
+        // 앱이 꺼져 있는 동안 보존 기간이 지난 휴지통 항목 — 지우기 전에 Backup 을 만든다.
+        crate::memo::trash::purge_expired(conn, &storage.paths, &crate::util::now())?;
+        // 영구 삭제한 List 의 이미지 중 이제 어떤 Backup 도 참조하지 않는 파일.
+        crate::attachments::sweep_purged(conn, &storage.paths)?;
         Ok(())
     });
     if let Err(error) = result {

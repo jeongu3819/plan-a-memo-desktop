@@ -3,13 +3,14 @@
  *
  * · 이번 주 날짜를 처음 열 때 가져올 항목이 있으면 작은 안내 줄 하나(큰 팝업 없이). 사용자가 고르기 전에는 아무것도 바꾸지 않는다.
  * · [항목 선택] → 가져올 항목을 고른다. 여기 체크박스는 **가져올 항목 선택**이다(완료 체크가 아니다 — 원본의 완료 상태를 바꾸지 않는다).
- * · [이번에는 건너뛰기] 는 이 날짜에 다시 저절로 안내하지 않는다(앱을 다시 열어도). 날짜 메뉴 '지난 미완료 가져오기' 로 언제든 다시 연다.
+ * · [이번에는 건너뛰기] 는 이 날짜에 다시 저절로 안내하지 않는다(앱을 다시 열어도). 머리 줄의 가져오기 아이콘으로 언제든 다시 연다.
  * · 원본은 그대로 남고, 복사본은 새 메모·미완료·같은 구역의 맨 뒤. 같은 원본은 같은 날짜로 한 번만 복사된다(Rust 가 보장).
  * · PLAN-A Work 와 연결된 날짜는 복사·건너뛰기를 Web 과 함께 쓴다(memo-sync-v2) — Web 에서 이미 복사·건너뛴 항목은 다시 권하지
  *   않는다. 화면은 같고, 열 때 PLAN-A Work 에 최신 후보를 한 번 묻는다(오프라인이면 마지막으로 아는 상태).
  */
 import { useEffect, useRef, useState } from 'react';
-import { Box, Button, Checkbox, CircularProgress, Typography } from '@mui/material';
+import { Box, Button, Checkbox, CircularProgress, Dialog, IconButton, Tooltip, Typography } from '@mui/material';
+import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import { useQueryClient } from '@tanstack/react-query';
 import type { MemoSection } from '../../domain/types';
 import { weekdayName } from '../../domain/dayTools';
@@ -22,11 +23,11 @@ import { usePersonalMemo } from './MemoProvider';
 
 const SHORT_SECTION: Record<MemoSection, string> = { main: '메인', am: '오전', pm: '오후' };
 
-export default function CarryoverNotice({ date, manual, onCloseManual }: { date: string; manual: boolean; onCloseManual: () => void }) {
+export default function CarryoverNotice({ date, manual = false, onCloseManual }: { date: string; manual?: boolean; onCloseManual?: () => void }) {
   const { notify } = usePersonalMemo();
   const queryClient = useQueryClient();
   const { data } = useCarryover(date);
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useState(manual);
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -87,7 +88,7 @@ export default function CarryoverNotice({ date, manual, onCloseManual }: { date:
   const close = () => {
     setPicking(false);
     setDismissed(true);
-    if (manual) onCloseManual();
+    if (manual) onCloseManual?.();
   };
 
   const skip = async () => {
@@ -234,5 +235,66 @@ export default function CarryoverNotice({ date, manual, onCloseManual }: { date:
         </Button>
       </Box>
     </Box>
+  );
+}
+
+/**
+ * 머리 줄의 가져오기 아이콘 — 날짜 상세에서만 동작한다(List·주간에는 기준 날짜가 없다).
+ * 누르면 최신 후보를 확인해, 가져올 항목이 있을 때만 고르는 창을 연다. 복사 자체는 기존 흐름(CarryoverNotice)을 그대로 쓴다.
+ */
+export function CarryoverButton({ date, sx }: { date: string | null; sx: object }) {
+  const { notify } = usePersonalMemo();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [openDate, setOpenDate] = useState<string | null>(null);
+
+  const open = async () => {
+    if (!date || busy) return;
+    setBusy(true);
+    try {
+      let info = await dayToolsService.carryover(date);
+      if (info.shared) info = await dayToolsService.carryoverRefresh(date).catch(() => info);
+      queryClient.setQueryData(keys.carryover(date), info);
+      const name = weekdayName(date);
+      if (info.blocked) notify({ message: info.blocked });
+      else if (!info.available) notify({ message: `지난주 ${name}(${shortDate(info.sourceDate)})이 아직 지나지 않아 가져올 수 없습니다.` });
+      else if (!info.items.length) notify({ message: '가져올 미완료 체크리스트가 없습니다.' });
+      else setOpenDate(date);
+    } catch (error) {
+      notify({ message: errorMessage(error, '지난 미완료를 확인하지 못했습니다.'), variant: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Tooltip
+        disableInteractive
+        title={
+          date ? (
+            <>
+              <b>지난 미완료 가져오기</b>
+              <br />
+              지난주 같은 요일의 완료하지 않은 체크리스트를 현재 날짜로 가져옵니다.
+            </>
+          ) : (
+            '날짜를 연 화면에서 쓸 수 있습니다.'
+          )
+        }
+      >
+        {/* 비활성 버튼에도 설명이 뜨도록 감싼다. */}
+        <span style={{ display: 'inline-flex' }}>
+          <IconButton aria-label="지난 미완료 가져오기" data-testid="carryover-open" disabled={!date || busy} onClick={() => void open()} sx={sx}>
+            <PlaylistAddIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+      {openDate && (
+        <Dialog open onClose={() => setOpenDate(null)} maxWidth="sm" fullWidth data-personal-memo-overlay="true" data-testid="carryover-dialog" aria-label="지난 미완료 가져오기">
+          <CarryoverNotice date={openDate} manual onCloseManual={() => setOpenDate(null)} />
+        </Dialog>
+      )}
+    </>
   );
 }

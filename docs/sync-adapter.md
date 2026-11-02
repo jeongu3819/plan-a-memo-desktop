@@ -69,10 +69,10 @@ cursor_namespace_mismatch · device_revoked(교환), 413/422 → 거절(문서�
 | kind · completed · 순서 | `kind` · `completed`(text 는 false) · `sort_order`(구역 안 0부터) |
 | `<img src="attachment://<local id>">` | `<img src="/api/personal-memos/images/<name>/download">` (`sync_attachment_map`) |
 | favorite | 보내지 않는다(Contract 에 없음) — 받아도 로컬 즐겨찾기 유지 |
-| List 이름 변경 | 보내지 않는다(이미 있는 List 의 이름을 바꾸는 API 가 없음) — 화면이 '이 PC 에만' 이라고 알린다 |
+| List 이름 변경 | 연결된 List 는 막는다(이름을 바꾸는 API 가 없음 — 이 PC 에서만 달라지지 않게). 공통 관리 기능 준비 후 지원 — `docs/LIST_TRASH_SERVER_HANDOFF.md` |
 | `documents.local_revision` | `local_version`(진단용) |
 | `documents.server_version` | `base_version` |
-| List 삭제 | `deleted=true`, `items=[]`(tombstone) 후 연결 해제 |
+| List 삭제 | 연결된 List 는 막는다(되돌리는 API 가 없어 복구가 이 PC 에만 되기 때문). 이전 빌드가 Outbox 에 남긴 삭제는 기존 규칙대로 `deleted=true`, `items=[]`(tombstone) 후 연결 해제 — 로컬 메모는 휴지통에 보존. `docs/LIST_TRASH_SERVER_HANDOFF.md` |
 
 * 서버 주소·서버 id 는 로컬 본문(HTML)에 저장하지 않는다(전송 사본에서만 바꾼다).
 * v1: Desktop push 로 다른 문서의 항목을 가져올 수 없다 — 같은 로컬 항목이 다른 날짜로 가면 그 문서에서는 새 client_key.

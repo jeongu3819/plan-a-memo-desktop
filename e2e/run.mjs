@@ -126,6 +126,9 @@ step(
   async () => {
     const page = app.page;
     await page.click(`[data-testid="memo-cell-${today}"]`, { position: { x: 400, y: 30 } });
+    assert.equal(await page.getAttribute('[data-testid="sync-header-button"]', 'data-sync-state'), 'local', '연결 전: 이 PC 에만 저장');
+    await page.click('[data-testid="sync-header-button"]');
+    assert.ok((await page.locator('[data-testid="sync-status-line"]').innerText()).includes('이 PC에만 저장'), '메뉴에서 상태 확인');
     await page.click('[data-testid="sync-link-button"]');
     await page.waitForSelector('[data-testid="account-dialog"]');
     await app.shot('05-account');
@@ -138,6 +141,7 @@ step(
     assert.equal(linked.auth.session.isMock, true);
     const doc = (await day()).document;
     assert.equal(doc.syncStatus, 'synced');
+    await waitFor(async () => (await page.getAttribute('[data-testid="sync-header-button"]', 'data-sync-state')) === 'linked', '연동 아이콘: 연결됨');
     await app.shot('06-linked');
   },
   { mockOnly: true },
@@ -220,16 +224,36 @@ step(
 );
 
 step(
-  'linked-list-rename-notice',
+  'linked-list-rename-refused',
   async () => {
+    const page = app.page;
     const list = await app.invoke('list_create', { id: crypto.randomUUID(), name: '앱 개발' });
     await app.invoke('sync_link', { location: { kind: 'next', listId: list.id } });
     await app.invoke('sync_now');
     const before = (await app.invoke('sync_overview')).outbox; // 앞 단계의 '나중에 선택' 비교 1건은 그대로 대기
-    const renamed = await app.invoke('list_rename', { id: list.id, name: '앱 개발 2' });
-    assert.equal(renamed.name, '앱 개발 2');
-    assert.equal(renamed.document.syncStatus, 'synced', '이름 변경으로 보낼 것이 생기지 않는다(서버 API 없음)');
-    assert.equal((await app.invoke('sync_overview')).outbox, before);
+    const error = await app.invokeError('list_rename', { id: list.id, name: '앱 개발 2' });
+    assert.equal(error.code, 'linked_list_managed');
+    assert.equal((await app.invoke('sync_overview')).outbox, before, '보낼 것이 생기지 않는다');
+    const info = await app.invoke('memo_list', { listId: list.id });
+    assert.equal(info.list.name, '앱 개발', '이름 그대로');
+    assert.equal(info.list.document.syncStatus, 'synced', '연결 그대로');
+    // 화면: 메뉴에 이유가 보이고 × 가 없다
+    await page.reload();
+    await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+    await page.click('[data-testid="memo-search-open"]');
+    await page.locator('[data-testid="personal-memo-browse"] button').filter({ hasText: '앱 개발' }).first().click();
+    const tab = page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${list.id}"]`);
+    await tab.waitFor();
+    await tab.hover();
+    assert.equal(await tab.locator('[data-testid="memo-next-list-delete"]').count(), 0, '연결된 List 에는 × 가 없다');
+    await tab.click({ button: 'right' });
+    const rename = page.locator('[data-testid="memo-next-list-rename"]');
+    await rename.waitFor();
+    assert.equal(await rename.getAttribute('aria-disabled'), 'true', '이름 변경 막힘');
+    assert.ok((await rename.innerText()).includes('연결된 List의 이름 변경은 PLAN-A Work 공통 관리 기능이 준비된 후 사용할 수 있습니다.'), '이유 안내');
+    assert.equal(await page.getAttribute('[data-testid="memo-next-list-context-delete"]', 'aria-disabled'), 'true', '삭제 막힘');
+    await app.shot('26-linked-list-menu');
+    await page.keyboard.press('Escape');
   },
   { mockOnly: true },
 );
@@ -335,14 +359,14 @@ step('header-today', async () => {
     page.$$eval('[data-testid="memo-header-tools"] > *', nodes =>
       nodes.map(n => n.getAttribute('data-testid') || n.querySelector('[data-testid]')?.getAttribute('data-testid')),
     );
-  assert.deepEqual(await order(), ['memo-search-open', 'memo-today', 'open-settings'], '주간: 검색 → 오늘 → 설정');
+  const TOOLS = ['memo-search-open', 'memo-today', 'sync-header-button', 'carryover-open', 'open-settings'];
+  assert.deepEqual(await order(), TOOLS, '주간: 검색 → 오늘 → 연동 → 가져오기 → 설정');
   assert.equal(await page.locator('[data-testid="open-settings"]').count(), 1, '설정 입구는 하나');
-  const headerText = await page.locator('[data-testid="memo-dialog-header"]').innerText();
-  assert.ok(!headerText.includes('이번 주'), "'이번 주' 버튼 없음");
+  assert.ok(await page.locator('[data-testid="carryover-open"]').isDisabled(), '주간에는 가져올 기준 날짜가 없다');
   // 같은 높이·세로 정렬
   const boxes = await page.$$eval('[data-testid="memo-header-tools"] > *', nodes => nodes.map(n => n.getBoundingClientRect()).map(r => [Math.round(r.top), Math.round(r.height)]));
   assert.ok(boxes.every(([top, h]) => h === boxes[0][1] && Math.abs(top - boxes[0][0]) <= 1), `도구 높이·정렬 ${JSON.stringify(boxes)}`);
-  // 주간 기간(‹ 10/26 – 11/1 ›)은 도구 바로 왼쪽, 표지(날짜·인사말)와 같은 줄 — 본문 위에 따로 이동 줄이 없다
+  // 주간 이름(‹ 이번 주 ›)은 도구 바로 왼쪽, 표지(날짜·인사말)와 같은 줄 — 본문 위에 따로 이동 줄이 없다
   const sameRow = async selector => {
     const [nav, tools, title] = await Promise.all(
       [selector, '[data-testid="memo-header-tools"]', '[data-testid="memo-header-date"]'].map(s => page.locator(s).boundingBox()),
@@ -354,7 +378,22 @@ step('header-today', async () => {
   const [, tm, td] = today.split('-').map(Number);
   const monday = plusDays(today, -weekdayIndex(today));
   const short = date => date.slice(5).split('-').map(Number).join('/');
-  assert.equal(await page.locator('[data-testid="personal-memo-week-range"]').innerText(), `${short(monday)} – ${short(plusDays(monday, 6))}`, '주간 기간 표시');
+  const weekText = () => page.locator('[data-testid="personal-memo-week-range"]').innerText();
+  assert.equal(await weekText(), '이번 주', '현재 주');
+  await page.click('[aria-label="지난주"]');
+  await waitFor(async () => (await weekText()) === '지난주', '이전 주 이름');
+  await page.click('[aria-label="지난주"]');
+  await waitFor(async () => (await weekText()).includes(short(plusDays(monday, -14))), '더 먼 주는 실제 기간');
+  await page.click('[aria-label="다음 주"]');
+  await page.click('[aria-label="다음 주"]');
+  await waitFor(async () => (await weekText()) === '이번 주', '이번 주로 돌아옴');
+  await page.click('[aria-label="다음 주"]');
+  await waitFor(async () => (await weekText()) === '다음 주', '다음 주 이름');
+  assert.ok(await page.locator(`[data-testid="memo-cell-${plusDays(monday, 7)}"]`).count(), '본문도 다음 주');
+  await page.click('[aria-label="지난주"]');
+  await page.locator('[data-testid="personal-memo-week-range"]').hover();
+  await page.locator(`[role="tooltip"]:has-text("${short(monday)} – ${short(plusDays(monday, 6))}")`).waitFor({ timeout: 5000 });
+  await page.mouse.move(5, 300);
   await sameRow('[data-testid="personal-memo-nav"]');
   await app.shot('20-header-week');
   // [오늘] → 오늘 날짜 상세(메인·오전·오후 + 다가오는 같은 요일)
@@ -362,14 +401,29 @@ step('header-today', async () => {
   await page.waitForSelector('[data-testid="memo-section-main"]');
   await page.waitForSelector('[data-testid="upcoming-weekday"]');
   assert.equal(await page.getAttribute('[data-testid="memo-today"]', 'aria-pressed'), 'true');
-  assert.deepEqual(await order(), ['memo-search-open', 'memo-today', 'open-settings'], '날짜 상세: 같은 순서');
+  assert.deepEqual(await order(), TOOLS, '날짜 상세: 같은 순서');
+  assert.ok(await page.locator('[data-testid="carryover-open"]').isEnabled(), '날짜 상세에서는 가져오기를 쓸 수 있다');
   assert.ok(await page.locator('[data-testid="memo-back-to-week"]').isVisible(), '← 주간 유지');
-  // 날짜 상세: 1줄 = ← 주간 ‹ 날짜 Today › │ 검색·오늘·설정 · 2줄 = 저장 상태·연결 │ History·메뉴
+  // 날짜 상세: 한 줄 = ← 주간 ‹ 날짜 Today › │ 검색·오늘·연동·가져오기·설정 — 본문 위 보조 줄 없음
   await sameRow('[data-testid="memo-header-nav"]');
   assert.ok((await page.locator('[data-testid="personal-memo-view-label"]').innerText()).includes(`${tm}/${td}`), '날짜 표시');
-  const link = await page.locator('[data-testid="sync-link-control"]').boundingBox();
-  const toolsBox = await page.locator('[data-testid="memo-header-tools"]').boundingBox();
-  assert.ok(link.y >= toolsBox.y + toolsBox.height, '연결·History 줄은 조작 줄 아래');
+  assert.equal(await page.locator('[data-testid="sync-link-control"]').count(), 0, '연결·History 보조 줄 없음');
+  // 아이콘 설명
+  await page.locator('[data-testid="sync-header-button"]').hover();
+  await page.locator('[role="tooltip"]:has-text("PLAN-A Work 연동")').waitFor({ timeout: 5000 });
+  await page.locator('[data-testid="carryover-open"]').hover();
+  await page.locator('[role="tooltip"]:has-text("지난 미완료 가져오기")').waitFor({ timeout: 5000 });
+  await page.mouse.move(5, 300);
+  // History 는 연동과 분리 — 날짜 보조 메뉴에서(연결·로그인 없이, 메모가 없는 날에도)
+  await page.click('[data-testid="sync-header-button"]');
+  assert.ok(!(await page.locator('[data-testid="sync-header-menu"]').innerText()).includes('History'), '연동 메뉴에 History 없음');
+  await page.keyboard.press('Escape');
+  await page.click('[data-testid="memo-doc-menu"]');
+  await page.click('[data-testid="memo-open-history"]');
+  await page.locator('[role="dialog"]').waitFor();
+  await page.keyboard.press('Escape');
+  await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
+  await page.mouse.move(5, 300);
   // 메인·오전·오후가 창 높이의 대부분을 차지한다(빈 날짜에서도 큰 입력 영역)
   const grid = await page.locator('[data-testid="personal-memo-day-sections"]').boundingBox();
   const viewport = page.viewportSize() ?? (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })));
@@ -440,18 +494,40 @@ step('upcoming-weekday', async () => {
   const md = date => date.slice(5).split('-').map(Number).join('/');
   assert.ok(text7.includes('정기 점검') && text7.includes('예약한 일정 확인'), '다음 주 카드에 실제 내용');
   assert.equal(await card7.locator('[data-testid="upcoming-card-title"]').innerText(), `다음 ${weekdayText} · ${md(d7)}`, '카드 제목: 다음 ○요일 · 날짜');
-  assert.ok(text7.includes('추가 항목 5'), '카드는 그 날짜의 메모장 — 모든 항목이 그 자리에 보인다');
-  // 빈 2주 후 — 메인·오전·오후 입력칸이 바로 있다([미리 작성] 버튼 없음)
+  assert.equal(await card7.locator('[data-testid="personal-memo-quick-input"]').count(), 0, '접힌 카드 — 입력칸 없음');
+  assert.ok(!text7.includes('추가 항목 5') && text7.includes('외 '), '접힌 카드는 앞의 메모만 미리 보기');
+  await card7.locator('[data-testid="upcoming-toggle"]').click();
+  await card7.locator('[data-testid="upcoming-group-main"] [data-testid="personal-memo-quick-input"]').waitFor();
+  assert.ok((await card7.innerText()).includes('추가 항목 5'), '펼치면 모든 항목');
+  // 빈 2주 후 — 접혀 있고 '메모 없음', [기록] 을 눌러야 입력칸이 나온다
   const card14 = page.locator(`[data-testid="upcoming-card-${d14}"]`);
   assert.equal(await card14.locator('[data-testid="upcoming-card-title"]').innerText(), `다음 ${weekdayText} · ${md(d14)}`, '2주 후 카드도 같은 표기');
   assert.ok(!(await page.locator('[data-testid="upcoming-weekday"]').innerText()).match(/다음 주|다다음|주 후/), '상대 표현 없음');
   assert.equal(await page.locator('[data-testid="upcoming-write"]').count(), 0, '[미리 작성] 버튼 없음');
   assert.equal(await page.locator(`[data-testid="upcoming-card-${d28}"]`).count(), 0, '더 먼 날짜는 [더 보기] 전에는 없다');
+  assert.equal(await card14.locator('[data-testid="upcoming-empty"]').innerText(), '메모 없음');
+  assert.equal(await card14.locator('[data-testid="personal-memo-quick-input"]').count(), 0, '빈 날짜는 입력칸을 펼치지 않는다');
+  const card14Height = (await card14.boundingBox()).height;
+  assert.ok(card14Height < 60, `빈 날짜 카드는 한 줄(${card14Height}px)`);
+  await card14.locator('[data-testid="upcoming-reminder-button"]').waitFor();
+  await card14.scrollIntoViewIfNeeded();
+  await app.shot('22a-upcoming-collapsed');
+  await card14.locator('[data-testid="upcoming-toggle"]').click();
   const input14 = card14.locator('[data-testid="upcoming-group-main"] [data-testid="personal-memo-quick-input"]');
-  await input14.click();
+  await input14.waitFor();
+  assert.ok(await input14.evaluate(el => el === document.activeElement), '[기록] → 메인 입력칸에 커서');
   await input14.type('다음 달 계획 검토');
   await page.keyboard.press('Control+Enter');
   await waitFor(async () => (await dayOf(d14)).items.some(i => i.contentHtml === '다음 달 계획 검토'), '카드에서 작성 → 그 날짜 문서');
+  await card14.locator('[data-testid="personal-memo-row"]').waitFor();
+  assert.equal(await card14.locator('[data-testid="upcoming-toggle"]').getAttribute('aria-expanded'), 'true', '기록 중에는 저절로 접히지 않는다');
+  // 쓰던 글이 있어도 접는 순간 그 날짜에 저장된다
+  const input14am = card14.locator('[data-testid="upcoming-group-am"] [data-testid="personal-memo-quick-input"]');
+  await input14am.click();
+  await input14am.type('접기 전에 쓴 글');
+  await card14.locator('[data-testid="upcoming-toggle"]').click();
+  await waitFor(async () => (await dayOf(d14)).items.some(i => i.contentHtml === '접기 전에 쓴 글'), '접어도 쓰던 글을 잃지 않는다');
+  await card14.locator(`[data-testid="upcoming-preview-${d14}"]`).waitFor();
   await page.locator('[data-testid="memo-header-date"]').click();
   // 더 보기
   await page.click('[data-testid="upcoming-more"]');
@@ -481,6 +557,581 @@ step('upcoming-weekday', async () => {
   // 카드 제목은 이동 버튼이 아니다 — 보고 있는 날짜는 그대로
   assert.equal(await card7.locator(`[aria-label="${d7} 날짜 상세로"]`).count(), 0, '카드에서 날짜 상세로 옮기지 않는다');
   assert.equal(await page.locator('[data-testid="memo-search-input"]').count(), 0, '검색 입력칸은 머리 줄에서 펼칠 때만');
+});
+
+step('date-search', async () => {
+  const page = app.page;
+  const year = Number(today.slice(0, 4));
+  const target = `${year}-03-09`;
+  const lastYear = `${year - 1}-03-09`;
+  await addItem(target, 'main', '<p>날짜 검색 <b>메인</b></p>');
+  await addItem(target, 'am', '날짜 검색 오전');
+  await addItem(target, 'pm', '날짜 검색 오후');
+  await addItem(lastYear, 'main', '작년 같은 날');
+  await addItem(`${year}-04-01`, 'main', '본문에 3/9 라고 적음');
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.click('[data-testid="memo-search-open"]');
+  const search = page.locator('[data-testid="memo-search-input"]');
+  const yy = String(year).slice(2);
+  const hasDay = async date => {
+    const titles = await page.locator('[data-testid="memo-search-date-group"]').allInnerTexts();
+    return titles.some(t => t.includes(date.replaceAll('-', '.')));
+  };
+  for (const query of ['3.9', '3/9', '3-9', '3월 9일', '3월9일', `${yy}.3.9`, `${yy}/3/9`, `${year}.03.09`, `${year}-03-09`, `${year}/03/09`]) {
+    await search.fill(query);
+    await waitFor(async () => hasDay(target), `날짜 검색 '${query}'`);
+    assert.equal(await page.locator('[data-testid="memo-search-date-group"]').first().locator('[data-testid="memo-search-date-hit"]').count(), 3, `'${query}': 메인·오전·오후 모두`);
+  }
+  // 연도를 적으면 그 해만, 안 적으면 올해 먼저 + 다른 해
+  await search.fill(`${year}-03-09`);
+  await waitFor(async () => (await page.locator('[data-testid="memo-search-date-group"]').count()) === 1, '연도 지정 — 그 해만');
+  await search.fill('3/9');
+  await waitFor(async () => (await page.locator('[data-testid="memo-search-date-group"]').count()) === 2, '연도 없음 — 다른 해도');
+  assert.ok((await page.locator('[data-testid="memo-search-date-group"]').first().innerText()).includes(`${year}.03.09`), '올해 먼저');
+  // 본문에 같은 문자열이 있는 메모도 빠지지 않는다
+  await page.locator('[data-testid="memo-search-hit"]:has-text("3/9 라고")').waitFor();
+  await app.shot('23a-date-search');
+  // 없는 날짜·날짜가 아닌 검색
+  // 미래 메모도 날짜·본문 검색으로 찾는다
+  const future = plusDays(today, 40);
+  await addItem(future, 'main', '먼 미래 메모');
+  const [, fm, fd] = future.split('-').map(Number);
+  await search.fill(`${fm}/${fd}`);
+  await waitFor(async () => hasDay(future), '미래 날짜 검색');
+  await search.fill('먼 미래');
+  await page.locator('[data-testid="memo-search-hit"]').first().waitFor();
+  await search.fill('13/40');
+  await waitFor(async () => (await page.locator('text=들어간 메모가 없습니다').count()) === 1, '없는 날짜 — 엉뚱한 날짜 없음');
+  await search.fill('날짜 검색 오전');
+  await page.locator('[data-testid="memo-search-hit"]').first().waitFor();
+  assert.equal(await page.locator('[data-testid="memo-search-date-group"]').count(), 0, '본문 검색');
+  // 결과를 누르면 그 날짜 상세
+  await search.fill('3/9');
+  await page.locator('[data-testid="memo-search-date-hit"]').first().waitFor();
+  await page.locator('[data-testid="memo-search-date-hit"]').first().click();
+  await page.waitForSelector('[data-testid="memo-section-main"]');
+  assert.ok((await page.locator('[data-testid="personal-memo-view-label"]').innerText()).includes('3/9'));
+  await page.click('[data-testid="memo-back-to-browse"]');
+  await search.fill('');
+});
+
+step('month-cards', async () => {
+  const page = app.page;
+  const year = Number(today.slice(0, 4));
+  await addItem(`${year - 1}-12-15`, 'main', '작년 12월 메모');
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.click('[data-testid="memo-search-open"]');
+  await page.locator('[data-testid="memo-month-grid"]').waitFor();
+  const label = month => page.locator(`[data-testid="memo-month-card"][data-month="${month}"] [data-testid="memo-month-label"]`).innerText();
+  assert.equal(await label(`${year}-03`), '3월', '올해는 월만');
+  assert.equal(await label(`${year - 1}-12`), `${year - 1}년 12월`, '다른 해는 연도와 월');
+  const months = await page.$$eval('[data-testid="memo-month-card"]', nodes => nodes.map(n => n.dataset.month));
+  assert.deepEqual(months, [...months].sort().reverse(), '최신 월부터');
+  assert.ok(months.every(m => m <= today.slice(0, 7)), `미래 달 카드 없음 ${months}`);
+  assert.equal(months[0], today.slice(0, 7), '이번 달이 맨 앞');
+  const thisMonth = page.locator(`[data-testid="memo-month-card"][data-month="${today.slice(0, 7)}"]`);
+  await thisMonth.locator('[data-testid="memo-day-summary"]').first().waitFor();
+  const shownDays = await thisMonth.locator('[data-testid="memo-day-summary"]').allInnerTexts();
+  const dayNumbers = shownDays.map(t => Number(t.match(/\d+\/(\d+)/)[1]));
+  const todayNumber = Number(today.slice(8));
+  assert.ok(dayNumbers.every(d => d <= todayNumber), `오늘까지만 ${dayNumbers}`);
+  assert.ok(dayNumbers.includes(todayNumber), '오늘 메모는 보인다');
+  const monthInfo = await app.invoke('memo_day_months', { until: today });
+  const monthDays = await app.invoke('memo_days_in_month', { month: today.slice(0, 7), until: today });
+  assert.equal(monthInfo[0].itemCount, monthDays.reduce((sum, d) => sum + d.itemCount, 0), '카드 개수 = 오늘까지의 메모');
+  assert.equal(new Set(months).size, months.length, '월은 한 장씩');
+  assert.equal(await page.locator(`[data-testid="memo-month-card"][data-month="${today.slice(0, 7)}"] [data-testid="memo-month-toggle"]`).getAttribute('aria-expanded'), 'true', '이번 달은 펼쳐진다');
+  const march = page.locator(`[data-testid="memo-month-card"][data-month="${year}-03"]`);
+  assert.equal(await march.locator('[data-testid="memo-day-summary"]').count(), 0, '다른 달은 접혀 있다');
+  assert.ok((await march.innerText()).includes('메모 3개'), '메모 개수');
+  await app.shot('23b-month-cards');
+  await march.locator('[data-testid="memo-month-toggle"]').click();
+  await march.locator('[data-testid="memo-day-summary"]').first().waitFor();
+  assert.ok((await march.innerText()).includes('날짜 검색'), '펼치면 날짜별 내용');
+  await app.shot('23c-month-open');
+  // 작은 창에서도 카드가 잘리지 않는다
+  const original = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  await page.setViewportSize({ width: 850, height: 620 });
+  const overflow = await page.$$eval('[data-testid="memo-month-card"]', nodes => nodes.some(n => n.getBoundingClientRect().right > window.innerWidth));
+  assert.equal(overflow, false, '월 카드가 창 밖으로 나가지 않는다');
+  await page.setViewportSize(original);
+  await march.locator('[data-testid="memo-day-summary"]').first().click();
+  await page.waitForSelector('[data-testid="memo-section-main"]');
+  await page.click('[data-testid="memo-back-to-browse"]');
+  // 접힌 달도 검색된다
+  await march.locator('[data-testid="memo-month-toggle"]').click();
+  await page.locator('[data-testid="memo-search-input"]').fill('작년 12월');
+  await page.locator('[data-testid="memo-search-hit"]').first().waitFor();
+  await page.locator('[data-testid="memo-search-input"]').fill('');
+});
+
+// 메모 손잡이를 잡아 y 까지 천천히 끈다(놓지 않는다).
+async function dragStart(row) {
+  const page = app.page;
+  await row.hover();
+  const handle = row.locator('[aria-label="끌어서 옮기기"]');
+  const box = await handle.boundingBox();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 8, { steps: 3 });
+  return { x, y };
+}
+
+step('memo-drag', async () => {
+  const page = app.page;
+  const date = plusDays(today, 120);
+  const location = { kind: 'day', date };
+  const ids = {};
+  for (const name of ['A', 'B', 'C', 'D', 'E']) ids[name] = (await addItem(date, 'main', `끌기 ${name}`)).id;
+  ids.P = (await addItem(date, 'pm', '오후 메모')).id;
+  await openDate(date);
+  const main = page.locator('[data-testid="memo-section-main"]');
+  await main.locator('[data-testid="personal-memo-row"]').first().waitFor();
+  const order = async section => (await dayOf(date)).items.filter(i => i.section === section).map(i => i.contentHtml.replace('끌기 ', ''));
+  const shown = async () => (await main.locator('[data-testid="personal-memo-row"]').allInnerTexts()).map(t => t.replace('끌기 ', '').trim());
+  const rowOf = name => main.locator(`[data-memo-id="${ids[name]}"]`);
+  const gapY = async (upper, lower) => {
+    const a = await rowOf(upper).boundingBox();
+    const b = await rowOf(lower).boundingBox();
+    return (a.y + a.height + b.y) / 2;
+  };
+  const line = page.locator('[data-testid="memo-drop-line"]');
+  const versions = async () => (await app.invoke('history_list', { location })).length;
+
+  // ① 끄는 동안 메모 자리는 그대로, 삽입선이 뜨고, 가운데선 주변의 흔들림에 위치가 왔다 갔다 하지 않는다
+  const before = await main.locator('[data-testid="personal-memo-row"]').evaluateAll(nodes => nodes.map(n => Math.round(n.getBoundingClientRect().top)));
+  const { x } = await dragStart(rowOf('A'));
+  const target = await gapY('C', 'D');
+  await page.mouse.move(x, target, { steps: 12 });
+  await line.waitFor();
+  const lineTop = (await line.boundingBox()).y;
+  assert.ok(Math.abs(lineTop - target) <= 3, `삽입선이 C·D 사이(${lineTop} / ${target})`);
+  const during = await main.locator('[data-testid="personal-memo-row"]').evaluateAll(nodes => nodes.map(n => Math.round(n.getBoundingClientRect().top)));
+  assert.deepEqual(during, before, '끄는 동안 메모가 밀리지 않는다');
+  await app.shot('24a-drag-line');
+  const dBox = await rowOf('D').boundingBox();
+  const mid = dBox.y + dBox.height / 2;
+  await page.evaluate(() => {
+    window.__pointerTrace = [];
+    window.__pointerListener = e => window.__pointerTrace.push([Math.round(e.clientX), Math.round(e.clientY)]);
+    window.addEventListener('pointermove', window.__pointerListener, true);
+  });
+  const tops = new Set();
+  for (const wobble of [-4, 3, -2, 5, -5, 2, 4, -3]) {
+    await page.mouse.move(x, mid + wobble); // D 의 가운데선을 위아래로 넘나드는 작은 흔들림
+    await sleep(40);
+    tops.add(Math.round((await line.boundingBox()).y));
+  }
+  const trace = await page.evaluate(() => {
+    window.removeEventListener('pointermove', window.__pointerListener, true);
+    return window.__pointerTrace;
+  });
+  const foreign = trace.filter(([px]) => Math.abs(px - Math.round(x)) > 2);
+  assert.equal(tops.size, 1, `작은 흔들림에 삽입선이 움직이지 않는다 ${[...tops]} · 테스트가 보내지 않은 좌표 ${JSON.stringify(foreign)} · 전체 입력 ${JSON.stringify(trace)}`);
+  // 다른 곳의 포인터 입력이 들어오면(지난 실패의 값 486·520 처럼) 그쪽 구역으로 선이 갔다가, 다음 입력에 바로 돌아온다
+  const pmBox = await page.locator(`[data-memo-id="${ids.P}"]`).boundingBox();
+  await page.evaluate(([px, py]) => window.dispatchEvent(new PointerEvent('pointermove', { clientX: px, clientY: py })), [pmBox.x + 200, pmBox.y + 4]);
+  await sleep(60);
+  const elsewhere = (await line.boundingBox()).y;
+  assert.ok(Math.abs(elsewhere - pmBox.y) <= 3, `끼어든 입력은 그 자리의 틈으로(${elsewhere} / ${pmBox.y})`);
+  await page.mouse.move(x, mid - 3);
+  await sleep(60);
+  assert.ok((await line.boundingBox()).y < dBox.y + dBox.height, '다음 입력에 바로 돌아온다');
+  // ② 놓으면 그 자리, 화면·저장 순서 일치
+  await page.mouse.move(x, target, { steps: 3 });
+  await sleep(60);
+  await page.mouse.up();
+  assert.deepEqual((await shown()), ['B', 'C', 'A', 'D', 'E'], '놓자마자 화면에 반영');
+  await waitFor(async () => (await order('main')).join() === 'B,C,A,D,E', 'A 를 C·D 사이로');
+  assert.equal(await line.count(), 0, '놓은 뒤 삽입선 없음');
+
+  // ③ 맨 위 · 맨 아래 · 긴 이동
+  let box = await rowOf('E').boundingBox();
+  const startE = await dragStart(rowOf('E'));
+  box = await rowOf('B').boundingBox();
+  await page.mouse.move(startE.x, box.y - 2, { steps: 15 });
+  await sleep(60);
+  await page.mouse.up();
+  await waitFor(async () => (await order('main')).join() === 'E,B,C,A,D', '맨 위로');
+  const startB = await dragStart(rowOf('B'));
+  box = await rowOf('D').boundingBox();
+  await page.mouse.move(startB.x, box.y + box.height + 2, { steps: 6 }); // 빠른 이동
+  await sleep(60);
+  await page.mouse.up();
+  await waitFor(async () => (await order('main')).join() === 'E,C,A,D,B', '맨 아래로');
+
+  // ④ 제자리에 놓으면 저장하지 않는다
+  const historyBefore = await versions();
+  const startC = await dragStart(rowOf('C'));
+  await page.mouse.move(startC.x, startC.y + 3, { steps: 3 });
+  await sleep(60);
+  assert.equal(await line.count(), 0, '제자리에는 삽입선이 없다');
+  await page.mouse.up();
+  await sleep(300);
+  assert.equal(await versions(), historyBefore, '제자리에 놓으면 저장 요청 없음(History 그대로)');
+
+  // ⑤ Esc 취소 — 원래 순서
+  const startA = await dragStart(rowOf('A'));
+  await page.mouse.move(startA.x, (await rowOf('E').boundingBox()).y - 2, { steps: 8 });
+  await line.waitFor();
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await sleep(200);
+  assert.equal(await line.count(), 0);
+  assert.equal((await order('main')).join(), 'E,C,A,D,B', '취소 — 그대로');
+
+  // ⑥ 다른 구역으로 옮기기(기존 기능) · 체크 상태 유지
+  await app.invoke('item_set_completed', { id: ids.C, completed: true });
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await openDate(date);
+  await rowOf('C').waitFor();
+  const startX = await dragStart(rowOf('C'));
+  const pmRow = await page.locator(`[data-memo-id="${ids.P}"]`).boundingBox();
+  await page.mouse.move(pmRow.x + 40, pmRow.y + pmRow.height + 2, { steps: 12 });
+  await sleep(60);
+  await page.mouse.up();
+  await waitFor(async () => (await dayOf(date)).items.find(i => i.id === ids.C)?.section === 'pm', '오후 구역으로');
+  const moved = (await dayOf(date)).items.find(i => i.id === ids.C);
+  assert.equal(moved.completed, true, '체크 상태 유지');
+  void startX;
+
+  // ⑦ 재실행 후 순서 그대로
+  await app.restart();
+  assert.equal((await order('main')).join(), 'E,A,D,B', '재실행 후 같은 순서');
+});
+
+step('memo-drag-scroll-long', async () => {
+  const page = app.page;
+  const date = plusDays(today, 130);
+  const ids = [];
+  for (let n = 0; n < 30; n++) ids.push((await addItem(date, 'am', `긴 목록 ${n}`)).id);
+  const longText = Array.from({ length: 40 }, (_, n) => `긴 메모 ${n} 줄 — 내용이 길어 행 높이가 큽니다`).join('<br>');
+  const long = await addItem(date, 'main', longText);
+  const top = await addItem(date, 'main', '긴 메모 위');
+  const bottom = await addItem(date, 'main', '긴 메모 아래');
+  const original = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  await page.setViewportSize({ width: 850, height: 620 });
+  await openDate(date);
+  const section = page.locator('[data-testid="memo-section-am"]');
+  const order = async sectionName => (await dayOf(date)).items.filter(i => i.section === sectionName).map(i => i.id);
+  // 오전 구역이 화면 위쪽에 오게 한다(커서가 다른 구역으로 넘어가지 않게).
+  await page.evaluate(() => document.querySelector('[data-testid="memo-section-am"]').scrollIntoView({ block: 'start' }));
+  const scrollTop = () => page.evaluate(() => {
+    let el = document.querySelector('[data-testid="memo-section-am"]').parentElement;
+    while (el && getComputedStyle(el).overflowY !== 'auto') el = el.parentElement;
+    return el.scrollTop;
+  });
+
+  // 스크롤 중: 화면이 움직여도 삽입선이 커서 아래 틈을 따라간다
+  const first = section.locator(`[data-memo-id="${ids[0]}"]`);
+  const start = await dragStart(first);
+  await page.mouse.move(start.x, 300, { steps: 6 });
+  await page.locator('[data-testid="memo-drop-line"]').waitFor();
+  const lineBefore = (await page.locator('[data-testid="memo-drop-line"]').boundingBox()).y;
+  assert.ok(Math.abs(lineBefore - 300) <= 40, `삽입선이 커서 근처(${lineBefore})`);
+  const before = await scrollTop();
+  await page.mouse.wheel(0, 120);
+  await waitFor(async () => (await scrollTop()) > before, '끄는 중 휠 스크롤');
+  await sleep(200);
+  const lineAfter = (await page.locator('[data-testid="memo-drop-line"]').boundingBox()).y;
+  assert.ok(Math.abs(lineAfter - 300) <= 40, `스크롤 뒤에도 삽입선이 커서 근처(${lineBefore} → ${lineAfter})`);
+  const rowsBeforeEdge = await section.locator('[data-drop-row]').evaluateAll(nodes => nodes.map(n => ({ id: n.dataset.dropRow, bottom: n.getBoundingClientRect().bottom })));
+  assert.ok(rowsBeforeEdge.some(r => Math.abs(r.bottom - lineAfter) <= 4), '삽입선은 메모 사이 틈에 있다');
+  // 창 아래 가장자리로 가면 저절로 스크롤되고 삽입선이 함께 움직인다
+  const edgeStart = await scrollTop();
+  await page.mouse.move(start.x, 612, { steps: 5 });
+  await waitFor(async () => (await scrollTop()) > edgeStart, '가장자리 자동 스크롤');
+  await page.mouse.move(start.x, 300, { steps: 5 });
+  await sleep(500);
+  // 놓으면 삽입선이 가리킨 틈에 들어간다 — 선 위의 메모 바로 뒤
+  const rows = await section.locator('[data-drop-row]').evaluateAll(nodes => nodes.map(n => ({ id: n.dataset.dropRow, bottom: n.getBoundingClientRect().bottom })));
+  const lineNow = (await page.locator('[data-testid="memo-drop-line"]').boundingBox()).y;
+  const above = rows.filter(r => r.id !== ids[0] && r.bottom <= lineNow + 2).at(-1);
+  await page.mouse.up();
+  await waitFor(async () => {
+    const saved = await order('am');
+    return saved.indexOf(ids[0]) === saved.indexOf(above.id) + 1;
+  }, '삽입선이 가리킨 자리에 저장');
+  const shownIds = await section.locator('[data-drop-row]').evaluateAll(nodes => nodes.map(n => n.dataset.dropRow));
+  assert.deepEqual(shownIds, await order('am'), '화면과 저장 순서가 같다');
+
+  // 긴 메모 주변: 위·아래 메모를 긴 메모 너머로 옮긴다
+  const main = page.locator('[data-testid="memo-section-main"]');
+  await main.scrollIntoViewIfNeeded();
+  await page.evaluate(() => document.querySelector('[data-testid="memo-section-main"]').scrollIntoView({ block: 'start' }));
+  const topRow = main.locator(`[data-memo-id="${top.id}"]`);
+  const longBox = await main.locator(`[data-memo-id="${long.id}"]`).boundingBox();
+  assert.ok(longBox.height > 300, `긴 메모 높이 ${longBox.height}`);
+  await app.invoke('items_reorder', { location: { kind: 'day', date }, section: 'main', ids: [top.id, long.id, bottom.id] });
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await openDate(date);
+  await page.evaluate(() => document.querySelector('[data-testid="memo-section-main"]').scrollIntoView({ block: 'start' }));
+  await topRow.waitFor();
+  const s1 = await dragStart(topRow);
+  const longNow = await main.locator(`[data-memo-id="${long.id}"]`).boundingBox();
+  await page.mouse.move(s1.x, longNow.y + longNow.height / 2 + 20, { steps: 10 }); // 긴 메모 가운데를 넘어간다
+  await sleep(80);
+  await page.mouse.up();
+  await waitFor(async () => (await order('main')).join() === [long.id, top.id, bottom.id].join(), '긴 메모 뒤로');
+  await page.setViewportSize(original);
+});
+
+step('memo-drag-stress', async () => {
+  const page = app.page;
+  const date = plusDays(today, 140);
+  const model = [];
+  for (let n = 0; n < 7; n++) model.push((await addItem(date, 'main', `연속 ${n}`)).id);
+  model.splice(4, 0, (await addItem(date, 'main', Array.from({ length: 4 }, (_, n) => `긴 줄 ${n}`).join('<br>'))).id);
+  const stored = async () => (await dayOf(date)).items.filter(i => i.section === 'main').map(i => i.id);
+  await app.invoke('items_reorder', { location: { kind: 'day', date }, section: 'main', ids: model });
+  const main = page.locator('[data-testid="memo-section-main"]');
+  const line = page.locator('[data-testid="memo-drop-line"]');
+  const original = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  let seed = 20261102;
+  const random = max => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed % max;
+  };
+  const round = async (count, label) => {
+    await openDate(date); // 맨 위(스크롤 0) — 메모가 모두 자동 스크롤 구역 밖에 있다
+    await main.locator('[data-drop-row]').first().waitFor();
+    for (let i = 0; i < count; i++) {
+      const from = random(model.length);
+      const gap = random(model.length + 1);
+      const fast = random(3) === 0;
+      const row = main.locator(`[data-memo-id="${model[from]}"]`);
+      const start = await dragStart(row);
+      const rows = await main.locator('[data-drop-row]').evaluateAll(nodes => nodes.map(n => {
+        const r = n.getBoundingClientRect();
+        return [r.top, r.bottom];
+      }));
+      const y = gap === 0 ? rows[0][0] - 1 : gap >= rows.length ? rows[rows.length - 1][1] + 1 : (rows[gap - 1][1] + rows[gap][0]) / 2;
+      await page.mouse.move(start.x, y, { steps: fast ? 1 : 8 });
+      await sleep(40);
+      const noop = gap === from || gap === from + 1;
+      if (!noop) {
+        const top = (await line.boundingBox())?.y;
+        assert.ok(top !== undefined && Math.abs(top - y) <= 4, `${label} #${i} 삽입선(${top} / ${y})`);
+      } else {
+        assert.equal(await line.count(), 0, `${label} #${i} 제자리에는 선 없음`);
+      }
+      await page.mouse.up();
+      if (!noop) model.splice(gap > from ? gap - 1 : gap, 0, model.splice(from, 1)[0]);
+      const onScreen = await main.locator('[data-drop-row]').evaluateAll(nodes => nodes.map(n => n.dataset.dropRow));
+      assert.deepEqual(onScreen, model, `${label} #${i} 놓자마자 화면 순서`);
+      await waitFor(async () => (await stored()).join() === model.join(), `${label} #${i} 저장 순서`, 5000);
+    }
+  };
+  await round(40, '기본 창');
+  await page.setViewportSize({ width: 850, height: 620 });
+  await round(25, '최소 창');
+  await page.setViewportSize(original);
+  await app.restart();
+  assert.equal((await stored()).join(), model.join(), '재실행 후 같은 순서');
+});
+
+step('list-manage-trash', async () => {
+  const page = app.page;
+  const names = Array.from({ length: 24 }, (_, n) => `주제별 List 이름 ${n + 1}`);
+  const lists = [];
+  for (const name of names) lists.push(await app.invoke('list_create', { id: crypto.randomUUID(), name }));
+  const target = lists[1];
+  const item = await app.invoke('item_create', { input: { id: crypto.randomUUID(), location: { kind: 'next', listId: target.id }, section: 'next', kind: 'checklist', contentHtml: '<p><b>복구</b>될 메모</p>' } });
+  await app.invoke('item_set_completed', { id: item.id, completed: true });
+  await app.invoke('item_create', { input: { id: crypto.randomUUID(), location: { kind: 'next', listId: target.id }, section: 'next', kind: 'text', contentHtml: '두 번째 메모' } });
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.click('[data-testid="memo-search-open"]');
+  await page.locator(`[data-testid="personal-memo-browse"] >> text=${target.name}`).first().click();
+  const tabsBox = page.locator('[data-testid="memo-next-list-tabs"]');
+  await tabsBox.waitFor();
+
+  // 자동 줄바꿈 + 두 줄로 접힘 + 가로 스크롤 없음
+  const scroll = await tabsBox.evaluate(el => ({ overflow: el.scrollWidth - el.clientWidth, height: el.getBoundingClientRect().height }));
+  assert.ok(scroll.overflow <= 1, '가로 스크롤 없음');
+  assert.ok(scroll.height <= 32 * 2 + 6 + 6, `접힌 높이 두 줄(${scroll.height})`);
+  const more = page.locator('[data-testid="memo-next-list-more"]');
+  const label = await more.innerText();
+  assert.match(label, /List 더 보기 · \d+개/, label);
+  await app.shot('25a-list-collapsed');
+  const created = page.locator('[data-testid="memo-next-list-create"]');
+  assert.ok(await created.isVisible(), '+ List 항상 보임');
+  // 맨 뒤 List 를 고르면 — 접혀 있어도 선택 List 가 보인다
+  await more.click();
+  assert.ok((await tabsBox.boundingBox()).height > scroll.height, '펼치면 모두');
+  await app.shot('25b-list-expanded');
+  const lastTab = page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${lists[23].id}"]`);
+  await lastTab.click();
+  await waitFor(async () => (await lastTab.getAttribute('aria-selected')) === 'true', '맨 뒤 List 선택');
+  await more.click();
+  await page.locator('[data-testid="memo-next-list-pinned"]').waitFor();
+  assert.ok((await page.locator('[data-testid="memo-next-list-pinned"]').innerText()).includes(lists[23].name), '가려진 선택 List 를 함께 보여 준다');
+  assert.equal(await lastTab.getAttribute('aria-selected'), 'true', '접어도 선택 유지');
+  // 작은 창
+  const original = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  await page.setViewportSize({ width: 850, height: 620 });
+  assert.ok((await tabsBox.evaluate(el => el.scrollWidth - el.clientWidth)) <= 1, '작은 창에서도 가로 스크롤 없음');
+  await app.shot('25c-list-small');
+  await page.setViewportSize(original);
+  await page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${target.id}"]`).click();
+  const tab = page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${target.id}"]`);
+  await waitFor(async () => (await tab.getAttribute('aria-selected')) === 'true', 'List 선택');
+
+  // 우클릭 — 이름 변경(Esc 취소 · 빈 제목 · Enter 저장, 메모·선택 유지)
+  await tab.click({ button: 'right' });
+  await page.click('[data-testid="memo-next-list-rename"]');
+  const nameInput = page.locator('[data-testid="memo-list-name-dialog"] input');
+  assert.equal(await nameInput.inputValue(), target.name, '기존 제목 표시');
+  await nameInput.fill('취소될 이름');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-testid="memo-list-name-dialog"]').waitFor({ state: 'detached' });
+  assert.ok((await tab.innerText()).includes(target.name), 'Esc 취소');
+  await tab.click({ button: 'right' });
+  await page.click('[data-testid="memo-next-list-rename"]');
+  await nameInput.fill('   ');
+  assert.ok(await page.locator('[data-testid="memo-list-name-dialog"] button:has-text("저장")').isDisabled(), '빈 제목 불가');
+  await nameInput.fill('메모장 개선');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await tab.innerText()).includes('메모장 개선'), '이름 변경');
+  assert.equal(await tab.getAttribute('aria-selected'), 'true', '선택 유지');
+  assert.equal((await app.invoke('memo_list', { listId: target.id })).items.length, 2, '메모 그대로');
+  // 기본 Next 는 메뉴 없음
+  await page.locator('[data-testid="memo-next-list-tab"]').first().click({ button: 'right' });
+  assert.equal(await page.locator('[data-testid="memo-next-list-rename"]').count(), 0, '기본 Next 는 이름 변경·삭제 없음');
+  assert.equal(await page.locator('[data-testid="memo-next-list-tab"]').first().locator('[data-testid="memo-next-list-delete"]').count(), 0);
+
+  // × — 바로 지우지 않는다. 취소 → 그대로
+  await tab.hover();
+  await tab.locator('[data-testid="memo-next-list-delete"]').click();
+  const confirm = page.locator('[data-testid="memo-list-delete-confirm"]');
+  await confirm.waitFor();
+  const confirmText = await confirm.innerText();
+  assert.ok(confirmText.includes('메모장 개선') && confirmText.includes('메모 2개') && confirmText.includes('7일'), confirmText);
+  await app.shot('25d-list-delete-confirm');
+  await confirm.locator('button:has-text("취소")').click();
+  await confirm.waitFor({ state: 'detached' });
+  assert.ok((await app.invoke('memo_lists')).some(l => l.id === target.id), '취소 — 그대로');
+
+  const indexBefore = (await app.invoke('memo_lists')).findIndex(l => l.id === target.id);
+  // 휴지통으로 — 보고 있던 List 면 기본 Next 로, 두 번 호출해도 안전
+  await tab.hover();
+  await tab.locator('[data-testid="memo-next-list-delete"]').click();
+  await page.click('[data-testid="memo-list-delete-submit"]');
+  await confirm.waitFor({ state: 'detached' });
+  await waitFor(async () => (await page.locator('[data-testid="memo-next-list-tab"]').first().getAttribute('aria-selected')) === 'true', '기본 Next 로');
+  assert.equal(await page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${target.id}"]`).count(), 0);
+  assert.equal((await app.invoke('list_delete', { id: target.id })).already, true, '두 번 실행 — 오류 없음');
+  assert.equal((await app.invoke('memo_search', { query: '복구될' })).items.length, 0, '휴지통 메모는 검색되지 않는다');
+
+  // History 보존(이미지 보존은 Rust 테스트 — 첨부 파일까지 확인)
+  const historyInTrash = await app.invoke('history_list', { location: { kind: 'next', listId: target.id } });
+  assert.ok(historyInTrash.some(v => v.reason === 'list_delete'), '삭제 전 내용이 History 에');
+
+  // 설정 → 휴지통: 정보 · 복구
+  await page.mouse.move(5, 300);
+  await page.click('[data-testid="open-settings"]');
+  const entry = page.locator(`[data-testid="trash-entry"][data-list-id="${target.id}"]`);
+  await entry.waitFor();
+  const entryText = await entry.innerText();
+  assert.ok(entryText.includes('메모장 개선') && entryText.includes('메모 2개') && entryText.includes('영구 삭제 예정'), entryText);
+  await entry.scrollIntoViewIfNeeded();
+  await app.shot('25e-trash');
+  const rows = page.locator('[data-testid="trash-section"]');
+  await rows.locator('[data-testid="trash-restore"]').first().click();
+  await waitFor(async () => (await app.invoke('memo_lists')).some(l => l.id === target.id), '복구');
+  const restored = await app.invoke('memo_list', { listId: target.id });
+  assert.deepEqual(restored.items.map(i => [i.contentHtml, i.completed]), [['<p><b>복구</b>될 메모</p>', true], ['두 번째 메모', false]], '내용·서식·완료 그대로');
+  assert.equal((await app.invoke('memo_lists')).findIndex(l => l.id === target.id), indexBefore, '원래 순서로');
+  assert.ok((await app.invoke('history_list', { location: { kind: 'next', listId: target.id } })).length >= historyInTrash.length, 'History 유지');
+  assert.equal((await app.invoke('trash_restore', { id: target.id })).id, target.id, '복구를 두 번 실행해도 안전');
+
+  // 영구 삭제 — 확인 후. 취소하면 그대로.
+  await app.invoke('list_delete', { id: target.id });
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.click('[data-testid="open-settings"]');
+  await entry.waitFor();
+  await page.locator('[data-testid="trash-section"] [data-testid="trash-purge"]').first().click();
+  await page.locator('[data-testid="trash-purge-confirm"]').waitFor();
+  const purgeText = await page.locator('[data-testid="trash-purge-confirm"]').innerText();
+  assert.ok(purgeText.includes('영구 삭제하시겠습니까') && purgeText.includes('이미지 및 History가 삭제됩니다') && purgeText.includes('휴지통에서 복구할 수 없습니다'), purgeText);
+  await app.shot('25f-trash-purge-confirm');
+  await page.locator('[data-testid="trash-purge-confirm"] button:has-text("취소")').click();
+  assert.equal((await app.invoke('trash_list')).length, 1, '취소 — 그대로');
+  await page.locator('[data-testid="trash-section"] [data-testid="trash-purge"]').first().click();
+  const backupsBefore = (await app.invoke('backup_list')).filter(b => b.fileName.includes('pre-trash-purge')).length;
+  await page.click('[data-testid="trash-purge-confirm-button"]');
+  await waitFor(async () => (await app.invoke('trash_list')).length === 0, '영구 삭제');
+  assert.ok((await app.invoke('backup_list')).filter(b => b.fileName.includes('pre-trash-purge')).length > backupsBefore, '영구 삭제 전 Backup');
+  assert.equal((await app.invoke('history_list', { location: { kind: 'next', listId: target.id } })).length, 0, 'History 도 삭제');
+  await app.invoke('trash_purge', { id: target.id }); // 두 번 실행 — 오류 없음
+  await page.locator('[data-testid="settings-dialog"] button:has-text("닫기")').click();
+  // 재실행해도 다시 나타나지 않는다
+  await app.restart();
+  assert.ok(!(await app.invoke('memo_lists')).some(l => l.id === target.id), '다시 나타나지 않는다');
+  for (const list of lists) if (list.id !== target.id) await app.invoke('list_delete', { id: list.id });
+  for (const list of lists) if (list.id !== target.id) await app.invoke('trash_purge', { id: list.id });
+});
+
+step(
+  'linked-list-delete-refused',
+  async () => {
+    if (!(await app.invoke('auth_status')).loggedIn) {
+      await app.invoke('auth_login_begin', { reconnect: false });
+      await waitFor(async () => (await app.invoke('auth_status')).loggedIn, '로그인');
+    }
+    await app.invoke('sync_now');
+    const list = await app.invoke('list_create', { id: crypto.randomUUID(), name: '연결된 List' });
+    const location = { kind: 'next', listId: list.id };
+    await app.invoke('item_create', { input: { id: crypto.randomUUID(), location, section: 'next', kind: 'checklist', contentHtml: '연결된 메모' } });
+    await app.invoke('sync_link', { location });
+    await app.invoke('sync_now');
+    const error = await app.invokeError('list_delete', { id: list.id });
+    assert.equal(error.code, 'linked_list_managed', '서버 지원 전에는 삭제를 받지 않는다');
+    assert.ok(error.message.includes('공통 관리 기능'));
+    const kept = await app.invoke('memo_list', { listId: list.id });
+    assert.equal(kept.items.length, 1, '메모 그대로');
+    assert.equal(kept.list.document.syncEnabled, true, '연결 그대로');
+    assert.ok(!(await app.invoke('trash_list')).some(e => e.listId === list.id), '휴지통에 들어가지 않는다');
+    // 연동 해제 → 이 PC 의 List — 이름 변경·휴지통·복구가 다시 된다. 복구해도 저절로 연결하지 않는다.
+    await app.invoke('sync_unlink', { location });
+    await app.invoke('sync_now');
+    assert.equal((await app.invoke('list_rename', { id: list.id, name: '이 PC 이름' })).name, '이 PC 이름');
+    await app.invoke('list_delete', { id: list.id });
+    const [entry] = (await app.invoke('trash_list')).filter(e => e.listId === list.id);
+    assert.equal(entry.restorable, true);
+    assert.equal(entry.wasLinked, false);
+    await app.invoke('trash_restore', { id: list.id });
+    await app.invoke('sync_now');
+    const restored = await app.invoke('memo_list', { listId: list.id });
+    assert.equal(restored.list.document.syncEnabled, false, '몰래 다시 연결하지 않는다');
+    assert.equal(restored.items[0].contentHtml, '연결된 메모');
+  },
+  { mockOnly: true },
+);
+
+step('carryover-icon-notices', async () => {
+  const page = app.page;
+  // 지난 날짜인데 D-7 에 가져올 것이 없다 — 간결한 안내만, 창을 열지 않는다
+  const past = plusDays(today, -200);
+  await openDate(past);
+  await page.click('[data-testid="carryover-open"]');
+  await page.locator('text=가져올 미완료 체크리스트가 없습니다.').waitFor();
+  assert.equal(await page.locator('[data-testid="carryover-dialog"]').count(), 0, '고를 것이 없으면 창이 없다');
+  // Next List 에는 기준 날짜가 없다
+  await page.click('[data-testid="memo-search-open"]');
+  await page.locator('[data-testid="personal-memo-browse"] button').filter({ hasText: /^Next/ }).first().click();
+  await page.locator('[data-testid="memo-next-list-tabs"]').waitFor();
+  assert.ok(await page.locator('[data-testid="carryover-open"]').isDisabled(), 'List 화면에서는 비활성');
+  await page.locator('[data-testid="carryover-open"]').locator('..').hover();
+  await page.locator('[role="tooltip"]:has-text("날짜를 연 화면")').waitFor({ timeout: 5000 });
+  await page.mouse.move(5, 300);
 });
 
 step('carryover', async () => {
@@ -520,9 +1171,8 @@ step('carryover', async () => {
   await openToday();
   await sleep(800);
   assert.equal(await app.page.locator('[data-testid="carryover-notice"]').count(), 0, '가져온 뒤에는 저절로 안내하지 않는다');
-  await app.page.click('[data-testid="day-tools-menu"]');
-  await app.page.click('[data-testid="day-tools-carryover"]');
-  await app.page.locator('[data-testid="carryover-picker"]').waitFor();
+  await app.page.click('[data-testid="carryover-open"]');
+  await app.page.locator('[data-testid="carryover-dialog"] [data-testid="carryover-picker"]').waitFor();
   assert.equal(await app.page.locator('[data-testid="carryover-option"]').count(), 1, '남은 항목(자료 정리)만');
   await app.page.locator('[data-testid="carryover-picker"] button:has-text("취소")').click();
   assert.equal((await day()).items.filter(i => i.contentHtml === '<b>보고서</b> 작성').length, 1, '재실행 후에도 하나');
@@ -630,8 +1280,7 @@ step(
 
     // ② Desktop(화면)에서 남은 B 가져오기 → 서버 공통 복사 1건, 중복 없음
     await openDate(target);
-    await app.page.click('[data-testid="day-tools-menu"]');
-    await app.page.click('[data-testid="day-tools-carryover"]');
+    await app.page.click('[data-testid="carryover-open"]');
     await app.page.locator('[data-testid="carryover-picker"]').waitFor();
     assert.equal(await app.page.locator('[data-testid="carryover-option"]').count(), 1);
     await app.shot('30-shared-carryover-picker');

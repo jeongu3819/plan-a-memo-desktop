@@ -11,6 +11,7 @@ pub mod repo;
 pub mod search;
 pub mod service;
 pub mod text;
+pub mod trash;
 
 use serde::{Deserialize, Serialize};
 

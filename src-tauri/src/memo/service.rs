@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::repo::{self, touch};
 use super::{
-    text, DayMemo, DocKind, LocatedItem, Location, MemoItem, NextListInfo, NextListMemo, WeekMemo, DEFAULT_LIST_ID, MAX_CONTENT_BYTES,
+    text, trash, DayMemo, DocKind, LocatedItem, Location, MemoItem, NextListInfo, NextListMemo, WeekMemo, DEFAULT_LIST_ID, MAX_CONTENT_BYTES,
 };
 use crate::error::{AppError, AppResult};
 use crate::util::{is_date, is_uuid, new_id, now};
@@ -64,7 +64,9 @@ fn located(conn: &Connection, item: MemoItem) -> AppResult<LocatedItem> {
 pub fn favorites(conn: &Connection) -> AppResult<Vec<LocatedItem>> {
     let items: Vec<MemoItem> = conn
         .prepare(&format!(
-            "SELECT {} FROM memo_items WHERE favorite = 1 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 500",
+            "SELECT {} FROM memo_items WHERE favorite = 1 AND deleted_at IS NULL
+                AND document_id NOT IN (SELECT id FROM documents WHERE deleted_at IS NOT NULL)
+              ORDER BY updated_at DESC LIMIT 500",
             repo::ITEM_COLUMNS
         ))?
         .query_map([], repo::item_from_row)?
@@ -104,14 +106,56 @@ pub struct DaySummary {
 
 pub fn days(conn: &Connection, before: Option<&str>, limit: i64) -> AppResult<Vec<DaySummary>> {
     let before = before.filter(|d| is_date(d)).unwrap_or("9999-12-31");
+    days_between(conn, "0000-00-00", before, limit)
+}
+
+/// 찾아보기의 월 카드 — 메모의 **실제 날짜**(수정 시각이 아니다) 기준, 최신 월부터. 메모가 없는 월은 없다.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthSummary {
+    /// 'YYYY-MM'
+    pub month: String,
+    pub day_count: i64,
+    pub item_count: i64,
+}
+
+/// `until` 은 이 PC 의 오늘 — '지난 메모' 는 그날까지의 메모만 센다(미래 날짜는 검색·주간·날짜 상세에서 본다).
+pub fn day_months(conn: &Connection, until: &str) -> AppResult<Vec<MonthSummary>> {
+    if !is_date(until) {
+        return Err(AppError::validation("날짜 형식이 올바르지 않습니다."));
+    }
+    let rows = conn
+        .prepare(
+            "SELECT substr(d.memo_date, 1, 7) AS month, COUNT(DISTINCT d.id), COUNT(i.id)
+               FROM documents d JOIN memo_items i ON i.document_id = d.id AND i.deleted_at IS NULL
+              WHERE d.kind = 'DAY' AND d.memo_date <= ?1
+              GROUP BY month ORDER BY month DESC",
+        )?
+        .query_map([until], |r| Ok(MonthSummary { month: r.get(0)?, day_count: r.get(1)?, item_count: r.get(2)? }))?
+        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+/// 월 카드를 펼쳤을 때 — 그 달의 `until`(이 PC 의 오늘)까지 메모가 있는 날짜(최신순). 한 달이라 31건을 넘지 않는다.
+pub fn days_in_month(conn: &Connection, month: &str, until: &str) -> AppResult<Vec<DaySummary>> {
+    if !is_date(&format!("{month}-01")) {
+        return Err(AppError::validation("월 형식이 올바르지 않습니다."));
+    }
+    let until = chrono::NaiveDate::parse_from_str(until, "%Y-%m-%d").map_err(|_| AppError::validation("날짜 형식이 올바르지 않습니다."))?;
+    let tomorrow = (until + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+    let month_end = format!("{month}-99");
+    days_between(conn, &format!("{month}-01"), tomorrow.as_str().min(month_end.as_str()), 31)
+}
+
+fn days_between(conn: &Connection, from: &str, before: &str, limit: i64) -> AppResult<Vec<DaySummary>> {
     let rows: Vec<(String, String, bool)> = conn
         .prepare(
             "SELECT d.id, d.memo_date, d.sync_enabled FROM documents d
-              WHERE d.kind = 'DAY' AND d.memo_date < ?1
+              WHERE d.kind = 'DAY' AND d.memo_date >= ?1 AND d.memo_date < ?2
                 AND EXISTS(SELECT 1 FROM memo_items i WHERE i.document_id = d.id AND i.deleted_at IS NULL)
-              ORDER BY d.memo_date DESC LIMIT ?2",
+              ORDER BY d.memo_date DESC LIMIT ?3",
         )?
-        .query_map(params![before, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? == 1)))?
+        .query_map(params![from, before, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? == 1)))?
         .collect::<Result<_, _>>()?;
     rows.into_iter()
         .map(|(doc_id, date, sync_enabled)| {
@@ -433,52 +477,16 @@ pub fn rename_list(conn: &mut Connection, id: &str, name: &str) -> AppResult<Nex
     if info.is_default {
         return Err(AppError::validation("기본 Next 의 이름은 바꿀 수 없습니다."));
     }
-    // List 이름은 이 PC 의 정보다. memo-sync-v1 에는 이미 있는 List 의 이름을 바꾸는 API 가 없고 Push 문서에도
-    // 이름 필드가 없다 — 연결된 List 라도 PLAN-A Work 로 보내지 않는다(화면이 '이 PC 에만' 이라고 알린다).
-    // 문서 revision 을 올리지 않는다(올려도 보낼 내용이 없어 '보내는 중' 표시만 생긴다).
+    // 연결된 List 는 모든 기기가 같은 이름을 써야 하는데 memo-sync-v1 에는 이름을 바꾸는 API 가 없다(Push 문서에도 이름 필드가 없다).
+    // 이 PC 에서만 달라지는 일이 없도록 공통 관리 기능이 준비될 때까지 막는다.
+    if info.document.as_ref().is_some_and(|d| d.sync_enabled) {
+        return Err(AppError::new(trash::LINKED_MANAGED_CODE, "연결된 List의 이름 변경은 PLAN-A Work 공통 관리 기능이 준비된 후 사용할 수 있습니다."));
+    }
+    // 연결되지 않은 List 의 이름은 이 PC 의 정보다 — 문서 revision 을 올리지 않는다.
     tx.execute("UPDATE next_lists SET name = ?2, updated_at = ?3 WHERE id = ?1", params![id, name, now()])?;
     let info = repo::list_info(&tx, id)?;
     tx.commit()?;
     Ok(info)
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteListResult {
-    pub id: String,
-    pub moved_count: usize,
-}
-
-/// List 만 지운다. 안의 메모는 기본 Next 로 옮긴다(Web 과 같은 규칙 — 메모는 지우지 않는다).
-pub fn delete_list(conn: &mut Connection, id: &str) -> AppResult<DeleteListResult> {
-    let tx = conn.transaction()?;
-    let info = repo::list_info(&tx, id)?;
-    if info.is_default {
-        return Err(AppError::validation("기본 Next 는 삭제할 수 없습니다."));
-    }
-    let mut moved = 0;
-    if let Some(doc) = &info.document {
-        repo::record_version(&tx, &doc.id, "list_delete")?;
-        let items = repo::items_of(&tx, &doc.id)?;
-        if !items.is_empty() {
-            let default_doc = repo::ensure_doc(&tx, &Location::Next { list_id: None })?;
-            let start = repo::next_sort_order(&tx, &default_doc.id, "next")?;
-            for (order, item) in (start..).zip(items.iter()) {
-                tx.execute(
-                    "UPDATE memo_items SET document_id = ?2, sort_order = ?3, updated_at = ?4 WHERE id = ?1",
-                    params![item.id, default_doc.id, order, now()],
-                )?;
-                tx.execute("UPDATE attachments SET document_id = ?2 WHERE item_id = ?1", params![item.id, default_doc.id])?;
-            }
-            moved = items.len();
-            touch(&tx, &default_doc.id)?;
-        }
-        tx.execute("UPDATE documents SET deleted_at = ?2 WHERE id = ?1", params![doc.id, now()])?;
-        touch(&tx, &doc.id)?; // 연결된 List 면 '삭제됨' 을 전달
-    }
-    tx.execute("UPDATE next_lists SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1", params![id, now()])?;
-    tx.commit()?;
-    Ok(DeleteListResult { id: id.to_string(), moved_count: moved })
 }
 
 pub fn reorder_lists(conn: &mut Connection, ids: &[String]) -> AppResult<Vec<NextListInfo>> {

@@ -1,7 +1,7 @@
 {
   "name": "plan-a-memo-desktop",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "description": "PLAN-A Memo — Windows local-first memo app (Tauri 2 + React + SQLite)",
   "scripts": {

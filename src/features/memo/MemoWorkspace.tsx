@@ -1,17 +1,17 @@
 /**
  * PLAN-A Memo 메인 화면 — Web 개인 메모 창(PersonalMemoWorkspaceDialog + Workspace)을 창 전체로.
  *
- *   ┌ October 10, 2026          (주간)  ‹ 이번 주 ›  │ [🔍] [오늘] [☁] [≡+] [⚙]
- *   │ 오늘도 좋은 하루예요~!    (날짜 상세) ← 주간 ‹ 토 10/10 Today › │ [🔍] [오늘] [☁] [≡+] [⚙]
+ *   ┌ October 10, 2026          (주간)  ‹ ›  │ [🔍] [오늘] [☁] [≡+] [⚙]
+ *   │ 오늘도 좋은 하루예요~!    (날짜 상세) ← 주간 ‹ 토요일 Today › │ [🔍] [오늘] [☁] [≡+] [⚙]
  *   └ 주간(2×4) ↔ 날짜 상세 ↔ 검색·List(찾아보기)를 같은 자리에서 전환
  *
  * 머리는 한 줄 — 왼쪽 표지(날짜·인사말), 오른쪽 조작 묶음(화면 이동 │ 도구). 본문 위에 따로 줄을 두지 않는다.
  * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다: 검색 — 아이콘 자리가 입력칸으로 펼쳐지고 결과·찾아보기(즐겨찾기 · Next List ·
  * 지난 메모 · History)는 본문에 · 오늘(**오늘 날짜의 상세**) · 연동(연결 상태·동기화·해제) · 지난 미완료 가져오기(날짜 상세에서만) · 설정.
  * History 는 연동과 상관없는 메모 기록이다 — 가운데 날짜·List 이름을 누르면 나오는 보조 메뉴(메모가 없는 날에도)와 메모 행 메뉴에 있다.
- * 주간의 ‹ › 가운데는 '이번 주·지난주·다음 주' — 더 먼 주는 실제 기간, 실제 기간은 항상 툴팁으로 볼 수 있다.
- * 날짜 이동은 도구 왼쪽의 ‹ › 뿐이다(주간은 기간, 날짜 상세는 그 날짜를 가운데 표시) — 같은 요일 고르기 메뉴는 두지 않는다
- * (날짜 상세 아래 '다가오는 같은 요일' 카드가 대신한다).
+ * 날짜는 두 번 쓰지 않는다 — 큰 제목이 연·월·일(날짜 상세는 보고 있는 날짜, 그 밖에는 오늘)을, 작은 이동 영역은 요일만 보여 준다.
+ * 주간은 요일 칸마다 날짜가 있으므로 ‹ › 만 둔다.
+ * 날짜 이동은 도구 왼쪽의 ‹ › 뿐이다 — 같은 요일 고르기 메뉴는 두지 않는다(날짜 상세 아래 '다가오는 같은 요일' 카드가 대신한다).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Button, ButtonBase, Chip, IconButton, InputBase, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
@@ -48,8 +48,7 @@ import {
 } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { MEMO_SEARCH_HIGHLIGHT } from '../../vendor/plan-a-work/components/personalMemo/memoSearchHighlight';
 import type { DueReminder, Location, MemoSection } from '../../domain/types';
-import { isNextKey, koreanMonthDay, locationKey, locationLabel, parseLocationKey } from '../../domain/location';
-import { weekLabel, weekRangeText } from '../../domain/memoBrowse';
+import { isNextKey, koreanMonthDay, koreanWeekday, locationKey, locationLabel, parseLocationKey } from '../../domain/location';
 import { koreanLongDate } from '../../domain/dayTools';
 import { dayToolsService, isTauri } from '../../tauri/api';
 import { useDay, useLists, useNextList, useSyncOverview } from '../../services/queries';
@@ -91,6 +90,8 @@ const HEADER_BUTTON_SX = {
   '&:hover': { bgcolor: 'action.hover', borderColor: MEMO_CARD_BORDER },
 } as const;
 const HEADER_ICON_SX = { ...HEADER_BUTTON_SX, width: 32, px: 0 } as const;
+/** 이동 묶음 왼쪽의 글자 버튼(주간 · 목록 · 메모장) — 글자 폭만큼만 차지해 최소 창에서도 긴 날짜 제목과 한 줄에 든다. */
+const HEADER_TEXT_BUTTON_SX = { height: 32, minWidth: 0, px: 0.5, color: MEMO_SECTION_TITLE } as const;
 const HEADER_BUTTON_ACTIVE_SX = {
   bgcolor: 'rgba(37, 99, 235, 0.08)', color: 'primary.main', borderColor: 'rgba(37, 99, 235, 0.35)',
   '&:hover': { bgcolor: 'rgba(37, 99, 235, 0.12)', borderColor: 'rgba(37, 99, 235, 0.5)' },
@@ -338,15 +339,15 @@ export default function MemoWorkspace() {
     </Box>
   );
 
-  // 도구 왼쪽의 화면 이동 — 주간: ‹ 이번 주 › · 날짜 상세: ← 주간 ‹ 날짜 Today › · 찾아보기: ← 메모장.
+  // 도구 왼쪽의 화면 이동 — 주간: ‹ › · 날짜 상세: ← 주간 ‹ 요일 Today › · 찾아보기: ← 메모장.
   const navControls = isBrowse ? (
-    <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={leaveBrowse} data-testid="memo-browse-back" sx={{ height: 32, color: MEMO_SECTION_TITLE }}>
+    <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={leaveBrowse} data-testid="memo-browse-back" sx={HEADER_TEXT_BUTTON_SX}>
       메모장
     </Button>
   ) : (
     <>
       {isDay && view.fromBrowse && (
-        <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={() => openBrowse(false)} data-testid="memo-back-to-browse" sx={{ mr: 0.25, height: 32, color: MEMO_SECTION_TITLE }}>
+        <Button size="small" startIcon={<ArrowBackIcon sx={{ fontSize: 16 }} />} onClick={() => openBrowse(false)} data-testid="memo-back-to-browse" sx={HEADER_TEXT_BUTTON_SX}>
           목록
         </Button>
       )}
@@ -356,7 +357,7 @@ export default function MemoWorkspace() {
           data-testid="memo-back-to-week"
           startIcon={view.fromBrowse ? undefined : <ArrowBackIcon sx={{ fontSize: 16 }} />}
           onClick={() => setView({ kind: 'week', monday: dayKey && !isNextKey(dayKey) ? weekStart(dayKey) : view.monday })}
-          sx={{ mr: 0.5, height: 32, color: MEMO_SECTION_TITLE }}
+          sx={HEADER_TEXT_BUTTON_SX}
         >
           주간
         </Button>
@@ -382,17 +383,7 @@ export default function MemoWorkspace() {
             </IconButton>
           </Tooltip>
         )}
-        {/* 기간은 표시만 — 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치). 날짜·List 이름은 보조 메뉴를 연다. */}
-        {!isDay && (
-          <Tooltip title={weekRangeText(view.monday, today)} disableInteractive>
-            <Typography
-              data-testid="personal-memo-week-range"
-              sx={{ fontWeight: 600, fontSize: '0.84rem', px: 0.5, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: 'text.primary' }}
-            >
-              {weekLabel(view.monday, today)}
-            </Typography>
-          </Tooltip>
-        )}
+        {/* 요일·List 이름은 보조 메뉴를 연다. 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치). */}
         {isDay && (
           <Tooltip title="이 메모의 변경 이력" disableInteractive disableHoverListener={!!docMenu}>
             <ButtonBase
@@ -409,11 +400,11 @@ export default function MemoWorkspace() {
               <Typography
                 data-testid="personal-memo-view-label"
                 sx={{
-                  fontWeight: 700, fontSize: '0.9rem', px: onNext ? 1 : 0.25, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+                  fontWeight: 700, fontSize: '0.9rem', pl: onNext ? 1 : 0, pr: onNext ? 1 : 0.5, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
                   color: onNext ? 'text.primary' : dayTone(dayKey!).text,
                 }}
               >
-                {onNext ? NEXT_LABEL : dayLabelWithYear(dayKey!, today)}
+                {onNext ? NEXT_LABEL : koreanWeekday(dayKey!)}
               </Typography>
               {dayKey === today && <TodayBadge />}
               <ExpandMoreIcon sx={{ fontSize: 16, color: MEMO_SECTION_TITLE }} />
@@ -462,14 +453,15 @@ export default function MemoWorkspace() {
         data-testid="memo-dialog-header"
         sx={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', columnGap: 2, rowGap: 1, px: 3, pt: 2, pb: 1.5, flexShrink: 0 }}
       >
-        <Box sx={{ flex: '1 1 220px', minWidth: 0, pt: 0.25, pl: 0.25 }}>
+        {/* 폭의 기준은 제목 전체 — 자리가 모자라면 제목을 자르는 대신 조작 묶음이 아래로 내려간다. */}
+        <Box sx={{ flex: '1 1 auto', minWidth: 0, pt: 0.25, pl: 0.25 }}>
           <Typography
             component="h1"
             data-testid="memo-header-date"
             noWrap
             sx={{ fontFamily: MEMO_NOTE_SERIF, fontSize: '1.875rem', fontWeight: 400, letterSpacing: '0.4px', lineHeight: 1.15, color: MEMO_NOTE_DATE }}
           >
-            {longEnglishDate(today)}
+            {longEnglishDate(isDay && !onNext ? dayKey! : today)}
           </Typography>
           <Typography
             data-testid="memo-header-greeting"
@@ -481,7 +473,7 @@ export default function MemoWorkspace() {
         </Box>
         <Box
           data-testid="personal-memo-view-header"
-          sx={{ ml: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', columnGap: 1, rowGap: 0.75, flexWrap: 'wrap', minHeight: 32, pt: 0.25 }}
+          sx={{ ml: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', columnGap: 0.75, rowGap: 0.75, flexWrap: 'wrap', minHeight: 32, pt: 0.25 }}
         >
           {/* 동기화에 문제가 있을 때만 작게 · 저장 상태(알릴 것이 있을 때만 — 비어 있으면 빈 자리) */}
           <SyncProblems />

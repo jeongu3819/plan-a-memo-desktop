@@ -45,6 +45,12 @@ export function normalizeTextSize(value: string, source: 'paste' | 'editor' = 'p
     return clampTextSizePx(px);
 }
 
+/** 소수 px 이면서 네 단계 크기도 아니다 — 편집기 기본 크기의 계산값(저장 계약의 크기는 정수·네 단계뿐이다). */
+function isComputedBaseSize(value: string): boolean {
+    const px = cssLengthPx(value);
+    return px !== null && Math.abs(px - Math.round(px)) > 0.01 && !TEXT_SIZE_PX.some(size => Math.abs(size - px) < 0.01);
+}
+
 /** 문단 정렬(data-align) — 문단·제목·목록 항목. 왼쪽(기본)은 표 셀 안에서만 적는다. */
 const BLOCK_ALIGN_TAGS = /^(P|DIV|H[1-6]|LI|BLOCKQUOTE)$/;
 /** 들여쓰기 단계(data-indent) 상한과 한 단계 폭(px). index.css · 백엔드와 같다. */
@@ -167,7 +173,11 @@ export function normalizeRichText(root: ParentNode, options: { paste?: boolean; 
         const sourceSize = node.getAttribute('data-text-size');
         const nativeSize = node.tagName === 'FONT' ? Number(node.getAttribute('size')) : 0;
         let size: TextSize | null = isTextSize(sourceSize) ? sourceSize : null;
-        if (style.fontSize) size = normalizeTextSize(style.fontSize, options.paste ? 'paste' : 'editor');
+        // [PLAN-A Memo Desktop] 편집 중 브라우저가 줄을 목록으로 옮기며 본문 기본 크기(계산값 15.04px 같은 소수)를
+        // 인라인으로 붙인다 — 사용자가 고른 크기(정수·네 단계)가 아니므로 '15' 로 굳혀 저장하지 않는다.
+        if (style.fontSize && (options.paste || !isComputedBaseSize(style.fontSize))) {
+            size = normalizeTextSize(style.fontSize, options.paste ? 'paste' : 'editor');
+        }
         if (nativeSize) size = options.paste
             ? normalizeTextSize(`${[10, 13, 16, 18, 24, 32, 48][Math.min(6, Math.max(0, nativeSize - 1))]}px`)
             : TEXT_SIZES[Math.min(3, Math.max(0, nativeSize - 1))];
@@ -313,7 +323,7 @@ export function normalizeTableSpans(root: ParentNode): void {
     });
 }
 
-export type RichTextCommand = 'bold' | 'underline' | 'fontSize' | 'foreColor';
+export type RichTextCommand = 'bold' | 'underline' | 'strikeThrough' | 'fontSize' | 'foreColor';
 export function applyRichTextCommand(root: HTMLElement | null, command: RichTextCommand, value?: string): boolean {
     const selection = window.getSelection();
     if (!root || !selection?.rangeCount || !root.contains(selection.getRangeAt(0).commonAncestorContainer)) return false;
@@ -344,10 +354,15 @@ export const RICH_SIZE_BASE_FACE = `${RICH_SIZE_FACE_PREFIX}base`;
 const RICH_SIZE_FONT = `font[face^="${RICH_SIZE_FACE_PREFIX}"]`;
 const SIZED_SELECTOR = `${RICH_SIZE_FONT}, span[data-text-size]`;
 
-/** 선택한 글자에 숫자 크기(또는 null = 기본 크기)를 준다. 되돌리기는 브라우저 기본 실행 취소가 맡는다. */
-export function applyTextSize(root: HTMLElement | null, size: TextSize | null): boolean {
+/**
+ * 선택한 글자에 숫자 크기(또는 null = 기본 크기)를 준다. 되돌리기는 브라우저 기본 실행 취소가 맡는다.
+ * `allowCollapsed` 면 선택 없이 커서만 있어도 적용한다 — 브라우저가 '이어서 칠 글자' 서식으로 기억한다
+ * (우클릭 메뉴가 커서 위치에서 열렸을 때). 기본은 지금처럼 선택이 있어야 한다.
+ */
+export function applyTextSize(root: HTMLElement | null, size: TextSize | null,
+    options: { allowCollapsed?: boolean } = {}): boolean {
     const selection = window.getSelection();
-    if (!root || !selection?.rangeCount || selection.isCollapsed) return false;
+    if (!root || !selection?.rangeCount || (selection.isCollapsed && !options.allowCollapsed)) return false;
     if (!root.contains(selection.getRangeAt(0).commonAncestorContainer)) return false;
     root.focus({ preventScroll: true });
     document.execCommand('styleWithCSS', false, 'false');
@@ -459,14 +474,339 @@ export function canonicalizeRichSizes(root: ParentNode): void {
     });
 }
 
-/** 선택 위치의 글자 크기(px, 반올림). 우클릭 메뉴가 지금 크기를 표시하는 데만 쓴다. */
-export function selectionTextSizePx(root: HTMLElement | null): number | null {
+// ── 목록 · 들여쓰기 ──────────────────────────────────────────────────────────────
+// 목록은 진짜 HTML 목록(<ul>/<ol>/<li>)이다 — 글자 앞에 '①' 같은 문자를 붙이지 않는다. 그래서
+// 항목을 더하고 빼고 옮겨도 번호가 저절로 맞는다. 만들기·끄기·들여쓰기는 모두 브라우저 기본 명령
+// 한 번이라 실행 취소(Ctrl+Z) 한 단계가 된다. 번호 표기만 `ol[data-list-style]` 속성 하나로 담는다
+// (FE taskDescription · BE task_description.py 가 같은 세 값만 통과시킨다, 화면 규칙은 index.css).
+// 작업노트의 체크리스트(block_type='checkbox')와는 아무 관계가 없다 — 목록은 본문 서식일 뿐이다.
+
+export const LIST_STYLE_ATTR = 'data-list-style';
+/** decimal = '1.', paren = '1)', circled = '①'(⑳ 넘으면 숫자). 표식이 없으면 깊이로 정한다(1단계 '1.', 하위 '1)'). */
+export const LIST_STYLES = ['decimal', 'paren', 'circled'] as const;
+export type ListStyle = typeof LIST_STYLES[number];
+export const isListStyle = (value: string | null | undefined): value is ListStyle =>
+    LIST_STYLES.includes(value as ListStyle);
+export type RichListKind = 'bullet' | ListStyle;
+
+function selectionStartElement(root: HTMLElement | null): Element | null {
     const selection = window.getSelection();
-    const node = selection?.rangeCount ? selection.getRangeAt(0).startContainer : null;
-    const element = node instanceof HTMLElement ? node : node?.parentElement;
-    if (!root || !element || !root.contains(element)) return null;
-    const px = parseFloat(window.getComputedStyle(element).fontSize);
-    return Number.isFinite(px) ? Math.round(px) : null;
+    if (!root || !selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) return null;
+    let node: Node = range.startContainer;
+    // [PLAN-A Memo Desktop] 전체 선택은 시작점이 편집기 자신일 수 있다 — 그 자리의 실제 내용으로 내려간다.
+    // (안 그러면 목록 전체를 고르고 번호 표기를 바꿀 때 '목록 밖' 으로 보여 목록이 꺼진다)
+    const child = node.childNodes[range.startOffset];
+    if (child) {
+        node = child;
+        while (node.firstChild) node = node.firstChild;
+    }
+    return node instanceof Element ? node : node.parentElement;
+}
+
+function closestList(el: Element | null, root: HTMLElement): HTMLElement | null {
+    const list = el?.closest('ol,ul') as HTMLElement | null;
+    return list && list !== root && root.contains(list) ? list : null;
+}
+
+/** 번호 목록이 실제로 보이는 표기. 표식이 없으면 다른 목록 안(하위)일 때 '1)', 아니면 '1.'. */
+export function effectiveListStyle(list: Element, root: Element): ListStyle {
+    const own = list.getAttribute(LIST_STYLE_ATTR);
+    if (isListStyle(own)) return own;
+    const parentList = list.parentElement?.closest('ol,ul');
+    return parentList && root.contains(parentList) && parentList !== root ? 'paren' : 'decimal';
+}
+
+export interface RichListState {
+    /** 커서가 있는 목록의 종류. 목록 밖이면 null. */
+    kind: RichListKind | null;
+}
+
+export function selectionListState(root: HTMLElement | null): RichListState {
+    const list = root ? closestList(selectionStartElement(root), root) : null;
+    if (!root || !list) return { kind: null };
+    return { kind: list.tagName === 'UL' ? 'bullet' : effectiveListStyle(list, root) };
+}
+
+// ── 번호 표기 변경의 실행 취소 ──
+// 표기만 바꾸는 것은 속성 하나라 브라우저 기본 undo 에 남지 않는다. 표 크기 조절(useRichTableResize)과
+// 같은 방식으로 편집기마다 작은 이력을 두고, 그 이력이 남아 있는 동안에만 Ctrl+Z / Ctrl+Y 를 가로챈다.
+// 내용이 바뀌면(input — 타이핑·붙여넣기·기본 undo 포함) 이력을 버린다 → 그 뒤 Ctrl+Z 는 다시 브라우저 기본으로.
+interface ListStyleChange { list: HTMLElement; before: string | null; after: string | null }
+const LIST_STYLE_HISTORY_LIMIT = 100;
+const listStyleHistory = new WeakMap<HTMLElement, { undo: ListStyleChange[][]; redo: ListStyleChange[][] }>();
+
+function recordListStyleChange(root: HTMLElement, changes: ListStyleChange[]): void {
+    const effective = changes.filter(change => change.before !== change.after);
+    if (!effective.length) return;
+    const history = listStyleHistory.get(root) ?? { undo: [], redo: [] };
+    history.undo.push(effective);
+    if (history.undo.length > LIST_STYLE_HISTORY_LIMIT) history.undo.shift();
+    history.redo = [];
+    listStyleHistory.set(root, history);
+}
+
+/** 내용 편집이 일어났다 — 번호 표기 이력을 버린다(편집기의 onInput 에서 부른다). */
+export function clearRichListStyleHistory(root: HTMLElement | null): void {
+    if (root) listStyleHistory.delete(root);
+}
+
+/** Ctrl+Z / Ctrl+Y(⌘+Shift+Z) 로 번호 표기 변경을 되돌리거나 다시 한다. 처리했으면 true(기본 undo 는 막았다). */
+export function handleRichListStyleUndoKey(e: {
+    key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean;
+    nativeEvent?: { isComposing?: boolean };
+    preventDefault(): void;
+}, root: HTMLElement | null): boolean {
+    if (!root || !(e.ctrlKey || e.metaKey) || e.altKey || e.nativeEvent?.isComposing) return false;
+    const key = e.key.toLowerCase();
+    const isUndo = key === 'z' && !e.shiftKey;
+    const isRedo = (key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey);
+    if (!isUndo && !isRedo) return false;
+    const history = listStyleHistory.get(root);
+    const entry = (isUndo ? history?.undo : history?.redo)?.pop();
+    if (!history || !entry) return false;
+    // 목록이 이미 사라졌다(다시 그려짐 등) — 이력을 버리고 브라우저 기본 undo 에 맡긴다.
+    if (entry.some(change => !root.contains(change.list))) {
+        listStyleHistory.delete(root);
+        return false;
+    }
+    e.preventDefault();
+    entry.forEach(change => {
+        const value = isUndo ? change.before : change.after;
+        if (value === null) change.list.removeAttribute(LIST_STYLE_ATTR);
+        else change.list.setAttribute(LIST_STYLE_ATTR, value);
+    });
+    (isUndo ? history.redo : history.undo).push(entry);
+    return true;
+}
+
+// ── 번호 이어쓰기 ──
+// 새 번호 목록을 **만들 때만** 바로 위의 번호 흐름을 보고 시작 번호(ol[start])를 정한다. 이미 있는 글·목록은
+// 다시 매기지 않고, 일반 문단을 목록으로 바꾸지도 않는다. 흐름이 분명할 때만 잇고, 애매하면 1 부터(기존 동작).
+//   · 바로 위(빈 줄만 사이)에 같은 표기의 목록 → 그 마지막 번호 + 1
+//   · 바로 위에 손으로 친 '2. …' 줄(들) → 그 줄들이 1 씩 이어지고, 맨 위가 1 이거나 그 위 같은 표기 목록의
+//     마지막 번호 바로 다음일 때만 마지막 수동 번호 + 1 (예: 목록 1. → 손으로 '2.' → 새 목록 3.)
+//   · 사이에 번호 없는 글이 있으면(새 주제) 1 — 하위 목록('1)')은 상위 목록 안이라 상위 번호에 끼지 않는다.
+// 번호 판정은 줄 맨 앞 'N. ' / 'N) ' 모양만(뒤에 공백 필수) — '2.0', 날짜, 금액, 문장 중간 숫자는 번호가 아니다.
+// '①' 표기는 ⑳ 뒤 표시 규칙(index.css nth-of-type)이 1 부터를 전제로 하므로 이어쓰지 않는다.
+
+const MANUAL_NUMBER: Partial<Record<ListStyle, RegExp>> = {
+    decimal: /^\s*(\d{1,3})\.\s+\S/,
+    paren: /^\s*(\d{1,3})\)\s+\S/,
+};
+const MAX_CONTINUED_START = 999;
+const BLOCK_TAGS = new Set(['DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER']);
+// 이것들은 글 흐름을 끊는 덩어리(표·인용·코드·구분선·그림) — 번호 흐름이 그 너머로 이어지지 않는다.
+const BARRIER_TAGS = new Set(['TABLE', 'BLOCKQUOTE', 'PRE', 'HR', 'IMG', 'FIGURE', 'VIDEO', 'IFRAME']);
+
+type FlowToken = { kind: 'line'; text: string; media: boolean } | { kind: 'list'; el: HTMLElement } | { kind: 'barrier' };
+
+/** container 안에서 target 앞에 오는 내용을 줄·목록·덩어리 순서로 나눈다(target 을 만나면 멈춘다). */
+function flowBefore(container: Element, target: Element): FlowToken[] {
+    const tokens: FlowToken[] = [];
+    let line: { text: string; media: boolean } | null = null;
+    const flush = () => {
+        if (line) tokens.push({ kind: 'line', ...line });
+        line = null;
+    };
+    const walk = (parent: Node): boolean => {
+        for (const node of Array.from(parent.childNodes)) {
+            if (node === target) return true;
+            if (node.nodeType === Node.TEXT_NODE) {
+                line = { text: (line?.text ?? '') + (node.textContent ?? ''), media: line?.media ?? false };
+                continue;
+            }
+            if (!(node instanceof Element)) continue;
+            const tag = node.tagName;
+            if (tag === 'BR') {
+                line = line ?? { text: '', media: false };
+                flush();
+            } else if (tag === 'OL' || tag === 'UL') {
+                flush();
+                if (node.contains(target)) return true;
+                tokens.push({ kind: 'list', el: node as HTMLElement });
+            } else if (BARRIER_TAGS.has(tag) && !node.contains(target)) {
+                flush();
+                tokens.push({ kind: 'barrier' });
+            } else if (BLOCK_TAGS.has(tag) || BARRIER_TAGS.has(tag)) {
+                flush();
+                if (walk(node)) return true;
+                flush();
+            } else {
+                // 글자 서식·멘션·링크 같은 인라인 — 같은 줄의 글자. 그림이 있으면 '내용 있는 줄'.
+                if (node.contains(target)) return walk(node);
+                const media = !!node.querySelector('img,video,iframe');
+                line = { text: (line?.text ?? '') + (node.textContent ?? ''), media: (line?.media ?? false) || media };
+            }
+        }
+        return false;
+    };
+    walk(container);
+    flush();
+    return tokens;
+}
+
+/** 번호 목록의 마지막 번호(start + 바로 아래 항목 수 - 1). 하위 목록 항목은 세지 않는다. */
+function lastListNumber(list: Element): number {
+    const raw = Number.parseInt(list.getAttribute('start') ?? '', 10);
+    const start = Number.isFinite(raw) ? raw : 1;
+    const items = Array.from(list.children).filter(child => child.tagName === 'LI').length;
+    return start + items - 1;
+}
+
+/**
+ * 새로 만든 번호 목록 `list` 가 이어받을 시작 번호 — 이을 흐름이 분명하지 않으면 null(= 1 부터, 속성 없음).
+ * DOM 을 읽기만 한다.
+ */
+export function continuedListStart(root: HTMLElement, list: HTMLElement, kind: ListStyle): number | null {
+    const pattern = MANUAL_NUMBER[kind];
+    if (!pattern || list.tagName !== 'OL' || !root.contains(list)) return null;
+    // 같은 칸(표 칸·인용) 안의 흐름만 본다 — 칸 밖 번호를 이어받지 않는다.
+    const scope = (list.parentElement?.closest('td,th,blockquote') as HTMLElement | null) ?? root;
+    const container = root.contains(scope) ? scope : root;
+    const tokens = flowBefore(container, list);
+    const isBlank = (token: FlowToken) => token.kind === 'line' && !token.media && !token.text.trim();
+    const sameStyleList = (token: FlowToken | undefined): token is { kind: 'list'; el: HTMLElement } =>
+        token?.kind === 'list' && token.el.tagName === 'OL' && effectiveListStyle(token.el, root) === kind;
+
+    let index = tokens.length - 1;
+    const skipBlank = () => {
+        while (index >= 0 && isBlank(tokens[index])) index -= 1;
+    };
+    // 바로 위의 손 번호 줄들(아래 → 위 순서로 모은다).
+    const manual: number[] = [];
+    skipBlank();
+    while (index >= 0) {
+        const token = tokens[index];
+        const match = token.kind === 'line' && !token.media ? pattern.exec(token.text) : null;
+        if (!match) break;
+        manual.push(Number(match[1]));
+        index -= 1;
+        skipBlank();
+    }
+    const above = index >= 0 ? tokens[index] : undefined;
+    let next: number;
+    if (!manual.length) {
+        if (!sameStyleList(above)) return null;
+        next = lastListNumber(above.el) + 1;
+    } else {
+        const ordered = manual.reverse();   // 위 → 아래
+        if (ordered.some((value, i) => i > 0 && value !== ordered[i - 1] + 1)) return null;
+        const anchored = sameStyleList(above) ? lastListNumber(above.el) + 1 === ordered[0] : ordered[0] === 1;
+        if (!anchored) return null;
+        next = ordered[ordered.length - 1] + 1;
+    }
+    return next > 1 && next <= MAX_CONTINUED_START ? next : null;
+}
+
+/**
+ * 선택한 줄(들)을 목록으로 — 같은 종류를 다시 고르면 목록을 끈다(Word 와 같다).
+ * 번호 목록끼리 표기만 바꿀 때는 목록 구조를 건드리지 않고 표기 속성만 바꾼다(글자·커서 위치 불변).
+ * 새 번호 목록은 바로 위 번호 흐름이 분명하면 그 다음 번호부터 시작한다(continuedListStart).
+ */
+export function applyRichList(root: HTMLElement | null, kind: RichListKind): boolean {
+    const selection = window.getSelection();
+    if (!root || !selection?.rangeCount || !root.contains(selection.getRangeAt(0).commonAncestorContainer)) return false;
+    if (selection.anchorNode?.parentElement?.closest('[data-mention-user-id]')) return false;
+    root.focus({ preventScroll: true });
+    const current = closestList(selectionStartElement(root), root);
+    if (kind === 'bullet') return document.execCommand('insertUnorderedList');
+    if (current?.tagName === 'OL') {
+        if (effectiveListStyle(current, root) === kind) return document.execCommand('insertOrderedList');
+        const range = selection.getRangeAt(0);
+        const endNode = range.endContainer instanceof Element ? range.endContainer : range.endContainer.parentElement;
+        const lists = new Set([current, closestList(endNode, root)]);
+        const changes: ListStyleChange[] = [];
+        lists.forEach(list => {
+            if (list?.tagName !== 'OL') return;
+            changes.push({ list, before: list.getAttribute(LIST_STYLE_ATTR), after: kind });
+            list.setAttribute(LIST_STYLE_ATTR, kind);
+        });
+        recordListStyleChange(root, changes);
+        return true;
+    }
+    const existing = new Set(Array.from(root.querySelectorAll('ol')));
+    if (!document.execCommand('insertOrderedList')) return false;
+    const created = closestList(selectionStartElement(root), root);
+    if (created?.tagName === 'OL') {
+        created.setAttribute(LIST_STYLE_ATTR, kind);
+        // 브라우저가 바로 옆 목록에 붙여 넣었으면(이미 있던 목록) 번호는 그 목록이 이미 잇는다.
+        const start = existing.has(created as HTMLOListElement) || created.hasAttribute('start')
+            ? null
+            : continuedListStart(root, created, kind);
+        if (start) created.setAttribute('start', String(start));
+    }
+    return true;
+}
+
+/** 목록 안에서만 동작하는 들여쓰기/내어쓰기 — 하위 목록으로 넣고 뺀다. 목록 밖이면 false(아무 일 없음). */
+export function applyRichIndent(root: HTMLElement | null, direction: 'indent' | 'outdent'): boolean {
+    if (!root || !closestList(selectionStartElement(root), root)) return false;
+    root.focus({ preventScroll: true });
+    return document.execCommand(direction);
+}
+
+/**
+ * 목록 항목 안의 Tab = 들여쓰기, Shift+Tab = 내어쓰기. **목록 밖의 Tab 은 건드리지 않는다**
+ * (키보드 포커스 이동·체크리스트 조작이 그대로다). 처리했으면 true.
+ */
+export function handleRichListTabKey(e: {
+    key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean;
+    nativeEvent?: { isComposing?: boolean };
+    preventDefault(): void;
+}, root: HTMLElement | null): boolean {
+    if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey || e.nativeEvent?.isComposing) return false;
+    if (!root || !closestList(selectionStartElement(root), root)) return false;
+    e.preventDefault();
+    applyRichIndent(root, e.shiftKey ? 'outdent' : 'indent');
+    return true;
+}
+
+
+// ── 메뉴 표시용 선택 상태 ─────────────────────────────────────────────────────────
+// [PLAN-A Memo Desktop] 메뉴가 '지금 어떤 크기·색·링크인가' 를 강조하는 데만 쓴다(DOM 을 바꾸지 않는다).
+
+/**
+ * 선택 위치에 **지정된** 글자 크기(px). 지정이 없으면 null = 메뉴의 '기본'.
+ * 계산된 크기를 쓰면 본문 기본 크기(0.94rem → 15px)가 '15' 로 잘못 강조된다.
+ * 화면 규칙과 같이 크기 표식(font)이 그 안의 예전 span 크기를 이긴다.
+ */
+export function selectionExplicitTextSizePx(root: HTMLElement | null): number | null {
+    let size: string | null = null;
+    for (let el = root ? selectionStartElement(root) : null; el && el !== root; el = el.parentElement) {
+        if (isRichSizeFont(el)) {
+            size = (el.getAttribute('face') || '').slice(RICH_SIZE_FACE_PREFIX.length);
+            break;
+        }
+        if (size === null) size = el.getAttribute('data-text-size');
+    }
+    if (size === null) return null;
+    if (isNumericTextSize(size)) return Number(size);
+    const preset = TEXT_SIZES.indexOf(size as PresetTextSize);
+    return preset === -1 || size === 'normal' ? null : Math.round(TEXT_SIZE_PX[preset]);
+}
+
+/** 선택 위치에 지정된 글자 색(소문자 hex). 지정이 없으면 null = 메뉴의 '기본 색'. */
+export function selectionTextColor(root: HTMLElement | null): string | null {
+    for (let el = root ? selectionStartElement(root) : null; el && el !== root; el = el.parentElement) {
+        const value = el.getAttribute('color') || (el as HTMLElement).style?.color;
+        const color = value ? normalizeTextColor(value) : null;
+        if (color) return color.toLowerCase();
+    }
+    return null;
+}
+
+/** 선택이 걸친 링크 — 메뉴의 '링크' 가 새로 만들지 고칠지 가른다(링크 안에 링크를 만들지 않게). */
+export function selectionLinkAnchor(root: HTMLElement | null): HTMLAnchorElement | null {
+    const selection = window.getSelection();
+    const start = root ? selectionStartElement(root) : null;
+    if (!root || !start || !selection?.rangeCount) return null;
+    const own = start.closest('a');
+    if (own && root.contains(own)) return own;
+    const range = selection.getRangeAt(0);
+    if (range.collapsed) return null;
+    return Array.from(root.querySelectorAll('a')).find(anchor => range.intersectsNode(anchor)) ?? null;
 }
 
 export function handleRichTextShortcut(e: {

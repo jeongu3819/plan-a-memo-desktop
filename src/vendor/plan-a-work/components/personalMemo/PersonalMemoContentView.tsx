@@ -13,6 +13,7 @@ import {
 import { MEMO_TEXT } from './personalMemoTheme';
 import { richTableSx } from '../../utils/richTableSx';
 import { applyTableSizingStyles } from '../../utils/tableResize';
+import { richListSx } from '../../utils/richListSx';
 
 /**
  * 저장된 메모 본문을 **읽기 전용**으로 그린다(편집기를 항목마다 띄우지 않기 위해).
@@ -106,10 +107,9 @@ export default function PersonalMemoContentView({
         minWidth: 0,
         '& p': { m: 0 },
         // 하위 내용(목록)은 부모 줄과의 관계가 보이게 들여쓴다 — 전역 reset 이 지운 표식을 이 본문 안에서만 되살린다.
-        '& ul, & ol': { m: 0, pl: 2.5 },
-        '& ul': { listStyle: 'disc' },
-        '& ol': { listStyle: 'decimal' },
-        '& li': { pl: 0.25 },
+        // 규칙은 편집기와 같은 단일 출처(utils/richListSx — 하위 번호 '1)', 원형 숫자 등).
+        ...richListSx,
+        '& ul, & ol': { ...richListSx['& ul, & ol'], m: 0 },
         '& b, & strong': { fontWeight: 700 },
         '& a': { color: '#2955FF', textDecoration: 'underline' },
         '& img': {

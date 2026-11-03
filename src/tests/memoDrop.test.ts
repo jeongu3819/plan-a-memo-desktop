@@ -1,8 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { applyReorder, insertIndex, planDrop } from '../domain/memoDrop';
+import { applyReorder, insertIndex, isFirstInSection, planDrop } from '../domain/memoDrop';
 import type { MemoItem } from '../domain/types';
 
 const MIDS = [100, 200, 300];
+
+describe('맨 위로 보내기', () => {
+  const row = (id: string, section: MemoItem['section']) => ({ id, section }) as MemoItem;
+  it('구역마다 맨 위를 따로 본다', () => {
+    const items = [row('a', 'main'), row('b', 'main'), row('c', 'am'), row('d', 'pm')];
+    expect(items.filter(item => isFirstInSection(items, item)).map(item => item.id)).toEqual(['a', 'c', 'd']);
+  });
+  it('끌어 놓기와 같은 계산 — 여러 번 보내도 항목이 빠지거나 겹치지 않고, 이미 맨 위면 저장하지 않는다', () => {
+    let ids = ['a', 'b', 'c', 'd'];
+    for (const id of ['d', 'b', 'c', 'a', 'a', 'd']) {
+      ids = planDrop(ids, id, 0) ?? ids;
+      expect(ids[0]).toBe(id);
+      expect([...ids].sort()).toEqual(['a', 'b', 'c', 'd']);
+    }
+    expect(ids).toEqual(['d', 'a', 'c', 'b']);
+    expect(planDrop(ids, 'd', 0)).toBeNull();
+  });
+});
 
 describe('insertIndex', () => {
   it('처음에는 가운데선 기준', () => {

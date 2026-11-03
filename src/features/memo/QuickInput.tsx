@@ -89,6 +89,10 @@ export default function QuickInput({
         onCompositionEnd={() => {
           composing.current = false;
         }}
+        // 입력칸 안의 빈 자리를 눌러도 쓰던 글이 저장(blur)되지 않는다 — 포커스는 InputBase 가 클릭으로 입력란에 맞춘다.
+        onMouseDown={event => {
+          if (event.target === event.currentTarget) event.preventDefault();
+        }}
         onFocus={() => setFocused(true)}
         onBlur={() => {
           setFocused(false);

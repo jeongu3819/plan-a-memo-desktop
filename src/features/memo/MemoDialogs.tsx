@@ -145,7 +145,7 @@ export function LargeEditorDialog({ item, onClose }: { item: MemoItem | null; on
             fill
             minHeight={120}
             maxHeight="none"
-            placeholder="메모 (이미지는 Ctrl+V · 굵게 Ctrl+B · 밑줄 Ctrl+U · 글자 크기·색은 드래그 후 우클릭)"
+            placeholder="메모 (이미지는 Ctrl+V · 굵게 Ctrl+B · 밑줄 Ctrl+U · 그 밖의 서식은 우클릭)"
           />
         </Box>
       </DialogContent>

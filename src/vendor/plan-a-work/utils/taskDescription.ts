@@ -7,7 +7,7 @@
 import { sanitizeCellStyleText } from './officePaste';
 import { MENTION_ATTR, MENTION_CLASS, isMentionElement } from './mentionMarkup';
 import {
-  MAX_INDENT_LEVEL, isTextSize, normalizeTextColor, normalizeRichText, normalizeTableSpans,
+  LIST_STYLE_ATTR, MAX_INDENT_LEVEL, isListStyle, isTextSize, normalizeTextColor, normalizeRichText, normalizeTableSpans,
 } from './richTextFormatting';
 import {
   COL_WIDTH_ATTR,
@@ -161,6 +161,8 @@ function copySafeAttributes(element: HTMLElement): { base64Image: boolean; remov
   } else if (element.tagName === 'OL') {
     const start = attributes.get('start');
     if (start && /^-?\d+$/.test(start)) element.setAttribute('start', start);
+    const listStyle = attributes.get(LIST_STYLE_ATTR);
+    if (isListStyle(listStyle)) element.setAttribute(LIST_STYLE_ATTR, listStyle);
     if (attributes.has('reversed')) element.setAttribute('reversed', '');
   } else if (element.tagName === 'LI') {
     const value = attributes.get('value');

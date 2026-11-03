@@ -1,27 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { monthLabel, parseDateQuery, weekLabel, weekRangeText } from '../domain/memoBrowse';
+import { monthLabel, parseDateQuery } from '../domain/memoBrowse';
 
 const TODAY = '2026-11-02'; // 월요일
-
-describe('weekLabel', () => {
-  it('보고 있는 주를 오늘 기준으로 이름 붙인다', () => {
-    expect(weekLabel('2026-11-02', TODAY)).toBe('이번 주');
-    expect(weekLabel('2026-11-02', '2026-11-08')).toBe('이번 주');
-    expect(weekLabel('2026-10-26', TODAY)).toBe('지난주');
-    expect(weekLabel('2026-11-09', TODAY)).toBe('다음 주');
-  });
-  it('더 먼 주는 실제 기간 — 어느 주든 이번 주라고 하지 않는다', () => {
-    expect(weekLabel('2026-11-16', TODAY)).toBe('11/16 – 11/22');
-    expect(weekLabel('2026-10-19', TODAY)).toBe('10/19 – 10/25');
-  });
-  it('오늘이 넘어가면 같은 주의 이름도 바뀐다', () => {
-    expect(weekLabel('2026-11-02', '2026-11-09')).toBe('지난주');
-  });
-  it('해가 다른 주는 연도까지', () => {
-    expect(weekRangeText('2026-12-28', TODAY)).toBe('12/28 – 2027. 1/3');
-    expect(weekRangeText('2027-02-01', TODAY)).toBe('2027. 2/1 – 2/7');
-  });
-});
 
 describe('monthLabel', () => {
   it('올해는 월만, 다른 해는 연도와 함께', () => {

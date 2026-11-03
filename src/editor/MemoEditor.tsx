@@ -1,7 +1,7 @@
 /**
  * 메모 편집기 — PLAN-A Work 의 RichDescriptionEditor(개인 메모와 같은 설정)를 그대로 쓴다.
  *
- *   · 굵게/기울임/밑줄/취소선(Ctrl+B·I·U), 글자 크기·색(드래그 → 우클릭), 목록, 링크, 표(열 너비),
+ *   · 굵게/기울임/밑줄/취소선(Ctrl+B·I·U), 우클릭 메뉴(서식·링크·글자 크기·색·목록·들여쓰기), 표(열 너비),
  *     Office/웹 붙여넣기, 이미지 붙여넣기·끌어 놓기, Undo/Redo(Ctrl+Z / Ctrl+Y) — 모두 Web 코드 그대로.
  *   · 이미지 업로드만 Desktop 판: 서버 대신 저장 폴더 attachments/ 로 복사하고 attachment://<id> 를 넣는다.
  *   · 파일 선택으로 이미지 넣기(Desktop 추가) — 작은 이미지 버튼.
@@ -11,6 +11,7 @@ import { Box, IconButton, Tooltip } from '@mui/material';
 import AddPhotoAlternateOutlinedIcon from '@mui/icons-material/AddPhotoAlternateOutlined';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import RichDescriptionEditor from '../vendor/plan-a-work/components/RichDescriptionEditor';
+import type { RichTextMenuAction } from '../vendor/plan-a-work/components/RichTextContextMenu';
 import { insertHtmlAsSingleTransaction } from '../vendor/plan-a-work/utils/richHtmlInsert';
 import { attachmentDisplayUrl } from '../vendor/plan-a-work/utils/richImage';
 import { attachmentService, errorMessage } from '../tauri/api';
@@ -27,6 +28,8 @@ export interface MemoEditorProps {
   placeholder?: string;
   /** 이미지 파일 선택 버튼 */
   showImageButton?: boolean;
+  /** 우클릭 메뉴 맨 아래의 항목 명령(맨 위로 보내기). */
+  contextMenuActions?: RichTextMenuAction[];
 }
 
 export default function MemoEditor({
@@ -40,6 +43,7 @@ export default function MemoEditor({
   fill = false,
   placeholder = '메모 (이미지는 Ctrl+V · Enter 는 줄바꿈)',
   showImageButton = true,
+  contextMenuActions,
 }: MemoEditorProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
@@ -104,6 +108,7 @@ export default function MemoEditor({
         onUploadingChange={onUploadingChange}
         onWarning={onError}
         formatMenu="contextMenu"
+        contextMenuActions={contextMenuActions}
         imageSelectionStyle="subtle"
         showImageZoomHint
         borderless={!fill}

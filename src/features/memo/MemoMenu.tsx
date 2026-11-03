@@ -11,6 +11,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EventIcon from '@mui/icons-material/Event';
 import OpenInFullIcon from '@mui/icons-material/OpenInFull';
 import SubjectIcon from '@mui/icons-material/Subject';
+import VerticalAlignTopIcon from '@mui/icons-material/VerticalAlignTop';
 import CheckBoxOutlinedIcon from '@mui/icons-material/CheckBoxOutlined';
 import StarBorderRoundedIcon from '@mui/icons-material/StarBorderRounded';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
@@ -36,11 +37,14 @@ export default function MemoMenu({
   item,
   location,
   anchor,
+  firstInPlace,
   onClose,
 }: {
   item: MemoItem;
   location: Location;
   anchor: MenuAnchor | null;
+  /** 같은 자리에서 이미 맨 위인가 */
+  firstInPlace: boolean;
   onClose: () => void;
 }) {
   const { actions, today, openLargeEditor, openDatePicker, openHistory } = usePersonalMemo();
@@ -82,6 +86,10 @@ export default function MemoMenu({
       );
     }
     items.push(
+      <MenuItem key="top" dense disabled={firstInPlace} data-testid="memo-menu-move-top" onClick={() => run(() => actions.moveToTop(item, location))}>
+        <ListItemIcon><VerticalAlignTopIcon fontSize="small" /></ListItemIcon>
+        <ListItemText primary="맨 위로 보내기" secondary={firstInPlace ? '이미 맨 위에 있습니다' : undefined} />
+      </MenuItem>,
       <MenuItem key="kind" dense onClick={() => run(() => actions.setKind(item, item.kind === 'checklist' ? 'text' : 'checklist'))}>
         <ListItemIcon>
           {item.kind === 'checklist' ? <SubjectIcon fontSize="small" /> : <CheckBoxOutlinedIcon fontSize="small" />}

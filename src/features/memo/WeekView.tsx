@@ -18,6 +18,7 @@ import {
 } from '@dnd-kit/core';
 import type { DocumentInfo, Location, MemoItem, MemoSection } from '../../domain/types';
 import { NEXT_KEY } from '../../domain/location';
+import { isFirstInSection } from '../../domain/memoDrop';
 import { weekDays, weekdayOf, shortDate, dayLabel, WEEKDAY_LABELS } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import { pickSectionPreview, SECTION_ORDER } from '../../vendor/plan-a-work/components/personalMemo/personalMemoPreview';
 import {
@@ -54,7 +55,7 @@ const CARD_CLICK_IGNORE = [
 ].join(',');
 const CLICK_SLOP_PX = 5;
 
-function DraggableMemo({ item, location, onOpenEdit }: { item: MemoItem; location: Location; onOpenEdit: () => void }) {
+function DraggableMemo({ item, location, firstInPlace, onOpenEdit }: { item: MemoItem; location: Location; firstInPlace: boolean; onOpenEdit: () => void }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `memo:${item.id}`, data: { item } });
   return (
     <Box ref={setNodeRef}>
@@ -63,6 +64,7 @@ function DraggableMemo({ item, location, onOpenEdit }: { item: MemoItem; locatio
         location={location}
         variant="compact"
         comfortable
+        firstInPlace={firstInPlace}
         dragging={isDragging}
         dragHandleProps={{ ...(attributes as object), ...(listeners as object) }}
         onOpenEdit={onOpenEdit}
@@ -239,6 +241,7 @@ function DayCell({
                 key={item.id}
                 item={item}
                 location={location}
+                firstInPlace={isFirstInSection(items, item)}
                 onOpenEdit={() => onOpenDay(cellKey, { editItemId: item.id })}
               />
             ))}

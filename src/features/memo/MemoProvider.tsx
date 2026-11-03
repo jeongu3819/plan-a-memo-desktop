@@ -6,9 +6,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useQueryClient } from '@tanstack/react-query';
 import { DraftStore } from '../../services/draftStore';
 import { keys, patchItemInCaches, refreshMemo } from '../../services/queries';
-import { errorMessage, memoItemService } from '../../tauri/api';
+import { dayMemoService, errorMessage, memoItemService, nextListService } from '../../tauri/api';
 import type { ItemSection, Location, MemoItem, MemoKind, MovePolicy } from '../../domain/types';
-import { applyReorder } from '../../domain/memoDrop';
+import { applyReorder, planDrop } from '../../domain/memoDrop';
 import { koreanMonthDay } from '../../domain/location';
 import { movedMessage } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import MemoNotice, { type Notice } from './MemoNotice';
@@ -30,6 +30,8 @@ export interface MemoActions {
   remove: (item: MemoItem) => void;
   move: (request: MoveRequest) => Promise<void>;
   reorder: (location: Location, section: ItemSection, ids: string[]) => void;
+  /** 같은 자리(날짜+구역 / 그 List)의 맨 위로 — 끌어 놓기와 같은 순서 저장. 다른 날짜·List 로는 가지 않는다. */
+  moveToTop: (item: MemoItem, location: Location) => void;
 }
 
 interface MemoContextValue {
@@ -86,6 +88,9 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
     [store],
   );
 
+  // 맨 위로 보내기는 한 번에 하나씩 — 저장된 순서를 읽고 계산하므로 연달아 눌러도 앞의 결과 위에서 계산한다.
+  const moveToTopQueue = useRef<Promise<void>>(Promise.resolve());
+
   const run = useCallback(
     async <T,>(task: () => Promise<T>, failure: string): Promise<T | null> => {
       try {
@@ -127,6 +132,19 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
     [notify, run, store],
   );
 
+  const doReorder = useCallback(
+    async (location: Location, section: ItemSection, ids: string[]) => {
+      // 놓은 자리를 바로 보여 준다(이전 자리로 돌아갔다가 다시 움직이지 않게). 저장에 실패하면 원래 순서로 되돌린다.
+      const key = location.kind === 'day' ? keys.day(location.date) : keys.list(location.listId);
+      const previous = queryClient.getQueryData<{ items: MemoItem[] }>(key);
+      void queryClient.cancelQueries({ queryKey: key });
+      if (previous) queryClient.setQueryData(key, { ...previous, items: applyReorder(previous.items, section, ids) });
+      const saved = await run(() => memoItemService.reorder(location, section, ids), '순서를 바꾸지 못했습니다.');
+      if (!saved && previous) queryClient.setQueryData(key, previous);
+    },
+    [queryClient, run],
+  );
+
   const actions: MemoActions = useMemo(
     () => ({
       create: (location, section, kind, html) =>
@@ -157,18 +175,22 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
         });
       },
       move: request => doMove(request, null),
-      reorder: (location, section, ids) => {
-        // 놓은 자리를 바로 보여 준다(이전 자리로 돌아갔다가 다시 움직이지 않게). 저장에 실패하면 원래 순서로 되돌린다.
-        const key = location.kind === 'day' ? keys.day(location.date) : keys.list(location.listId);
-        const previous = queryClient.getQueryData<{ items: MemoItem[] }>(key);
-        void queryClient.cancelQueries({ queryKey: key });
-        if (previous) queryClient.setQueryData(key, { ...previous, items: applyReorder(previous.items, section, ids) });
-        void run(() => memoItemService.reorder(location, section, ids), '순서를 바꾸지 못했습니다.').then(saved => {
-          if (!saved && previous) queryClient.setQueryData(key, previous);
+      reorder: (location, section, ids) => void doReorder(location, section, ids),
+      moveToTop: (item, location) => {
+        moveToTopQueue.current = moveToTopQueue.current.then(async () => {
+          // 편집 중인 본문을 먼저 저장한다 — 순서 변경이 남기는 History 에 지금 내용이 들어가게(본문·편집 상태는 그대로).
+          await store.flush(item.id);
+          await run(async () => {
+            const { items } = location.kind === 'day' ? await dayMemoService.day(location.date) : await nextListService.list(location.listId);
+            const section = items.find(other => other.id === item.id)?.section;
+            if (!section) return;
+            const ids = planDrop(items.filter(other => other.section === section).map(other => other.id), item.id, 0);
+            if (ids) await doReorder(location, section, ids);
+          }, '순서를 바꾸지 못했습니다.');
         });
       },
     }),
-    [doMove, notify, queryClient, run, setEditingId, store],
+    [doMove, doReorder, notify, run, setEditingId, store],
   );
 
   // 창을 닫을 때·앱이 숨겨질 때 남은 입력을 저장한다.

@@ -1,27 +1,8 @@
 /**
- * 찾아보기·검색의 날짜 표현 — 'YYYY-MM-DD' 문자열 위에서만 계산한다. '올해·이번 주' 는 언제나 넘겨받은 today(이 PC 의 오늘)가 기준이다.
- *   · 주간 머리: 이번 주 · 지난주 · 다음 주 · 그 밖에는 실제 기간
+ * 찾아보기·검색의 날짜 표현 — 'YYYY-MM-DD' 문자열 위에서만 계산한다. '올해' 는 언제나 넘겨받은 today(이 PC 의 오늘)가 기준이다.
  *   · 월 카드: 올해는 '11월', 다른 해는 '2025년 12월'
  *   · 날짜 검색어: 11.2 · 11/2 · 11-2 · 11월 2일 · 26.11.2 · 2026-11-02 · 2026년 11월 2일 …
  */
-import { addDays, shortDate, weekStart } from '../vendor/plan-a-work/utils/personalMemoDates';
-import { dateWithYear } from './dayTools';
-
-/** '11/2 – 11/8' · 해가 다르면 '2026. 12/28 – 2027. 1/3'. */
-export function weekRangeText(monday: string, today: string): string {
-  const sunday = addDays(monday, 6);
-  return `${dateWithYear(monday, today)} – ${monday.slice(0, 4) === sunday.slice(0, 4) ? shortDate(sunday) : dateWithYear(sunday, today)}`;
-}
-
-/** 보고 있는 주의 이름 — 이번 주·지난주·다음 주만 말로, 더 먼 주는 실제 기간으로(어느 주든 '이번 주' 라고 하지 않는다). */
-export function weekLabel(monday: string, today: string): string {
-  const current = weekStart(today);
-  if (monday === current) return '이번 주';
-  if (monday === addDays(current, -7)) return '지난주';
-  if (monday === addDays(current, 7)) return '다음 주';
-  return weekRangeText(monday, today);
-}
-
 /** 'YYYY-MM' → 올해면 '11월', 다른 해면 '2025년 12월'. */
 export function monthLabel(month: string, today: string): string {
   const [year, value] = month.split('-');

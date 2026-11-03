@@ -29,6 +29,11 @@ export function planDrop(sectionIds: string[], activeId: string, index: number):
   return others;
 }
 
+/** 같은 구역에서 맨 위인가 — '맨 위로 보내기' 를 끌 때 쓴다. */
+export function isFirstInSection(items: MemoItem[], item: MemoItem): boolean {
+  return items.find(other => other.section === item.section)?.id === item.id;
+}
+
 const SECTION_RANK: Record<ItemSection, number> = { main: 0, am: 1, pm: 2, next: 3 };
 
 /** 저장 결과를 기다리지 않고 화면에 먼저 반영할 항목 목록(Rust `reorder` 와 같은 결과). */

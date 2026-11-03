@@ -280,9 +280,9 @@ try {
   await step('B. 알림 클릭 → 꺼진 앱이 그 날짜 상세로 열림', async () => {
     await launchUri(`${SCHEME}://open?date=${T}`);
     await page.waitForSelector('[data-testid="upcoming-weekday"]', { timeout: 30000 });
-    const [, m, d] = T.split('-').map(Number);
-    const label = await page.locator('[data-testid="personal-memo-view-label"]').innerText();
-    assert.ok(label.includes(`${m}/${d}`), `날짜 상세 ${label}`);
+    const [y, m, d] = T.split('-').map(Number);
+    const title = await page.locator('[data-testid="memo-header-date"]').innerText();
+    assert.ok(title.endsWith(` ${d}, ${y}`) && title.startsWith(new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' })), `날짜 상세 ${title}`);
     const r = await invoke('reminder_get', { date: T });
     assert.equal(r.fires[0].status, 'delivered');
     await page.screenshot({ path: path.join(out, 'B-opened-from-toast.png') });

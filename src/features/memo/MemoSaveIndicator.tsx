@@ -28,7 +28,7 @@ export function MemoSaveIndicator({ hideSaved = false, fixedSlot = false }: { hi
   ) : null;
   if (!fixedSlot) return label;
   return (
-    <Box data-testid="personal-memo-save-slot" sx={{ position: 'relative', width: 64, height: 20, flexShrink: 0 }}>
+    <Box data-testid="personal-memo-save-slot" sx={{ position: 'relative', width: 40, height: 20, flexShrink: 0 }}>
       {label}
       {failed > 0 && (
         <Button

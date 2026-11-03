@@ -8,8 +8,10 @@ import { Box, Button, Checkbox, IconButton, Tooltip, Typography } from '@mui/mat
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
+import VerticalAlignTopIcon from '@mui/icons-material/VerticalAlignTop';
 import PersonalMemoContentView from '../../vendor/plan-a-work/components/personalMemo/PersonalMemoContentView';
 import { MEMO_TEXT } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
+import { RICH_LIST_INDENT, RICH_LIST_MARKER_GUTTER, RICH_LIST_WIDE_INDENT, richListWideSelector } from '../../vendor/plan-a-work/utils/richListSx';
 import type { Location, MemoItem } from '../../domain/types';
 import MemoEditor from '../../editor/MemoEditor';
 import { withDisplayImageUrls } from '../../editor/displayHtml';
@@ -41,7 +43,10 @@ function editorMatchSx(comfortable: boolean) {
       borderWidth: 0,
       color: comfortable ? MEMO_TEXT : 'text.primary',
       '& p': { m: 0 },
-      '& ul, & ol': { m: 0, pl: 2.5 },
+      // 들여쓰기 폭은 읽기 화면과 같은 값(utils/richListSx).
+      '& ul, & ol': { m: 0, pl: RICH_LIST_MARKER_GUTTER },
+      '& :is(ul, ol) :is(ul, ol)': { pl: RICH_LIST_INDENT },
+      [richListWideSelector()]: { pl: RICH_LIST_WIDE_INDENT },
     },
   } as const;
 }
@@ -55,9 +60,11 @@ export interface MemoRowProps {
   /** 주간 칸 — 본문을 누르면 날짜 상세로 가서 그 메모를 편집한다. */
   onOpenEdit?: () => void;
   comfortable?: boolean;
+  /** 같은 자리(날짜+구역 / List)에서 이미 맨 위인가 — '맨 위로 보내기' 를 끈다. */
+  firstInPlace?: boolean;
 }
 
-export default function MemoRow({ item, location, variant, dragHandleProps, dragging, onOpenEdit, comfortable = false }: MemoRowProps) {
+export default function MemoRow({ item, location, variant, dragHandleProps, dragging, onOpenEdit, comfortable = false, firstInPlace = false }: MemoRowProps) {
   const { store, editingId, setEditingId, actions, notify } = usePersonalMemo();
   const draft = store.draft(item.id);
   const editing = editingId === item.id;
@@ -189,6 +196,15 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
               onUploadingChange={onUploading}
               onError={message => notify({ message, variant: 'error' })}
               maxHeight={variant === 'compact' ? 260 : 520}
+              // 편집 중 우클릭(서식 메뉴)에서도 행 메뉴와 같은 '맨 위로 보내기'. 본문 초안은 그대로 남는다.
+              contextMenuActions={[{
+                key: 'move-top',
+                label: '맨 위로 보내기',
+                icon: <VerticalAlignTopIcon />,
+                onSelect: () => actions.moveToTop(item, location),
+                disabled: firstInPlace,
+                disabledReason: '이미 맨 위에 있습니다',
+              }]}
             />
           </Box>
         ) : (
@@ -246,7 +262,7 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
         <MoreVertIcon sx={{ fontSize: 18 }} />
       </IconButton>
 
-      <MemoMenu item={item} location={location} anchor={menu} onClose={() => setMenu(null)} />
+      <MemoMenu item={item} location={location} anchor={menu} firstInPlace={firstInPlace} onClose={() => setMenu(null)} />
     </Box>
   );
 }

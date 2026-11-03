@@ -11,7 +11,7 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | 파일 | 용도 |
 |---|---|
 | `components/RichDescriptionEditor.tsx` (한 줄 수정 — 아래) | 개인 메모 Rich Editor(굵게/기울임/밑줄/취소선·글자 크기/색·목록·링크·표·열 너비·Office/웹 붙여넣기·이미지 붙여넣기/끌어 놓기·이미지 크기 조절·확대·Undo/Redo) |
-| `components/RichTextContextMenu.tsx`, `RichTextToolbar.tsx`, `LinkEditDialog.tsx`, `RichLinkHoverHint.tsx`, `MentionSuggestionPopper.tsx` | 우클릭 서식 메뉴·링크 |
+| `RichTextToolbar.tsx`, `LinkEditDialog.tsx`, `RichLinkHoverHint.tsx`, `MentionSuggestionPopper.tsx` | 우클릭 서식 메뉴·링크 |
 | `components/common/ImageZoomViewer.tsx`, `components/richTable/RichTableResizeOverlay.tsx` | 이미지 확대·표 크기 조절 |
 | `components/personalMemo/PersonalMemoContentView.tsx` | 저장된 메모 읽기 화면 |
 | `components/personalMemo/personalMemoPreview.ts` (+test) | 주간 칸 구역별 미리보기 개수 |
@@ -19,7 +19,7 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | `hooks/useDescriptionTableResize.ts`, `hooks/useMentionAutocomplete.ts` | 표 크기 조절·멘션(메모에서는 꺼짐) |
 | `theme/tokens.ts`, `theme/customTheme.ts`, `theme/planAiTheme.ts` | 전역 MUI 테마(버튼·Dialog·Menu·Tooltip) |
 | `utils/personalMemoDates.ts` (+test) | 날짜 계산·라벨(이번 주/같은 요일 ±2주/영문 날짜) |
-| `utils/richTextFormatting.ts`, `richLink*.ts`, `richHtmlInsert.ts` (추가 — 아래), `richTableSx.ts`, `richTextSurface.ts`, `richImageLayout.ts`, `tableResize.ts`, `tsvTable.ts` | HTML serialization·서식·표 |
+| `richLink*.ts`, `richHtmlInsert.ts` (추가 — 아래), `richTableSx.ts`, `richTextSurface.ts`, `richImageLayout.ts`, `tableResize.ts`, `tsvTable.ts` | HTML serialization·서식·표 |
 | `utils/officePaste.ts`, `clipboardPaste*.ts`, `pastedImage*.ts`, `rtfPict.ts`, `imageDrop.ts`, `inlineImage{Limit,Url}.ts`, `descriptionImage*.ts`, `imageZoom.ts`, `imageViewerLayers.ts`, `htmlText.ts`, `mentionMarkup.ts` (+test), `avatarColor.ts` | 붙여넣기·이미지 처리 |
 | `frontend/src/index.css` 의 "저장 서식 계약" 블록 | `src/styles/global.css` 앞부분(글자 크기·정렬·들여쓰기·표 규칙) |
 
@@ -32,6 +32,9 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | `utils/richHtmlInsert.ts` | `revealSelection(root)` 추가 — `insertHtmlAsSingleTransaction` 끝에서 호출. `execCommand('insertHTML'/'insertText')` 는 캐럿으로 스크롤하지 않아 서식 있는 장문을 붙여넣으면 편집기가 위에 머문 채 커서가 화면 밖에 남았다. DOM 은 건드리지 않고(Undo 이력 그대로) 캐럿을 담은 스크롤 영역만 움직인다 |
 | `utils/taskDescription.ts` | `safeImageUrl` 에 `attachment://<uuid>` 허용 한 줄 추가(나머지 sanitizer 규칙 그대로) |
 | `utils/inlineImageMetrics.ts` | 서버 보고 대신 no-op(같은 함수 모양) |
+| `components/RichTextContextMenu.tsx` | Web(commit `2b08b7b`) 메뉴 기준 + Desktop 추가: 취소선 버튼, 크기 순서(기본이 첫 칸), 지금 크기·색·링크 강조(`aria-pressed`), 들여쓰기 → 내어쓰기 순서 |
+| `utils/richTextFormatting.ts` | Web(commit `2b08b7b`)의 목록·들여쓰기 블록과 `applyTextSize` 의 `allowCollapsed` 를 옮김. Desktop 추가: `strikeThrough` 명령, 메뉴 표시용 `selectionExplicitTextSizePx`·`selectionTextColor`·`selectionLinkAnchor` |
+| `utils/richListSx.ts`, `components/personalMemo/PersonalMemoContentView.tsx`, `utils/taskDescription.ts`, `components/RichDescriptionEditor.tsx` | 같은 커밋의 목록 규칙만 옮김(`data-list-style` 통과, Tab·표기 Undo 처리, `contextMenuActions`). 편집기의 메뉴 '링크' 는 선택이 걸친 링크를 찾아 편집으로 연다(`onLink`) |
 | `components/personalMemo/personalMemoTheme.tsx` | Desktop 표면 톤: 창 바탕 `#F7F6F3`, 칸 경계를 반투명 선(`rgba(28,25,23,.07)`)으로, `MEMO_CARD_SHADOW`·`MEMO_CARD_SHADOW_HOVER` 추가, `MEMO_RADIUS` 18px → 14px, Today 배지 굵기 800 → 700. 다시 복사하면 이 값들만 다시 적용 |
 | `api/personalMemos.ts` | 원본 API 클라이언트 대신 **타입만**(`MemoSection`, `MemoKind`) |
 

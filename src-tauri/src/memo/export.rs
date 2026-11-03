@@ -230,6 +230,16 @@ h3 { font-size: 14px; color: #6b7280; margin: 14px 0 6px; }
 .memo .body { flex: 1; min-width: 0; word-break: break-word; white-space: pre-wrap; }
 .memo .link { font-size: 12px; color: #6b7280; }
 .body p { margin: 0; }
+.body ul, .body ol { margin: 0; padding-left: 1.25em; }
+.body :is(ul, ol) :is(ul, ol) { padding-left: 14px; }
+.body ol:not([data-list-style="circled"]):has(> li:nth-of-type(10)), .body ol[data-list-style="circled"]:has(> li:nth-of-type(21)) { padding-left: calc(1.25em + 0.5em); }
+.body :is(ul, ol) ol:not([data-list-style]) { list-style-type: rich-paren; }
+@counter-style rich-paren { system: extends decimal; suffix: ") "; }
+@counter-style rich-circled { system: fixed; symbols: "①" "②" "③" "④" "⑤" "⑥" "⑦" "⑧" "⑨" "⑩" "⑪" "⑫" "⑬" "⑭" "⑮" "⑯" "⑰" "⑱" "⑲" "⑳"; suffix: " "; fallback: decimal; }
+ol[data-list-style="decimal"] { list-style-type: decimal; }
+ol[data-list-style="paren"] { list-style-type: rich-paren; }
+ol[data-list-style="circled"] { list-style-type: rich-circled; }
+ol[data-list-style="circled"] > li:nth-of-type(n+21) { list-style-type: decimal; }
 .body img { max-width: 100%; height: auto; vertical-align: top; border-radius: 4px; }
 .body table { border-collapse: collapse; max-width: 100%; margin: 4px 0; }
 .body td, .body th { border: 1px solid #d1d5db; padding: 2px 6px; vertical-align: top; }

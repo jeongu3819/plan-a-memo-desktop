@@ -40,8 +40,12 @@ import LinkEditDialog from './LinkEditDialog';
 import { RICH_TEXT_SURFACE_PROPS } from '../utils/richTextSurface';
 import RichLinkHoverHint from './RichLinkHoverHint';
 import RichTextToolbar from './RichTextToolbar';
-import RichTextContextMenu, { type RichTextContextMenuState } from './RichTextContextMenu';
-import { handleRichTextShortcut, selectionTextSizePx } from '../utils/richTextFormatting';
+import { useRichTextContextMenu, type RichTextMenuAction } from './RichTextContextMenu';
+import {
+    clearRichListStyleHistory, handleRichListStyleUndoKey, handleRichListTabKey, handleRichTextShortcut,
+    selectionLinkAnchor,
+} from '../utils/richTextFormatting';
+import { richListSx } from '../utils/richListSx';
 import {
     extractImagePlaceholders,
     isSingleImageHtml,
@@ -193,15 +197,17 @@ interface Props {
     /** 편집 영역을 테두리 없이 행 안에 녹여 넣는다(개인 메모 인라인 편집). 기본 false. */
     borderless?: boolean;
     /**
-     * 글자 크기·색을 어디서 고르는가. 기본 'toolbar'(기존 화면 불변).
-     * 'contextMenu' 면 상시 도구모음을 그리지 않고, 글자를 드래그해 고른 뒤 **우클릭**했을 때만
-     * 크기(숫자)·색 메뉴가 뜬다. 선택이 없으면 브라우저 기본 우클릭 메뉴 그대로다.
+     * 서식을 어디서 고르는가. 기본 'toolbar'(기존 화면 불변).
+     * 'contextMenu' 면 상시 도구모음을 그리지 않고, 글자를 고르거나 커서를 둔 뒤 **우클릭**했을 때
+     * 서식·링크·크기·색·목록·들여쓰기 메뉴가 뜬다. Shift+우클릭은 브라우저 기본 메뉴 그대로다.
      */
     formatMenu?: 'toolbar' | 'contextMenu';
     /** 이미지 선택 표시. 'subtle' = 얇은 검은 테두리(개인 메모). 기본 'accent'(파란 테두리). */
     imageSelectionStyle?: 'accent' | 'subtle';
     /** 이미지에 마우스를 올리면 '크게 보기' 버튼을 띄운다(더블클릭 확대를 발견할 수 있게). 기본 false. */
     showImageZoomHint?: boolean;
+    /** 우클릭 메뉴 맨 아래 항목 명령(메모의 '맨 위로 보내기'). formatMenu="contextMenu" 일 때만 보인다. */
+    contextMenuActions?: RichTextMenuAction[];
 }
 
 /**
@@ -248,6 +254,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
     formatMenu = 'toolbar',
     imageSelectionStyle = 'accent',
     showImageZoomHint = false,
+    contextMenuActions,
 }) => {
     const ref = useRef<HTMLDivElement>(null);
     const lastEmitted = useRef<string>('');
@@ -571,8 +578,12 @@ const RichDescriptionEditor: React.FC<Props> = ({
             e.preventDefault();
             return;
         }
+        // 목록 안의 Tab / Shift+Tab = 들여쓰기·내어쓰기(목록 밖 Tab 은 그대로 포커스 이동).
+        if (formatMenu === 'contextMenu' && handleRichListTabKey(e, ref.current)) { emit(); return; }
+        // 번호 표기(1. / 1) / ①) 변경의 Ctrl+Z / Ctrl+Y — 그 이력이 남아 있는 동안에만 가로챈다.
+        if (handleRichListStyleUndoKey(e, ref.current)) { emit(); return; }
         if (e.key === ' ' || e.key === 'Enter') autoLinkBeforeCaret();
-    }, [disabled, openLinkDialog, autoLinkBeforeCaret, table, openImageViewer, mentions, emit]);
+    }, [disabled, openLinkDialog, autoLinkBeforeCaret, table, openImageViewer, mentions, emit, formatMenu]);
 
     /** URL 하나만 붙여넣은 경우 — 선택 텍스트가 있으면 그 텍스트에 링크를 건다. */
     const pasteAsLink = useCallback((url: string) => {
@@ -627,22 +638,19 @@ const RichDescriptionEditor: React.FC<Props> = ({
     }, [selectedImg, refreshSelRect]);
 
     // ── 우클릭 서식 메뉴(formatMenu='contextMenu') ──
-    const [formatMenuState, setFormatMenuState] = useState<RichTextContextMenuState | null>(null);
-    const closeFormatMenu = useCallback(() => setFormatMenuState(null), []);
+    // 글자 서식·크기·색·목록·들여쓰기·링크 — 서식 적용은 전부 메뉴 쪽에 있다.
+    const formatContextMenu = useRichTextContextMenu({
+        editorRef: ref,
+        enabled: formatMenu === 'contextMenu' && !disabled,
+        onFormat: emit,
+        // 선택이 링크에 걸쳐 있으면 그 링크를 고친다(Dialog 의 '링크 제거' 로 해제).
+        onLink: () => openLinkDialog(selectionLinkAnchor(ref.current)),
+        actions: contextMenuActions,
+    });
     const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-        if (formatMenu !== 'contextMenu' || disabled) return;
-        const root = ref.current;
-        const selection = window.getSelection();
-        if (!root || !selection?.rangeCount || selection.isCollapsed) return;   // 선택 없음 → 기본 메뉴
-        const range = selection.getRangeAt(0);
-        if (!root.contains(range.commonAncestorContainer) || !range.toString().trim()) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setTextSelectionRect(null);
-        setFormatMenuState({
-            top: e.clientY, left: e.clientX, range: range.cloneRange(), currentPx: selectionTextSizePx(root),
-        });
-    }, [formatMenu, disabled]);
+        // 메뉴가 뜨면 선택 위 링크 버튼은 숨긴다(메뉴에 링크가 있다).
+        if (formatContextMenu.onContextMenu(e)) setTextSelectionRect(null);
+    }, [formatContextMenu]);
 
     // ── 이미지 hover → '크게 보기' 버튼(showImageZoomHint) ──
     const [hoveredImg, setHoveredImg] = useState<{ el: HTMLImageElement; rect: DOMRect } | null>(null);
@@ -1825,6 +1833,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
                 onInput={() => {
                     // 내용이 바뀌면 표 크기 Undo 이력을 버린다 → Ctrl+Z 는 다시 타이핑 취소로.
                     table.notifyContentChanged();
+                    clearRichListStyleHistory(ref.current);
                     emit();
                     mentions.refresh();
                 }}
@@ -1964,8 +1973,11 @@ const RichDescriptionEditor: React.FC<Props> = ({
                     '& h1': { fontSize: '1.25rem' },
                     '& h2': { fontSize: '1.1rem' },
                     '& h3, & h4, & h5, & h6': { fontSize: '1rem' },
-                    '& ul, & ol': { margin: '0 0 8px', paddingLeft: '1.4em' },
-                    '& li': { margin: 0, lineHeight: 1.55 },
+                    // 목록은 읽기 화면과 같은 단일 출처(utils/richListSx) — 우클릭 메뉴(목록·들여쓰기)를 쓰는 화면만.
+                    ...(formatMenu === 'contextMenu'
+                        ? richListSx
+                        : { '& ul, & ol': { margin: '0 0 8px', paddingLeft: '1.4em' } }),
+                    '& li': { margin: 0, lineHeight: 1.55, ...(formatMenu === 'contextMenu' ? { paddingLeft: '2px' } : {}) },
                     '& blockquote': {
                         margin: '0 0 8px',
                         paddingLeft: 1.25,
@@ -2144,14 +2156,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
                 </Tooltip>
             )}
 
-            {formatMenu === 'contextMenu' && (
-                <RichTextContextMenu
-                    editorRef={ref}
-                    state={formatMenuState}
-                    onClose={closeFormatMenu}
-                    onFormat={emit}
-                />
-            )}
+            {formatMenu === 'contextMenu' && formatContextMenu.menu}
 
             {/* 텍스트를 선택하면 뜨는 링크 버튼 — 상시 툴바 없이 링크를 걸 수 있는 진입점 */}
             {!disabled && textSelectionRect && !selectedLink && !linkDraft && (

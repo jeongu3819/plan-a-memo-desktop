@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { isNextKey, locationKey, locationLabel, parseLocationKey } from '../domain/location';
+import { isNextKey, koreanWeekday, locationKey, locationLabel, parseLocationKey } from '../domain/location';
 import { DEFAULT_LIST_ID } from '../domain/types';
+
+describe('koreanWeekday', () => {
+  it('요일 전체 이름 — 날짜를 붙이지 않는다', () => {
+    expect(koreanWeekday('2026-11-02')).toBe('월요일');
+    expect(koreanWeekday('2026-11-03')).toBe('화요일');
+    expect(koreanWeekday('2026-11-05')).toBe('목요일');
+    expect(koreanWeekday('2026-11-07')).toBe('토요일');
+    expect(koreanWeekday('2026-11-08')).toBe('일요일');
+    expect(koreanWeekday('2027-01-01')).toBe('금요일');
+  });
+});
 
 describe('location keys (Web memoLocation 과 같은 모양)', () => {
   it('round-trips day and next keys', () => {

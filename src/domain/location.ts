@@ -1,6 +1,6 @@
 import type { Location } from './types';
 import { DEFAULT_LIST_ID } from './types';
-import { dayLabel } from '../vendor/plan-a-work/utils/personalMemoDates';
+import { dayLabel, WEEKDAY_LABELS, weekdayOf } from '../vendor/plan-a-work/utils/personalMemoDates';
 
 /**
  * 화면 전환용 key — Web memoLocation 과 같은 모양.
@@ -31,6 +31,11 @@ export function sameLocation(a: Location, b: Location): boolean {
 export function locationLabel(location: Location, listName?: string | null): string {
   if (location.kind === 'day') return dayLabel(location.date);
   return listName && location.listId && location.listId !== DEFAULT_LIST_ID ? `Next > ${listName}` : 'Next';
+}
+
+/** '화요일' */
+export function koreanWeekday(date: string): string {
+  return `${WEEKDAY_LABELS[weekdayOf(date)]}요일`;
 }
 
 /** '10월 8일' */

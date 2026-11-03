@@ -366,7 +366,7 @@ step('header-today', async () => {
   // 같은 높이·세로 정렬
   const boxes = await page.$$eval('[data-testid="memo-header-tools"] > *', nodes => nodes.map(n => n.getBoundingClientRect()).map(r => [Math.round(r.top), Math.round(r.height)]));
   assert.ok(boxes.every(([top, h]) => h === boxes[0][1] && Math.abs(top - boxes[0][0]) <= 1), `도구 높이·정렬 ${JSON.stringify(boxes)}`);
-  // 주간 이름(‹ 이번 주 ›)은 도구 바로 왼쪽, 표지(날짜·인사말)와 같은 줄 — 본문 위에 따로 이동 줄이 없다
+  // 주간 이동(‹ ›)은 도구 바로 왼쪽, 표지(날짜·인사말)와 같은 줄 — 본문 위에 따로 이동 줄이 없다
   const sameRow = async selector => {
     const [nav, tools, title] = await Promise.all(
       [selector, '[data-testid="memo-header-tools"]', '[data-testid="memo-header-date"]'].map(s => page.locator(s).boundingBox()),
@@ -375,24 +375,11 @@ step('header-today', async () => {
     assert.ok(nav.x + nav.width <= tools.x && nav.x > title.x + 200, `${selector} 는 오른쪽 도구 왼쪽`);
     assert.ok(tools.y < title.y + title.height, '조작 묶음이 표지 줄에 있다');
   };
-  const [, tm, td] = today.split('-').map(Number);
   const monday = plusDays(today, -weekdayIndex(today));
-  const short = date => date.slice(5).split('-').map(Number).join('/');
-  const weekText = () => page.locator('[data-testid="personal-memo-week-range"]').innerText();
-  assert.equal(await weekText(), '이번 주', '현재 주');
-  await page.click('[aria-label="지난주"]');
-  await waitFor(async () => (await weekText()) === '지난주', '이전 주 이름');
-  await page.click('[aria-label="지난주"]');
-  await waitFor(async () => (await weekText()).includes(short(plusDays(monday, -14))), '더 먼 주는 실제 기간');
   await page.click('[aria-label="다음 주"]');
-  await page.click('[aria-label="다음 주"]');
-  await waitFor(async () => (await weekText()) === '이번 주', '이번 주로 돌아옴');
-  await page.click('[aria-label="다음 주"]');
-  await waitFor(async () => (await weekText()) === '다음 주', '다음 주 이름');
-  assert.ok(await page.locator(`[data-testid="memo-cell-${plusDays(monday, 7)}"]`).count(), '본문도 다음 주');
+  await page.locator(`[data-testid="memo-cell-${plusDays(monday, 7)}"]`).waitFor();
   await page.click('[aria-label="지난주"]');
-  await page.locator('[data-testid="personal-memo-week-range"]').hover();
-  await page.locator(`[role="tooltip"]:has-text("${short(monday)} – ${short(plusDays(monday, 6))}")`).waitFor({ timeout: 5000 });
+  await page.locator(`[data-testid="memo-cell-${monday}"]`).waitFor();
   await page.mouse.move(5, 300);
   await sameRow('[data-testid="personal-memo-nav"]');
   await app.shot('20-header-week');
@@ -404,9 +391,9 @@ step('header-today', async () => {
   assert.deepEqual(await order(), TOOLS, '날짜 상세: 같은 순서');
   assert.ok(await page.locator('[data-testid="carryover-open"]').isEnabled(), '날짜 상세에서는 가져오기를 쓸 수 있다');
   assert.ok(await page.locator('[data-testid="memo-back-to-week"]').isVisible(), '← 주간 유지');
-  // 날짜 상세: 한 줄 = ← 주간 ‹ 날짜 Today › │ 검색·오늘·연동·가져오기·설정 — 본문 위 보조 줄 없음
+  // 날짜 상세: 한 줄 = ← 주간 ‹ 요일 Today › │ 검색·오늘·연동·가져오기·설정 — 본문 위 보조 줄 없음
   await sameRow('[data-testid="memo-header-nav"]');
-  assert.ok((await page.locator('[data-testid="personal-memo-view-label"]').innerText()).includes(`${tm}/${td}`), '날짜 표시');
+  assert.equal(await page.locator('[data-testid="personal-memo-view-label"]').innerText(), `${['월', '화', '수', '목', '금', '토', '일'][weekdayIndex(today)]}요일`, '요일 표시');
   assert.equal(await page.locator('[data-testid="sync-link-control"]').count(), 0, '연결·History 보조 줄 없음');
   // 아이콘 설명
   await page.locator('[data-testid="sync-header-button"]').hover();
@@ -424,10 +411,10 @@ step('header-today', async () => {
   await page.keyboard.press('Escape');
   await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
   await page.mouse.move(5, 300);
-  // 메인·오전·오후가 창 높이의 대부분을 차지한다(빈 날짜에서도 큰 입력 영역)
+  // 빈 날짜는 메인·오전·오후가 적당한 기본 높이 — 다음 구역이 첫 화면에 보인다(자세히는 e2e/section-heights.mjs)
   const grid = await page.locator('[data-testid="personal-memo-day-sections"]').boundingBox();
   const viewport = page.viewportSize() ?? (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })));
-  assert.ok(grid.height >= Math.min(420, viewport.height) && grid.height >= viewport.height * 0.6, `메모 구역 높이 ${grid.height} / ${viewport.height}`);
+  assert.ok(grid.height >= 420 && grid.y + grid.height < viewport.height, `메모 구역 높이 ${grid.height} / ${viewport.height}`);
   const names = ['월', '화', '수', '목', '금', '토', '일'];
   assert.match(await page.locator('[data-testid="upcoming-weekday"] h2').innerText(), new RegExp(`다가오는 ${names[weekdayIndex(today)]}요일`));
   // 이미 오늘이면 다시 눌러도 화면을 다시 만들지 않는다 — 쓰던 글은 기존 규칙대로(바깥을 누르면) 저장된다
@@ -473,6 +460,752 @@ step('header-today', async () => {
   // [← 주간] → 오늘이 든 주
   await page.click('[data-testid="memo-back-to-week"]');
   await page.waitForSelector(`[data-testid="memo-cell-${today}"]`);
+});
+
+// ── 날짜 표시 · 서식 메뉴 · 맨 위로 보내기 ──────────────────────────────────
+const WEEKDAY_NAMES = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일'];
+const MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const englishDate = date => {
+  const [y, m, d] = date.split('-').map(Number);
+  return `${MONTHS_EN[m - 1]} ${d}, ${y}`;
+};
+
+step('date-labels', async () => {
+  const page = app.page;
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const title = () => page.locator('[data-testid="memo-header-date"]').innerText();
+  const label = () => page.locator('[data-testid="personal-memo-view-label"]').innerText();
+  const badge = page.locator('[data-testid="personal-memo-nav"] [data-testid="memo-today-badge"]');
+  const toolsBox = () => page.locator('[data-testid="memo-header-tools"]').boundingBox();
+  const monday = plusDays(today, -weekdayIndex(today));
+
+  // 주간: 문구 없이 ‹ › 만 — 날짜는 요일 칸마다 있다
+  assert.equal(await page.locator('[data-testid="personal-memo-week-range"]').count(), 0);
+  assert.equal((await page.locator('[data-testid="memo-header-nav"]').innerText()).trim(), '', '주간 이동 영역에 글자 없음');
+  assert.ok(!(await page.locator('[data-testid="memo-dialog-header"]').innerText()).includes('이번 주'), '머리에 이번 주 없음');
+  assert.equal(await title(), englishDate(today));
+  assert.ok((await page.locator(`[data-testid="memo-cell-${today}"]`).innerText()).includes('Today'), '오늘 칸 강조 유지');
+  const weekTools = await toolsBox();
+  await app.shot('30-week-header');
+  await page.click('[aria-label="지난주"]');
+  await page.locator(`[data-testid="memo-cell-${plusDays(monday, -7)}"]`).waitFor();
+  await page.click('[aria-label="다음 주"]');
+  await page.click('[aria-label="다음 주"]');
+  await page.locator(`[data-testid="memo-cell-${plusDays(monday, 7)}"]`).waitFor();
+  assert.equal(await title(), englishDate(today), '주간 제목은 오늘 날짜');
+  assert.deepEqual(await toolsBox(), weekTools, '주를 옮겨도 도구 자리 그대로');
+  await page.click('[aria-label="지난주"]');
+  await page.locator(`[data-testid="memo-cell-${monday}"]`).waitFor();
+
+  // 오늘 날짜 상세: 큰 제목 + 요일 + Today
+  await page.click('[data-testid="memo-today"]');
+  await page.waitForSelector('[data-testid="memo-section-main"]');
+  assert.equal(await title(), englishDate(today));
+  assert.equal(await label(), WEEKDAY_NAMES[weekdayIndex(today)]);
+  assert.equal(await badge.count(), 1, '오늘이면 Today');
+  assert.deepEqual(await toolsBox(), weekTools, '주간 ↔ 날짜 상세에서 도구 자리 그대로');
+  await app.shot('31-day-today');
+
+  // 다른 날짜: 다음 날 7번 — 모든 요일(토·일 포함), 날짜 반복 없음, Today 없음
+  const marker = plusDays(today, 2);
+  await addItem(marker, 'main', '이틀 뒤 메모');
+  for (let n = 1; n <= 7; n++) {
+    await page.click('[aria-label="다음 날"]');
+    const date = plusDays(today, n);
+    await waitFor(async () => (await title()) === englishDate(date), `제목 ${date}`);
+    assert.equal(await label(), WEEKDAY_NAMES[weekdayIndex(date)], `요일 ${date}`);
+    assert.doesNotMatch(await page.locator('[data-testid="personal-memo-nav"]').innerText(), /\d/, '이동 영역에 날짜 숫자 없음');
+    assert.equal(await badge.count(), 0, '오늘이 아니면 Today 없음');
+    assert.deepEqual(await toolsBox(), weekTools, '날짜를 옮겨도 도구 자리 그대로');
+    if (date === marker) {
+      await page.locator('[data-testid="memo-section-main"] >> text=이틀 뒤 메모').waitFor();
+      await app.shot('32-day-other');
+    }
+  }
+  // 과거로 — 어제
+  for (let n = 6; n >= -1; n--) await page.click('[aria-label="전날"]');
+  await waitFor(async () => (await title()) === englishDate(plusDays(today, -1)), '과거 날짜');
+  assert.equal(await label(), WEEKDAY_NAMES[weekdayIndex(plusDays(today, -1))]);
+  // [오늘] → 실제 오늘, ← 주간 → 그 주
+  await page.click('[data-testid="memo-today"]');
+  await waitFor(async () => (await title()) === englishDate(today), '오늘로');
+  assert.equal(await badge.count(), 1);
+  await page.click('[aria-label="다음 날"]');
+  await page.click('[data-testid="memo-back-to-week"]');
+  await page.waitForSelector('[data-testid="personal-memo-week"]');
+  assert.equal(await title(), englishDate(today), '주간으로 돌아오면 제목은 오늘');
+
+  // 해가 다른 날짜: 제목이 연도를 보여 주므로 요일에 연도를 붙이지 않는다
+  await openDate('2027-01-01');
+  assert.equal(await title(), 'January 1, 2027');
+  assert.equal(await label(), '금요일');
+  // 요일 버튼의 보조 메뉴(History) 유지
+  await page.click('[data-testid="memo-doc-menu"]');
+  await page.click('[data-testid="memo-open-history"]');
+  await page.locator('[role="dialog"]').waitFor();
+  await page.keyboard.press('Escape');
+  await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
+
+  // Next List: 제목은 오늘, 이동 영역은 List 이름 — 화살표 없음
+  await page.click('[data-testid="memo-back-to-week"]');
+  await page.click('[data-testid="memo-cell-next"] button[aria-label$="메모 쓰기"]');
+  await page.waitForSelector('[data-testid="memo-section-next"]');
+  assert.equal(await title(), englishDate(today));
+  assert.equal(await label(), 'Next');
+  assert.equal(await page.locator('[aria-label="전날"]').count(), 0);
+  assert.deepEqual(await toolsBox(), weekTools, 'Next List 에서도 도구 자리 그대로');
+  await app.shot('33-next-list');
+  await page.click('[data-testid="memo-back-to-week"]');
+
+  // 찾아보기: 제목 유지. 가장 긴 조합(긴 달 + ← 목록 주간)으로 최소 창에서 겹침·잘림 확인
+  await addItem('2026-09-30', 'main', '긴 달 이름 메모');
+  await page.click('[data-testid="memo-search-open"]');
+  const search = page.locator('[data-testid="memo-search-input"]');
+  await search.waitFor();
+  assert.equal(await title(), englishDate(today));
+  await app.shot('34-search');
+  await search.fill('9.30');
+  await page.locator('[data-testid="memo-search-date-hit"]').first().click();
+  await page.waitForSelector('[data-testid="memo-section-main"]');
+  assert.equal(await title(), 'September 30, 2026');
+  const notClipped = async width => {
+    const clipped = await page.locator('[data-testid="memo-header-date"]').evaluate(el => el.scrollWidth > el.clientWidth + 1);
+    assert.ok(!clipped, `${width}px: 제목 잘림 없음`);
+    const rects = await page.$$eval('[data-testid="personal-memo-view-header"] button', nodes => nodes.map(n => n.getBoundingClientRect().toJSON()));
+    const head = await page.locator('[data-testid="memo-header-date"]').evaluate(el => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return range.getBoundingClientRect().toJSON();
+    });
+    for (let i = 0; i < rects.length; i++) {
+      const a = rects[i];
+      assert.ok(a.right <= width + 1, `${width}px: 버튼이 창 안에`);
+      assert.ok(!(head.left < a.right - 1 && a.left < head.right - 1 && head.top < a.bottom - 1 && a.top < head.bottom - 1), `${width}px: 제목과 버튼이 겹치지 않음`);
+      for (let j = i + 1; j < rects.length; j++) {
+        const b = rects[j];
+        assert.ok(!(a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1), `${width}px: 버튼끼리 겹치지 않음`);
+      }
+    }
+  };
+  await page.setViewportSize({ width: 850, height: 620 });
+  await sleep(150);
+  await notClipped(850);
+  await app.shot('35-long-date-850');
+  const row = async () => {
+    const [nav, head] = await Promise.all(['[data-testid="memo-header-tools"]', '[data-testid="memo-header-date"]'].map(s => page.locator(s).boundingBox()));
+    return nav.y < head.y + head.height;
+  };
+  assert.ok(await row(), '최소 창에서도 제목과 도구가 한 줄');
+  // 가장 넓은 조합(오늘 Today 배지 + 긴 달 이름)도 최소 창에서 한 줄에 든다 — 오늘이 그 달이 아니어도 폭으로 확인
+  await page.click('[data-testid="memo-today"]');
+  await page.locator('[data-testid="personal-memo-nav"] [data-testid="memo-today-badge"]').waitFor();
+  const controls = await page.locator('[data-testid="personal-memo-view-header"]').boundingBox();
+  const longTitle = await page.locator('[data-testid="memo-header-date"]').evaluate(el => {
+    const probe = el.cloneNode(true);
+    probe.textContent = 'September 30, 2026';
+    Object.assign(probe.style, { position: 'absolute', visibility: 'hidden', width: 'auto', overflow: 'visible' });
+    el.parentElement.appendChild(probe);
+    const width = probe.getBoundingClientRect().width;
+    probe.remove();
+    return width;
+  });
+  assert.ok(longTitle + 16 + controls.width <= 850 - 48, `제목 ${longTitle} + 조작 ${controls.width} 가 최소 창에 든다`);
+  await app.shot('35-today-850');
+  await page.setViewportSize({ width: 620, height: 620 });
+  await sleep(150);
+  await notClipped(620);
+  await app.shot('36-long-date-620');
+  await page.setViewportSize({ width: 1180, height: 760 });
+  await page.click('[data-testid="memo-back-to-week"]');
+});
+
+// 서식 메뉴 공통 조작 — 실제 마우스 우클릭(CDP)으로 연다.
+const menuOf = page => page.locator('[data-testid="rich-text-context-menu"]');
+const pressed = (page, label) => menuOf(page).locator(`[aria-label="${label}"]`).getAttribute('aria-pressed');
+/** 글자를 찾아 선택(text 가 없으면 전체) */
+const selectText = (editable, text) =>
+  editable.evaluate((el, target) => {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    el.focus();
+    if (!target) {
+      range.selectNodeContents(el);
+    } else {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let node;
+      for (node = walker.nextNode(); node; node = walker.nextNode()) {
+        const at = node.textContent.indexOf(target);
+        if (at >= 0) {
+          range.setStart(node, at);
+          range.setEnd(node, at + target.length);
+          break;
+        }
+      }
+      if (!node) throw new Error(`글자 없음: ${target}`);
+    }
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, text);
+/** 커서를 그 글자 끝으로 */
+const caretAt = (editable, text) =>
+  editable.evaluate((el, target) => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    el.focus();
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = node.textContent.indexOf(target);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at + target.length);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+    throw new Error(`글자 없음: ${target}`);
+  }, text);
+async function openMenu(page, editable) {
+  await menuOf(page).waitFor({ state: 'detached' });
+  const point = await editable.evaluate(el => {
+    const selection = window.getSelection();
+    const rects = selection.getRangeAt(0).getClientRects();
+    const rect = rects[0] ?? el.getBoundingClientRect();
+    return { x: rect.left + Math.min(rect.width / 2, 40), y: rect.top + rect.height / 2 };
+  });
+  await page.mouse.click(point.x, point.y, { button: 'right' });
+  await menuOf(page).waitFor();
+  return menuOf(page);
+}
+
+step('rich-menu', async () => {
+  const page = app.page;
+  const date = plusDays(today, 40);
+  const created = await addItem(date, 'main', '가나다 라마바 사아자 차카타 파하');
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const row = page.locator(`[data-memo-id="${created.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  const editable = row.locator('[contenteditable="true"]');
+  await editable.waitFor();
+  const html = async () => (await dayOf(date)).items.find(i => i.id === created.id).contentHtml;
+  const saved = (test, message) => waitFor(async () => test(await html()), message);
+  const click = async label => menuOf(page).locator(`[aria-label="${label}"]`).click();
+
+  // 메뉴 구성 — 영역 제목과 버튼
+  await selectText(editable, '가나다');
+  await openMenu(page, editable);
+  const menuText = await menuOf(page).innerText();
+  for (const word of ['글자 크기', '글자 색상', '목록 · 들여쓰기', '맨 위로 보내기', '기본']) assert.ok(menuText.includes(word), `메뉴에 ${word}`);
+  assert.equal(await pressed(page, '기본 크기'), 'true', '지정 없으면 기본 크기 강조');
+  assert.equal(await pressed(page, '글자 크기 15'), 'false', '본문 크기를 숫자로 강조하지 않음');
+  assert.equal(await pressed(page, '기본 색'), 'true');
+  await app.shot('40-rich-menu');
+  const box = await menuOf(page).boundingBox();
+  assert.ok(box.width <= 260, `메뉴 폭 ${box.width}`);
+  // 누르는 동안 선택이 풀리지 않는다 / Esc 로 닫아도 그대로
+  await page.keyboard.press('Escape');
+  await menuOf(page).waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => window.getSelection().toString()), '가나다', 'Esc 후 선택 유지');
+  assert.ok(await editable.evaluate(el => el === document.activeElement), 'Esc 후 편집기 포커스 유지');
+
+  // 굵게 · 밑줄 · 취소선 — 저장, 선택 유지, 다시 열면 강조
+  await openMenu(page, editable);
+  await click('굵게');
+  await saved(h => /<(b|strong)>가나다<\/(b|strong)>/.test(h), '굵게 저장');
+  assert.equal(await page.evaluate(() => window.getSelection().toString()), '가나다', '굵게 후 선택 유지');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '굵게'), 'true', '다시 열면 굵게 강조');
+  await page.keyboard.press('Escape');
+  await selectText(editable, '라마바');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '굵게'), 'false', '다른 글자는 굵게 아님');
+  await click('밑줄');
+  await saved(h => /<u>라마바<\/u>/.test(h), '밑줄 저장');
+  await selectText(editable, '사아자');
+  await openMenu(page, editable);
+  await click('취소선');
+  await saved(h => /<s>사아자<\/s>/.test(h), '취소선 저장');
+  assert.doesNotMatch(await html(), /<strike/, '저장 표현은 <s>');
+
+  // Undo → Redo (브라우저 기본 이력 + 자동 저장)
+  await page.keyboard.press('Control+z');
+  await saved(h => !h.includes('<s>') && h.includes('사아자'), 'Undo 저장');
+  await page.keyboard.press('Control+y');
+  await saved(h => /<s>사아자<\/s>/.test(h), 'Redo 저장');
+
+  // 기존 단축키 — 기울임 Ctrl+I
+  await selectText(editable, '차카타');
+  await page.keyboard.press('Control+i');
+  await saved(h => /<(i|em)>차카타<\/(i|em)>/.test(h), 'Ctrl+I 저장');
+
+  // 글자 크기 — 기본 첫 칸, 현재 크기 강조, 기본으로 되돌리기
+  await selectText(editable, '파하');
+  await openMenu(page, editable);
+  await click('글자 크기 20');
+  await saved(h => /data-text-size="20"[^>]*>파하/.test(h), '크기 저장');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '글자 크기 20'), 'true', '현재 크기 강조');
+  assert.equal(await pressed(page, '기본 크기'), 'false');
+  await click('기본 크기');
+  await saved(h => !h.includes('data-text-size="20"') && h.includes('파하'), '기본 크기 저장');
+
+  // 글자 색 — 현재 색 강조, Undo/Redo
+  await openMenu(page, editable);
+  await click('글자 색 #EF4444');
+  await saved(h => /color:\s*(rgb\(239, 68, 68\)|#ef4444)/i.test(h) && h.includes('파하'), '색 저장');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '글자 색 #EF4444'), 'true', '현재 색 강조');
+  assert.equal(await pressed(page, '기본 색'), 'false');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Control+z');
+  await saved(h => !/color:/i.test(h), '색 Undo 저장');
+  await page.keyboard.press('Control+y');
+  await saved(h => /color:/i.test(h), '색 Redo 저장');
+
+  // 링크 — 추가 · 수정 · 해제(글자는 그대로)
+  await selectText(editable, '차카타');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '링크'), 'false');
+  await click('링크');
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor();
+  assert.ok((await dialog.innerText()).includes('링크 삽입'));
+  await dialog.locator('input').nth(1).fill('example.com/first');
+  await dialog.locator('button:has-text("적용")').click();
+  await dialog.waitFor({ state: 'detached' });
+  await saved(h => /href="https:\/\/example\.com\/first"/.test(h) && h.includes('차카타'), '링크 저장');
+  await page.waitForTimeout(100);
+  await page.mouse.move(5, 300);
+  await caretAt(editable, '차카');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '링크'), 'true', '링크 안이면 강조');
+  await click('링크');
+  await dialog.waitFor();
+  assert.ok((await dialog.innerText()).includes('링크 편집'), '링크 안에서 누르면 편집');
+  assert.ok((await dialog.locator('input').nth(1).inputValue()).includes('example.com/first'));
+  await dialog.locator('input').nth(1).fill('example.com/second');
+  await dialog.locator('button:has-text("적용")').click();
+  await dialog.waitFor({ state: 'detached' });
+  await saved(h => h.includes('example.com/second') && !h.includes('example.com/first'), '링크 수정 저장');
+  assert.equal(((await html()).match(/<a /g) ?? []).length, 1, '링크가 겹치지 않음');
+  await caretAt(editable, '차카');
+  await openMenu(page, editable);
+  await click('링크');
+  await dialog.waitFor();
+  await dialog.locator('button:has-text("링크 제거")').click();
+  await dialog.waitFor({ state: 'detached' });
+  await saved(h => !h.includes('<a ') && h.includes('차카타'), '링크 해제 저장');
+
+  await page.locator('[data-testid="memo-header-date"]').click();
+  await page.locator(`[data-memo-id="${created.id}"] [aria-label="메모 편집"]`).waitFor();
+  const final = await html();
+  for (const [name, pattern] of [
+    ['굵게', /<(b|strong)>가나다/],
+    ['밑줄', /<u>라마바/],
+    ['취소선', /<s>사아자/],
+  ]) assert.match(final, pattern, `편집을 끝낸 뒤에도 ${name}`);
+  await app.shot('41-rich-formats-read');
+  assert.deepEqual(app.consoleErrors.filter(e => !/favicon/i.test(e)), [], '콘솔 오류 없음');
+});
+
+step('rich-menu-lists', async () => {
+  const page = app.page;
+  const date = plusDays(today, 41);
+  const created = await addItem(date, 'main', '<div>첫째 줄</div><div>둘째 줄</div><div>셋째 줄</div>');
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const row = page.locator(`[data-memo-id="${created.id}"]`);
+  const openEdit = async () => {
+    await row.locator('[aria-label="메모 편집"]').click();
+    await row.locator('[contenteditable="true"]').waitFor();
+  };
+  await openEdit();
+  const editable = row.locator('[contenteditable="true"]');
+  const html = async () => (await dayOf(date)).items.find(i => i.id === created.id).contentHtml;
+  const saved = (test, message) => waitFor(async () => test(await html()), message);
+  const click = async label => menuOf(page).locator(`[aria-label="${label}"]`).click();
+  const items = () => editable.locator('li').allInnerTexts();
+
+  // 글머리 기호 → 번호 1. → 1) → ① (글자·항목 수는 그대로)
+  await selectText(editable);
+  await openMenu(page, editable);
+  assert.ok(await menuOf(page).locator('[aria-label="들여쓰기"]').isDisabled(), '목록 밖에서는 들여쓰기 꺼짐');
+  await click('글머리 기호');
+  await saved(h => /<ul>/.test(h) && (h.match(/<li/g) ?? []).length === 3, '글머리 저장');
+  await selectText(editable, '둘째');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '글머리 기호'), 'true');
+  assert.ok(await menuOf(page).locator('[aria-label="들여쓰기"]').isEnabled(), '목록 안에서 들여쓰기 켜짐');
+  await page.keyboard.press('Escape');
+  await selectText(editable);
+  await openMenu(page, editable);
+  await click('글머리 기호');
+  await saved(h => !/<ul>/.test(h), '같은 종류를 다시 누르면 목록 끄기');
+  for (const line of ['첫째 줄', '둘째 줄', '셋째 줄']) assert.ok((await html()).includes(line), `글자 유지 ${line}`);
+  await selectText(editable);
+  await openMenu(page, editable);
+  await click('번호 1.');
+  await saved(h => /<ol[^>]*data-list-style="decimal"/.test(h) && (h.match(/<li/g) ?? []).length === 3, '번호 저장');
+  await page.keyboard.press('Control+a'); // 전체 선택 — 표기만 바뀌고 목록이 꺼지지 않는다
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '번호 1.'), 'true', '전체 선택도 목록 안');
+  await click('번호 1)');
+  await saved(h => /data-list-style="paren"/.test(h), '1) 저장');
+  await selectText(editable);
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '번호 1)'), 'true');
+  await click('원형 숫자 ①');
+  await saved(h => /data-list-style="circled"/.test(h), '① 저장');
+  assert.deepEqual((await items()).map(t => t.trim()), ['첫째 줄', '둘째 줄', '셋째 줄'], '글자·순서 그대로');
+  assert.equal(await editable.locator('ol').first().evaluate(el => getComputedStyle(el).listStyleType), 'rich-circled', '① 표기 적용');
+  await app.shot('42-list-circled');
+
+  // 표기 변경의 Undo / Redo
+  await page.keyboard.press('Control+z');
+  await saved(h => /data-list-style="paren"/.test(h), '표기 Undo');
+  await page.keyboard.press('Control+y');
+  await saved(h => /data-list-style="circled"/.test(h), '표기 Redo');
+
+  // 들여쓰기 · 내어쓰기(메뉴 · Tab) — 다른 항목을 건드리지 않는다
+  await caretAt(editable, '둘째');
+  await openMenu(page, editable);
+  await click('들여쓰기');
+  await saved(h => /<ol[^>]*>.*<ol[^>]*>\s*<li[^>]*>둘째 줄/s.test(h), '들여쓰기 저장');
+  assert.doesNotMatch(await html(), /data-text-size/, '고르지 않은 크기가 굳지 않는다');
+  await app.shot('43-list-indent');
+  await caretAt(editable, '둘째');
+  await openMenu(page, editable);
+  await click('내어쓰기');
+  await saved(h => (h.match(/<ol/g) ?? []).length === 1, '내어쓰기 저장');
+  await caretAt(editable, '셋째');
+  await page.keyboard.press('Tab');
+  await saved(h => (h.match(/<ol/g) ?? []).length === 2, 'Tab 들여쓰기');
+  assert.ok(await editable.evaluate(el => el === document.activeElement), 'Tab 후 포커스 유지');
+  await page.keyboard.press('Shift+Tab');
+  await saved(h => (h.match(/<ol/g) ?? []).length === 1, 'Shift+Tab 내어쓰기');
+  assert.deepEqual((await items()).map(t => t.trim()), ['첫째 줄', '둘째 줄', '셋째 줄'], '들여쓰기 뒤에도 글자·순서 그대로');
+
+  // 목록 이어쓰기 — Enter 로 다음 번호, 새 항목에 글자
+  await caretAt(editable, '셋째 줄');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('넷째 줄');
+  await saved(h => (h.match(/<li/g) ?? []).length === 4 && h.includes('넷째 줄'), '번호 이어쓰기');
+  assert.equal(await page.evaluate(() => window.getSelection().anchorNode.textContent), '넷째 줄', '커서가 새 항목에');
+
+  // Undo 로 목록을 만들기 전까지 되돌려도 글자를 잃지 않는다
+  for (let n = 0; n < 6; n++) await page.keyboard.press('Control+z');
+  for (let n = 0; n < 6; n++) await page.keyboard.press('Control+y');
+  await saved(h => h.includes('넷째 줄') && h.includes('첫째 줄'), 'Undo·Redo 뒤 글자 유지');
+
+  // 편집을 끝낸 읽기 화면에서도 같은 표기, 다시 열어도 그대로
+  await page.locator('[data-testid="memo-header-date"]').click();
+  const readList = row.locator('ol').first();
+  await readList.waitFor();
+  assert.equal(await readList.evaluate(el => getComputedStyle(el).listStyleType), 'rich-circled', '읽기 화면도 ①');
+  await app.shot('44-list-read');
+  await openEdit();
+  assert.equal(await editable.locator('ol').first().getAttribute('data-list-style'), 'circled', '다시 열어도 ①');
+
+  // 번호 흐름 잇기 — 위 목록 다음 번호, 그 사이 다른 글이 있으면 1 부터
+  await page.locator('[data-testid="memo-header-date"]').click();
+  const flow = await addItem(date, 'am', '<ol data-list-style="decimal"><li>일</li><li>이</li></ol><p><br></p><div>삼</div>');
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await openDate(date);
+  const flowRow = page.locator(`[data-memo-id="${flow.id}"]`);
+  await flowRow.locator('[aria-label="메모 편집"]').click();
+  const flowEdit = flowRow.locator('[contenteditable="true"]');
+  await flowEdit.waitFor();
+  await caretAt(flowEdit, '삼');
+  await openMenu(page, flowEdit);
+  await menuOf(page).locator('[aria-label="번호 1."]').click();
+  await waitFor(async () => /<ol[^>]*start="3"/.test((await dayOf(date)).items.find(i => i.id === flow.id).contentHtml), '이어서 3 부터');
+  await page.locator('[data-testid="memo-header-date"]').click();
+  assert.deepEqual(app.consoleErrors.filter(e => !/favicon/i.test(e)), [], '콘솔 오류 없음');
+});
+
+step('rich-menu-content-safety', async () => {
+  const page = app.page;
+  const date = plusDays(today, 42);
+  const longText = '긴 줄 시작 ' + '가나다라마바사아자차카타파하 '.repeat(9000) + ' [END-LONG]';
+  const table = '<table><tbody><tr><td>칸1</td><td>칸2</td></tr></tbody></table>';
+  const created = await addItem(date, 'main', `<p>서식 대상 글자</p>${table}<p>${longText}</p>`);
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const row = page.locator(`[data-memo-id="${created.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  const editable = row.locator('[contenteditable="true"]');
+  await editable.waitFor();
+  const html = async () => (await dayOf(date)).items.find(i => i.id === created.id).contentHtml;
+  const lengthBefore = (await editable.evaluate(el => el.innerText)).length;
+
+  // 이미지를 함께 넣고
+  await editable.evaluate(async el => {
+    const c = document.createElement('canvas');
+    c.width = 32;
+    c.height = 24;
+    c.getContext('2d').fillRect(0, 0, 32, 24);
+    const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], 'capture.png', { type: 'image/png' }));
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el.querySelector('p'));
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  await waitFor(async () => (await html()).includes('attachment://'), '이미지 저장');
+
+  // 짧은 글자에 굵게·색·크기·목록을 줘도 나머지(긴 글·표·이미지)는 그대로
+  await selectText(editable, '서식 대상');
+  await openMenu(page, editable);
+  await menuOf(page).locator('[aria-label="굵게"]').click();
+  await selectText(editable, '서식 대상');
+  await openMenu(page, editable);
+  await menuOf(page).locator('[aria-label="글자 색 #3B82F6"]').click();
+  await selectText(editable, '서식 대상');
+  await openMenu(page, editable);
+  await menuOf(page).locator('[aria-label="글자 크기 18"]').click();
+  await waitFor(async () => {
+    const h = await html();
+    return h.includes('data-text-size="18"') && /<(b|strong)>/.test(h);
+  }, '서식 저장', 30000);
+  await page.locator('[data-testid="memo-header-date"]').click();
+  await page.locator(`[data-memo-id="${created.id}"] [aria-label="메모 편집"]`).waitFor();
+  const check = async where => {
+    const h = await html();
+    assert.ok(h.includes('[END-LONG]'), `${where}: 긴 글 끝까지`);
+    assert.ok(h.includes('긴 줄 시작'), `${where}: 긴 글 처음`);
+    assert.equal((h.match(/가나다라마바사아자차카타파하/g) ?? []).length, 9000, `${where}: 긴 글 반복 수`);
+    assert.ok(/<table/.test(h) && h.includes('칸1') && h.includes('칸2'), `${where}: 표`);
+    assert.ok(h.includes('attachment://'), `${where}: 이미지`);
+    assert.ok(h.includes('data-text-size="18"'), `${where}: 크기`);
+    assert.match(h, /<(b|strong)>/, `${where}: 굵게`);
+    assert.match(h, /color:/i, `${where}: 색`);
+  };
+  await check('저장');
+  assert.ok(lengthBefore > 100000, `긴 글 ${lengthBefore}자`);
+
+  // History — 다음 변경이 지금 서식을 담은 버전을 남긴다(메모 추가·삭제), 화면에서도 보인다
+  const extra = await addItem(date, 'pm', '이력 남기기');
+  await app.invoke('item_delete', { id: extra.id });
+  const versions = await app.invoke('history_list', { location: { kind: 'day', date } });
+  assert.ok(versions.length > 0, 'History 있음');
+  const detail = await app.invoke('history_get', { versionId: versions[0].id });
+  const snapshotItem = detail.snapshot.items.find(i => i.contentHtml?.includes('서식 대상') || i.content_html?.includes('서식 대상'));
+  assert.ok(snapshotItem, 'History 에 그 메모');
+  const snapshotHtml = snapshotItem.contentHtml ?? snapshotItem.content_html;
+  assert.ok(snapshotHtml.includes('data-text-size="18"') && /<table/.test(snapshotHtml) && snapshotHtml.includes('[END-LONG]'), 'History 에 서식·표·긴 글');
+  await page.click('[data-testid="memo-doc-menu"]');
+  await page.click('[data-testid="memo-open-history"]');
+  await page.locator('[role="dialog"]').waitFor();
+  await sleep(500);
+  await app.shot('45-history-formats');
+  await page.keyboard.press('Escape');
+  await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
+
+  // 강제 종료 후 재실행 — SQLite 에서 그대로 복원(앞 단계의 서식·목록 메모 포함)
+  await app.restart();
+  await page.isClosed?.();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await check('재실행');
+  const lists = (await dayOf(plusDays(today, 41))).items.find(i => i.section === 'main').contentHtml;
+  assert.ok(lists.includes('data-list-style="circled"') && lists.includes('넷째 줄'), '재실행: 번호 표기·글자');
+  const formats = (await dayOf(plusDays(today, 40))).items[0].contentHtml;
+  assert.match(formats, /<s>사아자<\/s>/, '재실행: 취소선');
+});
+
+step('rich-menu-placement', async () => {
+  const page = app.page;
+  const date = plusDays(today, 43);
+  const created = await addItem(date, 'main', '창 가장자리 메뉴');
+  await openDate(date);
+  await page.setViewportSize({ width: 850, height: 620 });
+  const row = page.locator(`[data-memo-id="${created.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  const editable = row.locator('[contenteditable="true"]');
+  await editable.waitFor();
+  await selectText(editable, '메뉴');
+  // 창 오른쪽 아래 끝에서 열려도 창 안에 전부 보이고, 맨 아래 명령까지 누를 수 있다
+  await editable.evaluate(el => el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 845, clientY: 612 })));
+  await menuOf(page).waitFor();
+  await sleep(200);
+  const box = await menuOf(page).boundingBox();
+  assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 850 && box.y + box.height <= 620, `창 안의 메뉴 ${JSON.stringify(box)}`);
+  const scrolled = await menuOf(page).evaluate(el => el.scrollHeight - el.clientHeight);
+  assert.ok(scrolled <= 1, `최소 창에서 메뉴 안 스크롤 없음(${scrolled})`);
+  assert.ok(await menuOf(page).locator('[data-testid="rich-menu-action-move-top"]').isVisible(), '맨 위로 보내기가 보인다');
+  await app.shot('46-rich-menu-corner');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-testid="memo-header-date"]').click();
+  await page.setViewportSize({ width: 1180, height: 760 });
+
+  // 오전 · 오후 · Next List 편집에서도 같은 메뉴 — 서식이 그 메모에 저장된다
+  const pmItem = await addItem(date, 'pm', '오후 서식');
+  const amItem = await addItem(date, 'am', '오전 서식');
+  const nextItem = await app.invoke('item_create', { input: { id: crypto.randomUUID(), location: { kind: 'next', listId: null }, section: 'next', kind: 'checklist', contentHtml: 'Next 서식' } });
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await openDate(date);
+  const boldInRow = async (id, text, read) => {
+    const target = page.locator(`[data-testid="personal-memo-row"][data-memo-id="${id}"]`);
+    await target.locator('[aria-label="메모 편집"]').click();
+    const edit = target.locator('[contenteditable="true"]');
+    await edit.waitFor();
+    await selectText(edit, text);
+    await openMenu(page, edit);
+    await menuOf(page).locator('[aria-label="굵게"]').click();
+    await waitFor(async () => new RegExp(`<(b|strong)>${text}`).test(await read()), `${text} 굵게 저장`);
+    await page.locator('[data-testid="memo-header-date"]').click();
+  };
+  const readItem = id => async () => (await dayOf(date)).items.find(i => i.id === id).contentHtml;
+  await boldInRow(amItem.id, '오전', readItem(amItem.id));
+  await boldInRow(pmItem.id, '오후', readItem(pmItem.id));
+
+  // 크게 편집 창 위에서도 메뉴가 뜨고, 창의 초안에 적용·저장된다(항목 명령은 행 편집에만)
+  await page.locator(`[data-memo-id="${pmItem.id}"] [aria-label="메모 편집"]`).click({ button: 'right' });
+  await page.locator('[data-testid="personal-memo-menu"] >> text=크게 편집').click();
+  const large = page.locator('[data-testid="personal-memo-large-editor"] [contenteditable="true"]');
+  await large.waitFor();
+  await selectText(large, '서식');
+  await openMenu(page, large);
+  assert.ok(await menuOf(page).isVisible(), '크게 편집 위의 메뉴');
+  assert.equal(await menuOf(page).locator('[data-testid="rich-menu-action-move-top"]').count(), 0, '크게 편집에는 항목 명령 없음');
+  await menuOf(page).locator('[aria-label="글자 색 #8B5CF6"]').click();
+  await waitFor(async () => /color:/i.test(await readItem(pmItem.id)()), '크게 편집 색 저장');
+  await app.shot('50-large-editor-format');
+  await page.locator('[data-testid="personal-memo-large-editor"] button:has-text("닫기")').click();
+  await page.locator('[data-testid="personal-memo-large-editor"]').waitFor({ state: 'detached' });
+
+  await page.click('[data-testid="memo-back-to-week"]');
+  await page.click('[data-testid="memo-cell-next"] button[aria-label$="메모 쓰기"]');
+  await page.waitForSelector('[data-testid="memo-section-next"]');
+  const readNext = async () => (await app.invoke('memo_list', { listId: null })).items.find(i => i.id === nextItem.id).contentHtml;
+  await boldInRow(nextItem.id, 'Next', readNext);
+  await page.click('[data-testid="memo-back-to-week"]');
+});
+
+step('memo-move-top', async () => {
+  const page = app.page;
+  const date = plusDays(today, 44);
+  const location = { kind: 'day', date };
+  const ids = {};
+  for (const name of ['A', 'B', 'C']) ids[name] = (await addItem(date, 'main', `맨위 ${name}`)).id;
+  for (const name of ['M', 'N', 'O']) ids[name] = (await addItem(date, 'am', `맨위 ${name}`)).id;
+  for (const name of ['X', 'Y', 'Z']) ids[name] = (await addItem(date, 'pm', `맨위 ${name}`)).id;
+  const otherDay = plusDays(date, 1);
+  const untouched = (await addItem(otherDay, 'main', '다른 날짜 메모')).id;
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const order = async section => (await dayOf(date)).items.filter(i => i.section === section).map(i => i.contentHtml.replace(/^.*맨위 ([A-Z]).*$/s, '$1')).join('');
+  const shown = async section => (await page.locator(`[data-testid="memo-section-${section}"] [data-testid="personal-memo-row"]`).allInnerTexts()).map(t => t.replace(/^.*맨위 ([A-Z]).*$/s, '$1')).join('');
+  const rowOf = name => page.locator(`[data-testid="personal-memo-row"][data-memo-id="${ids[name]}"]`);
+  const viaRowMenu = async name => {
+    await rowOf(name).locator('[aria-label="메모 편집"]').click({ button: 'right' });
+    await page.locator('[data-testid="personal-memo-menu"]').waitFor();
+    await page.locator('[data-testid="memo-menu-move-top"]').click();
+  };
+
+  // 편집 메뉴에서 — 편집 중인 메모가 그 구역 맨 위로, 편집·입력 내용은 그대로
+  await rowOf('C').locator('[aria-label="메모 편집"]').click();
+  const editable = rowOf('C').locator('[contenteditable="true"]');
+  await editable.waitFor();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' 고침');
+  await selectText(editable, '맨위');
+  await openMenu(page, editable);
+  await app.shot('47-move-top-before');
+  await menuOf(page).locator('[data-testid="rich-menu-action-move-top"]').click();
+  await waitFor(async () => (await order('main')) === 'CAB', 'C 맨 위로');
+  await waitFor(async () => (await shown('main')).startsWith('C'), '화면에도');
+  assert.ok(await editable.isVisible(), '편집 상태 유지');
+  assert.ok(await editable.evaluate(el => el === document.activeElement), '편집기 포커스 유지');
+  assert.ok((await editable.innerText()).includes('고침'), '입력한 글자 유지');
+  assert.ok((await dayOf(date)).items.find(i => i.id === ids.C).contentHtml.includes('고침'), '입력한 글자 저장');
+  assert.equal(await order('am'), 'MNO', '다른 구역 그대로');
+  assert.equal(await order('pm'), 'XYZ', '다른 구역 그대로');
+  await page.keyboard.press('End');
+  await page.keyboard.type('!');
+  await waitFor(async () => (await dayOf(date)).items.find(i => i.id === ids.C).contentHtml.includes('!'), '옮긴 뒤에도 입력·저장');
+  await app.shot('48-move-top-after');
+
+  // 이미 맨 위면 꺼져 있다
+  await selectText(editable, '맨위');
+  await openMenu(page, editable);
+  assert.ok(await menuOf(page).locator('[data-testid="rich-menu-action-move-top"]').isDisabled(), '이미 맨 위');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-testid="memo-header-date"]').click();
+  await rowOf('C').locator('[aria-label="메모 편집"]').click({ button: 'right' });
+  await page.locator('[data-testid="personal-memo-menu"]').waitFor();
+  assert.equal(await page.getAttribute('[data-testid="memo-menu-move-top"]', 'aria-disabled'), 'true', '행 메뉴도 꺼짐');
+  await page.keyboard.press('Escape');
+
+  // 행 메뉴에서 — 오전 · 오후 각각 그 구역 맨 위로
+  await viaRowMenu('O');
+  await waitFor(async () => (await order('am')) === 'OMN', '오전');
+  await viaRowMenu('Y');
+  await waitFor(async () => (await order('pm')) === 'YXZ', '오후');
+  assert.equal(await order('main'), 'CAB', '메인 그대로');
+
+  // 여러 번 — 시드 고정 무작위로 20회, 매번 화면·저장이 기대값과 같고 항목이 빠지거나 겹치지 않는다
+  let expected = (await order('main')).split('');
+  let seed = 7;
+  for (let n = 0; n < 20; n++) {
+    seed = (seed * 31 + 11) % 97;
+    const name = expected[1 + (seed % (expected.length - 1))];
+    await viaRowMenu(name);
+    expected = [name, ...expected.filter(x => x !== name)];
+    await waitFor(async () => (await order('main')) === expected.join(''), `정렬 ${n}: ${expected.join('')}`);
+    await waitFor(async () => (await shown('main')) === expected.join(''), `화면 ${n}: ${expected.join('')}`);
+  }
+  assert.equal((await dayOf(otherDay)).items.map(i => i.id).join(), untouched, '다른 날짜 그대로');
+
+  // 주간 칸에서도(그 날짜의 그 구역 안에서만)
+  await page.click('[data-testid="memo-back-to-week"]');
+  await page.waitForSelector('[data-testid="personal-memo-week"]');
+  const weekRow = name => page.locator(`[data-testid="memo-cell-${date}"] [data-memo-id="${ids[name]}"]`);
+  await page.locator(`[data-testid="memo-cell-${date}"] button:has-text("더 보기")`).click();
+  await weekRow('Z').locator('[aria-label="메모 편집"]').click({ button: 'right' });
+  await page.locator('[data-testid="memo-menu-move-top"]').click();
+  await waitFor(async () => (await order('pm')) === 'ZYX', '주간에서 오후 맨 위로');
+
+  // Next List — 그 List 안에서만
+  const list = await app.invoke('list_create', { name: '맨위 List', id: null });
+  const addNext = (listId, html) => app.invoke('item_create', { input: { id: crypto.randomUUID(), location: { kind: 'next', listId }, section: 'next', kind: 'checklist', contentHtml: html } });
+  const listItems = {};
+  for (const name of ['P', 'Q', 'R']) listItems[name] = (await addNext(list.id, `리스트 ${name}`)).id;
+  const defaults = [(await addNext(null, '기본 Next 1')).id, (await addNext(null, '기본 Next 2')).id];
+  const listOrder = async listId => (await app.invoke('memo_list', { listId })).items.map(i => i.id);
+  const defaultBefore = await listOrder(null);
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.click('[data-testid="memo-cell-next"] button[aria-label$="메모 쓰기"]');
+  await page.waitForSelector('[data-testid="memo-section-next"]');
+  await page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${list.id}"]`).click();
+  const rRow = page.locator(`[data-testid="personal-memo-row"][data-memo-id="${listItems.R}"]`);
+  await rRow.waitFor();
+  await rRow.locator('[aria-label="메모 편집"]').click();
+  const rEdit = rRow.locator('[contenteditable="true"]');
+  await rEdit.waitFor();
+  await selectText(rEdit, '리스트');
+  await openMenu(page, rEdit);
+  await app.shot('49-next-list-menu');
+  await menuOf(page).locator('[data-testid="rich-menu-action-move-top"]').click();
+  await waitFor(async () => (await listOrder(list.id)).join() === [listItems.R, listItems.P, listItems.Q].join(), 'List 맨 위로');
+  assert.deepEqual(await listOrder(null), defaultBefore, '기본 Next 는 그대로');
+  assert.equal(defaults.length, 2);
+  await page.locator('[data-testid="memo-header-date"]').click();
+
+  // 끌어 놓기와 같은 저장 — 재실행 후에도 그 순서
+  const beforeRestart = [await order('main'), await order('am'), await order('pm'), (await listOrder(list.id)).join()];
+  await app.restart();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  assert.deepEqual([await order('main'), await order('am'), await order('pm'), (await listOrder(list.id)).join()], beforeRestart, '재실행 후 순서');
+  await app.page.setViewportSize({ width: 1180, height: 760 }).catch(() => undefined);
 });
 
 step('upcoming-weekday', async () => {
@@ -611,7 +1344,7 @@ step('date-search', async () => {
   await page.locator('[data-testid="memo-search-date-hit"]').first().waitFor();
   await page.locator('[data-testid="memo-search-date-hit"]').first().click();
   await page.waitForSelector('[data-testid="memo-section-main"]');
-  assert.ok((await page.locator('[data-testid="personal-memo-view-label"]').innerText()).includes('3/9'));
+  assert.match(await page.locator('[data-testid="memo-header-date"]').innerText(), /^March 9, /);
   await page.click('[data-testid="memo-back-to-browse"]');
   await search.fill('');
 });
@@ -1237,8 +1970,7 @@ step('reminder-click-opens-day', async () => {
   // 알림을 누르면 Windows 가 <scheme>://open?date=… 로 앱을 연다(실행 중이면 그 창으로) → 그 날짜 상세
   const target = plusDays(today, 21);
   await openDate(target);
-  const [, m, d] = target.split('-').map(Number);
-  assert.ok((await app.page.locator('[data-testid="personal-memo-view-label"]').innerText()).includes(`${m}/${d}`), '알림의 날짜 상세');
+  assert.equal(await app.page.locator('[data-testid="memo-header-date"]').innerText(), englishDate(target), '알림의 날짜 상세');
   assert.equal(await app.invoke('app_take_pending_open'), null, '한 번 연 날짜는 비워진다');
 });
 

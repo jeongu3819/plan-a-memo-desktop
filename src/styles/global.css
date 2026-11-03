@@ -60,6 +60,19 @@ td[data-align="right"], th[data-align="right"] { text-align: right !important; }
 :is(p, div)[data-indent="4"][data-indent] { margin-left: 160px; }
 :is(p, div)[data-indent="5"][data-indent] { margin-left: 200px; }
 :is(p, div)[data-indent="6"][data-indent] { margin-left: 240px; }
+/* 번호 목록 표기(ol[data-list-style], richTextFormatting LIST_STYLES). 진짜 <ol> 이라 번호는 저절로 매겨진다.
+   원형 숫자는 ⑳ 까지 — 21 번째 항목부터는 그 항목만 decimal 로 그려 '21.' '22.' 가 된다. */
+@counter-style rich-paren { system: extends decimal; suffix: ") "; }
+@counter-style rich-circled {
+  system: fixed;
+  symbols: "①" "②" "③" "④" "⑤" "⑥" "⑦" "⑧" "⑨" "⑩" "⑪" "⑫" "⑬" "⑭" "⑮" "⑯" "⑰" "⑱" "⑲" "⑳";
+  suffix: " ";
+  fallback: decimal;
+}
+ol[data-list-style="decimal"][data-list-style] { list-style-type: decimal; }
+ol[data-list-style="paren"][data-list-style] { list-style-type: rich-paren; }
+ol[data-list-style="circled"][data-list-style] { list-style-type: rich-circled; }
+ol[data-list-style="circled"][data-list-style] > li:nth-of-type(n+21) { list-style-type: decimal; }
 /* 표 자체의 위치(Word 가운데 정렬 표). 셀 안 글자 정렬(td/th data-align)과는 별개다. */
 table[data-align="center"][data-align] { margin-left: auto !important; margin-right: auto !important; }
 table[data-align="right"][data-align] { margin-left: auto !important; margin-right: 0 !important; }

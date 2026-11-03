@@ -32,6 +32,7 @@ import { useDay, useReminder, useSameWeekdayDates } from '../../services/queries
 import { usePersonalMemo } from './MemoProvider';
 import { SECTION_LABELS } from './MemoMenu';
 import MemoRow from './MemoRow';
+import { isFirstInSection } from '../../domain/memoDrop';
 import QuickInput from './QuickInput';
 import ReminderDialog from '../reminders/ReminderDialog';
 
@@ -128,7 +129,7 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
       {!isPending && !expanded && !empty && (
         <Box data-testid={`upcoming-preview-${date}`}>
           {preview.map(item => (
-            <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable />
+            <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} />
           ))}
           {items.length > preview.length && (
             <Typography sx={{ fontSize: '0.72rem', color: MEMO_MUTED, px: 0.75, pt: 0.25 }}>외 {items.length - preview.length}개 — [기록] 을 누르면 모두 보입니다</Typography>
@@ -153,7 +154,7 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
                   {SECTION_LABELS[section]}
                 </Typography>
                 {rows.map(item => (
-                  <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable />
+                  <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} />
                 ))}
                 <Box sx={{ mt: rows.length ? 0.5 : 0.25 }}>
                   <QuickInput location={location} section={section} placeholder={FUTURE_PLACEHOLDER} autoFocus={focusMain && section === 'main'} />

@@ -8,9 +8,11 @@
  * 끌어서 옮기기: 끄는 동안 메모는 제자리에 있고(자리가 밀리지 않아 흔들리지 않는다) 커서를 따라가는 조각과 삽입선만 움직인다.
  * 삽입 위치는 메모 가운데선 + 여유 폭으로 정하고(domain/memoDrop), 놓은 순서는 저장을 기다리지 않고 바로 화면에 반영한다.
  *
- * 날짜 상세에서는 보고 있는 날짜의 메인·오전·오후가 주인공이다 — 세 구역이 창 높이의 대부분을 채우고(입력칸이 남은
- * 자리를 채운다), 아래의 '지난 미완료 가져오기' 안내와 '다가오는 ○요일'(다음 같은 요일 메모장 — 그 자리에서 작성)은
- * 그 아래 보조 영역으로 스크롤해서 본다. 메모가 많으면 구역은 내용만큼 더 자란다.
+ * 날짜 상세의 높이는 구역마다 자기 내용으로만 정해진다 — 창 높이나 다른 구역의 길이에 묶이지 않는다.
+ *   · 비어 있으면 기본 높이(SECTION_BODY_MIN_HEIGHT), 메모가 생기면 입력칸이 자리를 내주고, 넘치면 그 구역만 자란다.
+ *   · 오전·오후는 같은 줄이라 카드 외곽은 긴 쪽에 맞지만, 짧은 쪽의 입력칸은 카드를 따라 늘지 않는다.
+ *   · 줄 높이에 fr 을 쓰지 않는다 — 높이가 정해지지 않은 Grid 에서 fr 비율은 가장 긴 구역 기준으로 다른 줄까지 늘린다.
+ * 아래의 '지난 미완료 가져오기' 안내와 '다가오는 ○요일'(다음 같은 요일 메모장 — 그 자리에서 작성)은 그 아래에 이어진다.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, CircularProgress, Typography } from '@mui/material';
@@ -44,6 +46,9 @@ const SECTION_PLACEHOLDERS: Record<MemoSection, string> = {
   pm: '오후에 처리할 일을 적어보세요',
 };
 
+/** 날짜 상세 구역 본문(메모 + 입력칸)의 기본 높이(px). 카드 전체는 제목·여백을 더해 메인 약 260, 오전·오후 약 205 — 최소 창에서도 '다가오는 ○요일' 이 첫 화면에 보인다. */
+const SECTION_BODY_MIN_HEIGHT: Record<MemoSection, number> = { main: 200, am: 145, pm: 145 };
+
 /** 커서에서 이만큼 벗어난 구역까지는 그 구역에 놓는 것으로 본다(px). 더 멀면 삽입선이 없고 놓아도 아무 일도 없다. */
 const SECTION_REACH = 32;
 /**
@@ -63,7 +68,7 @@ interface DropLine {
   width: number;
 }
 
-function DraggableMemo({ item, location }: { item: MemoItem; location: Location }) {
+function DraggableMemo({ item, location, firstInPlace }: { item: MemoItem; location: Location; firstInPlace: boolean }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `memo:${item.id}`, data: { item } });
   return (
     <Box ref={setNodeRef} data-drop-row={item.id}>
@@ -72,6 +77,7 @@ function DraggableMemo({ item, location }: { item: MemoItem; location: Location 
         location={location}
         variant="full"
         comfortable
+        firstInPlace={firstInPlace}
         dragging={isDragging}
         dragHandleProps={{ ...(attributes as object), ...(listeners as object) }}
       />
@@ -89,6 +95,7 @@ const Section = memo(function Section({
   autoFocus,
   area,
   grow,
+  bodyMinHeight = 0,
   isOver,
 }: {
   title: string | null;
@@ -99,8 +106,10 @@ const Section = memo(function Section({
   minRows: number;
   autoFocus: boolean;
   area: string;
-  /** Next List — 메모가 있어도 입력칸을 minRows 로 둔다. 날짜 상세는 메모가 있으면 한 줄부터(남은 자리는 채운다). */
+  /** Next List — 메모가 있어도 입력칸을 minRows 로 두고 창 높이를 채운다. 날짜 상세는 메모가 있으면 한 줄부터(기본 높이의 남은 자리는 채운다). */
   grow: boolean;
+  /** 본문의 기본 높이. 입력칸은 이 안에서만 채운다 — 같은 줄의 긴 카드에 맞춰 늘어난 자리까지 따라가지 않는다. */
+  bodyMinHeight?: number;
   isOver: boolean;
 }) {
   const checklist = items.filter(m => m.kind === 'checklist');
@@ -140,18 +149,20 @@ const Section = memo(function Section({
           )}
         </Box>
       )}
-      {items.map(item => (
-        <DraggableMemo key={item.id} item={item} location={location} />
-      ))}
-      <Box data-drop-input sx={{ mt: items.length ? 1 : 0, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <QuickInput
-          location={location}
-          section={section}
-          placeholder={hint}
-          minRows={grow ? minRows : items.length ? 1 : minRows}
-          autoFocus={autoFocus}
-          fill
-        />
+      <Box sx={{ flex: grow ? '1 1 0' : '0 0 auto', minHeight: bodyMinHeight, display: 'flex', flexDirection: 'column' }}>
+        {items.map((item, index) => (
+          <DraggableMemo key={item.id} item={item} location={location} firstInPlace={index === 0} />
+        ))}
+        <Box data-drop-input sx={{ mt: items.length ? 1 : 0, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <QuickInput
+            location={location}
+            section={section}
+            placeholder={hint}
+            minRows={grow ? minRows : items.length ? 1 : minRows}
+            autoFocus={autoFocus}
+            fill
+          />
+        </Box>
       </Box>
     </Box>
   );
@@ -350,10 +361,8 @@ export default function DayView({
             minHeight: 0,
             gap: { xs: 1.25, sm: 1.5 },
             gridTemplateColumns: isNext ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))',
-            // 날짜 상세: 메인(위)·오전/오후(아래)가 창 높이의 대부분을 채운다 — 아래 보조 영역의 제목이 살짝 보일 만큼 남긴다.
-            // 메모가 많으면 각 줄이 내용만큼 더 자란다(min-content).
-            ...(isNext ? {} : { minHeight: 'max(420px, calc(100vh - 200px))' }),
-            gridTemplateRows: isNext ? 'minmax(min-content, 1fr)' : 'minmax(min-content, 1fr) minmax(min-content, 1.2fr)',
+            // 날짜 상세: 각 줄은 자기 내용 높이만큼(파일 머리 설명). Next List 는 구역 하나가 남은 자리를 채운다.
+            gridTemplateRows: isNext ? 'minmax(min-content, 1fr)' : 'auto auto',
             gridTemplateAreas: isNext ? '"main"' : '"main main" "am pm"',
           }}
         >
@@ -381,6 +390,7 @@ export default function DayView({
                 section={section}
                 minRows={3}
                 grow={false}
+                bodyMinHeight={SECTION_BODY_MIN_HEIGHT[section]}
                 isOver={dropLine?.section === section}
                 autoFocus={focusSection === section && !editItemId}
                 hint={SECTION_PLACEHOLDERS[section]}

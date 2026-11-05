@@ -1,6 +1,6 @@
 /**
  * 복사본 선택 — 연결된 날짜(memo-sync-v2)에서 이 PC 의 복사본과 PLAN-A Work 쪽 복사본이 서로 다르게 바뀌어
- * 자동으로 합칠 수 없을 때만 보인다. 어느 쪽도 먼저 지우지 않고, 고르지 않은 쪽은 History 에 남는다.
+ * 자동으로 합칠 수 없을 때만 보인다. 어느 쪽도 먼저 지우지 않고, 고르지 않은 쪽은 보존된 내용에 남는다.
  */
 import { useState } from 'react';
 import { Box, Button, Typography } from '@mui/material';
@@ -48,7 +48,7 @@ export default function CarryReviews({ date }: { date: string }) {
     try {
       await dayToolsService.resolveCarryReview(review.id, choice);
       refreshMemo(queryClient);
-      notify({ message: '선택한 내용으로 맞췄습니다. 고르지 않은 내용은 History 에 남아 있습니다.', variant: 'success' });
+      notify({ message: '선택한 내용으로 맞췄습니다. 고르지 않은 내용은 설정 > 보존된 내용에서 확인할 수 있습니다.', variant: 'success' });
     } catch (error) {
       notify({ message: errorMessage(error, '처리하지 못했습니다.'), variant: 'error' });
     } finally {

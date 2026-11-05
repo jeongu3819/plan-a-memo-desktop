@@ -14,8 +14,7 @@ import {
   syncService,
   trashService,
 } from '../tauri/api';
-import type { DayMemo, Location, MemoItem, NextListMemo, WeekMemo } from '../domain/types';
-import { locationKey } from '../domain/location';
+import type { DayMemo, MemoItem, NextListMemo, WeekMemo } from '../domain/types';
 
 export const keys = {
   memo: ['memo'] as const,
@@ -28,7 +27,7 @@ export const keys = {
   trash: ['memo', 'trash'] as const,
   search: (q: string, limit: number) => ['memo', 'search', q, limit] as const,
   favorites: ['memo', 'favorites'] as const,
-  history: (location: Location) => ['memo', 'history', locationKey(location)] as const,
+  preserved: ['memo', 'preserved'] as const,
   // 날짜 상세 도구 — 'memo' 아래에 두어 메모를 쓰면(refreshMemo) 함께 다시 읽는다.
   sameWeekday: (after: string, limit: number) => ['memo', 'same-weekday', after, limit] as const,
   carryover: (date: string) => ['memo', 'carryover', date] as const,
@@ -91,12 +90,8 @@ export const useReminderStatus = (enabled: boolean) =>
 export const useFavorites = (enabled = true) =>
   useQuery({ queryKey: keys.favorites, queryFn: searchService.favorites, enabled });
 
-export const useHistory = (location: Location | null) =>
-  useQuery({
-    queryKey: location ? keys.history(location) : ['memo', 'history', 'none'],
-    queryFn: () => historyService.list(location!),
-    enabled: !!location,
-  });
+export const usePreserved = (enabled: boolean) =>
+  useQuery({ queryKey: keys.preserved, queryFn: historyService.preserved, enabled });
 
 export const useSyncOverview = () =>
   useQuery({ queryKey: keys.syncOverview, queryFn: syncService.overview, refetchInterval: 15_000 });

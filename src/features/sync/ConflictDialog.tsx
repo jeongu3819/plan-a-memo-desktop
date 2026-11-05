@@ -1,6 +1,6 @@
 /**
  * 충돌 비교 — DayMemo 는 메인+오전+오후 전체, Next 는 List 전체를 나란히(좁으면 위아래) 비교한다.
- * '최근 수정 시각' 으로 자동 선택하지 않는다. 선택한 쪽이 최신이 되고, 선택하지 않은 쪽은 History 에 남는다.
+ * '최근 수정 시각' 으로 자동 선택하지 않는다. 선택한 쪽이 최신이 되고, 선택하지 않은 쪽은 설정 > 보존된 내용에 남는다.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -79,7 +79,7 @@ export default function ConflictDialog({ open, documentId, onClose }: { open: bo
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth data-personal-memo-overlay="true" data-testid="conflict-dialog">
-      <DialogTitle>⚠ 메모 내용이 서로 다릅니다.</DialogTitle>
+      <DialogTitle>⚠ 이 PC와 PLAN-A Work의 메모 내용이 서로 다릅니다.</DialogTitle>
       <DialogContent>
         {!current ? (
           <Typography sx={{ fontSize: '0.9rem' }}>확인할 충돌이 없습니다.</Typography>
@@ -90,7 +90,7 @@ export default function ConflictDialog({ open, documentId, onClose }: { open: bo
               {conflictReason(current)}
             </Typography>
             <Typography sx={{ fontSize: '0.84rem', color: 'text.secondary', mb: 2 }}>
-              최신으로 사용할 내용을 선택해주세요. 선택하지 않은 내용은 History 에 보관됩니다.
+              어떤 내용을 사용할지 선택해 주세요. 선택하지 않은 내용은 설정 &gt; 보존된 내용에서 다시 확인할 수 있습니다.
               {list.length > 1 ? ` (확인할 메모 ${list.length}건)` : ''}
             </Typography>
             {info && <Alert severity="warning" sx={{ mb: 1.5 }}>{info}</Alert>}

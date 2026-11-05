@@ -6,7 +6,7 @@ import type { ConflictView } from '../../domain/types';
 
 export function conflictReason(view: Pick<ConflictView, 'source' | 'firstLink'>): string {
   if (view.source === 'web') return 'PLAN-A Work 에서 오래 열어 둔 편집 내용이 늦게 저장되어, 이 PC 가 보낸 내용과 다릅니다.';
-  if (view.firstLink) return '처음 연결하는데 이 PC 와 PLAN-A Work 에 이미 서로 다른 내용이 있습니다. 어느 쪽도 지우지 않았습니다.';
+  if (view.firstLink) return '연결하려는 메모의 내용이 이 PC 와 PLAN-A Work 에서 서로 다릅니다. 어느 쪽도 지우지 않았습니다.';
   return 'Desktop과 PLAN-A Work에서 각각 수정되었습니다.';
 }
 

@@ -81,16 +81,6 @@ export interface SearchHit extends LocatedItem {
   excerpt: string;
 }
 
-export interface HistoryHit {
-  versionId: number;
-  documentId: string;
-  location: Location;
-  listName: string | null;
-  reasonLabel: string;
-  createdAt: string;
-  excerpt: string;
-}
-
 export interface DaySearchHit {
   date: string;
   items: SearchHit[];
@@ -104,7 +94,6 @@ export interface SearchResult {
   days: DaySearchHit[];
   items: SearchHit[];
   lists: Array<{ id: string; name: string; isDefault: boolean }>;
-  history: HistoryHit[];
   truncated: boolean;
 }
 
@@ -173,6 +162,11 @@ export interface VersionSummary {
   createdAt: string;
   itemCount: number;
   preview: string;
+}
+
+export interface PreservedVersion extends VersionSummary {
+  location: Location;
+  listName: string | null;
 }
 
 export interface VersionDetail {

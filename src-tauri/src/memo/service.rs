@@ -241,7 +241,6 @@ pub fn update_content(conn: &mut Connection, id: &str, html: &str) -> AppResult<
     if item.content_html == html {
         return Ok(item);
     }
-    repo::record_version(&tx, &item.document_id, "edit")?;
     tx.execute(
         "UPDATE memo_items SET content_html = ?2, content_text = ?3, updated_at = ?4 WHERE id = ?1",
         params![id, html, text::search_text(html), now()],
@@ -384,7 +383,9 @@ pub fn move_item_linking(conn: &mut Connection, input: MoveItem, link_account: O
             }
         }),
     };
-    repo::record_version(&tx, &source.id, if same_doc { "edit" } else { "move" })?;
+    if !same_doc {
+        repo::record_version(&tx, &source.id, "move")?;
+    }
 
     // 대상 구역의 새 순서
     let mut ids: Vec<String> =
@@ -428,7 +429,6 @@ pub fn reorder(conn: &mut Connection, location: &Location, section: &str, ids: &
             return Err(AppError::validation("다른 날짜의 메모는 이 순서에 넣을 수 없습니다."));
         }
     }
-    repo::record_version(&tx, &doc.id, "edit")?;
     let ts = now();
     for (order, id) in ids.iter().enumerate() {
         tx.execute(

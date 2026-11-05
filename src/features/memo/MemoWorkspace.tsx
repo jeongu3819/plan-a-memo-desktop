@@ -7,28 +7,24 @@
  *
  * 머리는 한 줄 — 왼쪽 표지(날짜·인사말), 오른쪽 조작 묶음(화면 이동 │ 도구). 본문 위에 따로 줄을 두지 않는다.
  * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다: 검색 — 아이콘 자리가 입력칸으로 펼쳐지고 결과·찾아보기(즐겨찾기 · Next List ·
- * 지난 메모 · History)는 본문에 · 오늘(**오늘 날짜의 상세**) · 연동(연결 상태·동기화·해제) · 지난 미완료 가져오기(날짜 상세에서만) · 설정.
- * History 는 연동과 상관없는 메모 기록이다 — 가운데 날짜·List 이름을 누르면 나오는 보조 메뉴(메모가 없는 날에도)와 메모 행 메뉴에 있다.
+ * 지난 메모)는 본문에 · 오늘(**오늘 날짜의 상세**) · 연동(연결 상태·동기화·해제) · 지난 미완료 가져오기(날짜 상세에서만) · 설정.
  * 날짜는 두 번 쓰지 않는다 — 큰 제목이 연·월·일(날짜 상세는 보고 있는 날짜, 그 밖에는 오늘)을, 작은 이동 영역은 요일만 보여 준다.
  * 주간은 요일 칸마다 날짜가 있으므로 ‹ › 만 둔다.
  * 날짜 이동은 도구 왼쪽의 ‹ › 뿐이다 — 같은 요일 고르기 메뉴는 두지 않는다(날짜 상세 아래 '다가오는 같은 요일' 카드가 대신한다).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, Button, ButtonBase, Chip, IconButton, InputBase, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
+import { Box, Button, Chip, IconButton, InputBase, Tooltip, Typography } from '@mui/material';
 import { GlobalStyles } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import HistoryIcon from '@mui/icons-material/History';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { listen } from '@tauri-apps/api/event';
 import {
   addDays,
-  dayLabelWithYear,
   localDayString,
   longEnglishDate,
   weekStart,
@@ -48,7 +44,7 @@ import {
 } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { MEMO_SEARCH_HIGHLIGHT } from '../../vendor/plan-a-work/components/personalMemo/memoSearchHighlight';
 import type { DueReminder, Location, MemoSection } from '../../domain/types';
-import { isNextKey, koreanMonthDay, koreanWeekday, locationKey, locationLabel, parseLocationKey } from '../../domain/location';
+import { isNextKey, koreanMonthDay, koreanWeekday, locationKey, parseLocationKey } from '../../domain/location';
 import { koreanLongDate } from '../../domain/dayTools';
 import { dayToolsService, isTauri } from '../../tauri/api';
 import { useDay, useLists, useNextList, useSyncOverview } from '../../services/queries';
@@ -153,7 +149,7 @@ function MissedReminders({ items, onOpen, onDismiss }: { items: DueReminder[]; o
 }
 
 export default function MemoWorkspace() {
-  const { today, store, notify, setEditingId, openHistory } = usePersonalMemo();
+  const { today, store, notify, setEditingId } = usePersonalMemo();
   const ui = useAppUi();
   const lists = useLists();
   const [view, setViewState] = useState<View>({ kind: 'week', monday: weekStart(today) });
@@ -162,7 +158,6 @@ export default function MemoWorkspace() {
   const searchInput = useRef<HTMLInputElement>(null);
   const [beforeBrowse, setBeforeBrowse] = useState<View | null>(null);
   const [missed, setMissed] = useState<DueReminder[]>([]);
-  const [docMenu, setDocMenu] = useState<HTMLElement | null>(null);
 
   // 화면 전환 — 편집 중인 메모는 닫으며 저장한다(저장 실패한 초안은 저장소에 남아 다시 시도할 수 있다).
   // 이미지를 넣는 중에는 옮기지 않는다(넣던 이미지를 잃지 않게).
@@ -383,48 +378,20 @@ export default function MemoWorkspace() {
             </IconButton>
           </Tooltip>
         )}
-        {/* 요일·List 이름은 보조 메뉴를 연다. 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치). */}
+        {/* 같은 요일 앞뒤 날짜는 아래 '다가오는 같은 요일' 카드가 맡는다(Web 과 같은 배치). */}
         {isDay && (
-          <Tooltip title="이 메모의 변경 이력" disableInteractive disableHoverListener={!!docMenu}>
-            <ButtonBase
-              aria-label={`${onNext ? NEXT_LABEL : dayLabelWithYear(dayKey!, today)} 메뉴`}
-              aria-haspopup="menu"
-              data-testid="memo-doc-menu"
-              onClick={event => setDocMenu(event.currentTarget)}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, height: 28, px: 0.5 }}>
+            <Typography
+              data-testid="personal-memo-view-label"
               sx={{
-                gap: 0.25, height: 28, px: 0.5, borderRadius: '6px',
-                '&:hover': { bgcolor: 'action.hover' },
-                '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+                fontWeight: 700, fontSize: '0.9rem', pl: onNext ? 1 : 0, pr: onNext ? 1 : 0.5, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+                color: onNext ? 'text.primary' : dayTone(dayKey!).text,
               }}
             >
-              <Typography
-                data-testid="personal-memo-view-label"
-                sx={{
-                  fontWeight: 700, fontSize: '0.9rem', pl: onNext ? 1 : 0, pr: onNext ? 1 : 0.5, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
-                  color: onNext ? 'text.primary' : dayTone(dayKey!).text,
-                }}
-              >
-                {onNext ? NEXT_LABEL : koreanWeekday(dayKey!)}
-              </Typography>
-              {dayKey === today && <TodayBadge />}
-              <ExpandMoreIcon sx={{ fontSize: 16, color: MEMO_SECTION_TITLE }} />
-            </ButtonBase>
-          </Tooltip>
-        )}
-        {isDay && location && (
-          <Menu anchorEl={docMenu} open={!!docMenu} onClose={() => setDocMenu(null)} data-personal-memo-overlay="true" data-testid="memo-doc-menu-list">
-            <MenuItem
-              dense
-              data-testid="memo-open-history"
-              onClick={() => {
-                setDocMenu(null);
-                openHistory(location, locationLabel(location, listName));
-              }}
-            >
-              <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
-              <ListItemText primary="변경 이력(History)" secondary="이전 내용 보기 · 복원 (연동 없이 사용)" />
-            </MenuItem>
-          </Menu>
+              {onNext ? NEXT_LABEL : koreanWeekday(dayKey!)}
+            </Typography>
+            {dayKey === today && <TodayBadge />}
+          </Box>
         )}
         {!onNext && (
           <Tooltip title={isDay ? '다음 날' : '다음 주'}>

@@ -239,16 +239,17 @@ pub fn enqueue(conn: &Connection, doc_id: &str, op: &str, revision: i64, payload
     Ok(())
 }
 
-/// 같은 편집이 이어질 때 History 를 매번 남기지 않는 간격.
-pub const EDIT_COALESCE_SECONDS: i64 = 300;
+/// PLAN-A Work 변경이 이어질 때 매번 남기지 않는 간격.
+pub const REMOTE_APPLY_COALESCE_SECONDS: i64 = 300;
 pub const MAX_VERSIONS_PER_DOCUMENT: i64 = 200;
 
-/// 변경 **전** 상태를 History 로 남긴다. 편집(edit)은 5분에 한 번으로 합치고,
-/// 삭제·이동·충돌·복원 같은 중요한 변경은 항상 남긴다. 직전 기록과 같으면 남기지 않는다.
+/// 데이터 보호용으로 변경 **전** 상태를 남긴다(삭제·이동·복원·지난 미완료 가져오기·PLAN-A Work 변경 반영·충돌).
+/// 일상 편집(내용 수정·순서 변경)은 남기지 않는다 — 편집 중 되돌리기는 Ctrl+Z, 앱 전체 복구는 Backup 이 맡는다.
+/// PLAN-A Work 변경 반영은 5분에 한 번으로 합친다. 직전 기록과 같으면 남기지 않는다.
 pub fn record_version(conn: &Connection, doc_id: &str, reason: &str) -> AppResult<Option<i64>> {
     let Some(doc) = doc_by_id(conn, doc_id)? else { return Ok(None) };
     let snapshot = build_snapshot(conn, &doc, true)?;
-    let always = !matches!(reason, "edit" | "remote_apply");
+    let always = reason != "remote_apply";
     if snapshot.items.is_empty() && !reason.starts_with("conflict") {
         return Ok(None);
     }
@@ -266,7 +267,7 @@ pub fn record_version(conn: &Connection, doc_id: &str, reason: &str) -> AppResul
         }
         if !always && last_reason == reason {
             let recent = chrono::DateTime::parse_from_rfc3339(created_at)
-                .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() < EDIT_COALESCE_SECONDS)
+                .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() < REMOTE_APPLY_COALESCE_SECONDS)
                 .unwrap_or(false);
             if recent {
                 return Ok(None);

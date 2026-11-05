@@ -15,9 +15,7 @@ import VerticalAlignTopIcon from '@mui/icons-material/VerticalAlignTop';
 import CheckBoxOutlinedIcon from '@mui/icons-material/CheckBoxOutlined';
 import StarBorderRoundedIcon from '@mui/icons-material/StarBorderRounded';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
-import HistoryIcon from '@mui/icons-material/History';
 import type { Location, MemoItem, MemoSection } from '../../domain/types';
-import { locationLabel } from '../../domain/location';
 import { quickMoveDate, shortDate, WEEKDAY_LABELS } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import { NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { useLists } from '../../services/queries';
@@ -47,7 +45,7 @@ export default function MemoMenu({
   firstInPlace: boolean;
   onClose: () => void;
 }) {
-  const { actions, today, openLargeEditor, openDatePicker, openHistory } = usePersonalMemo();
+  const { actions, today, openLargeEditor, openDatePicker } = usePersonalMemo();
   const [page, setPage] = useState<Page>('main');
   const lists = useLists();
   useEffect(() => {
@@ -106,10 +104,6 @@ export default function MemoMenu({
       <MenuItem key="large" dense onClick={() => run(() => openLargeEditor(item))}>
         <ListItemIcon><OpenInFullIcon fontSize="small" /></ListItemIcon>
         <ListItemText primary="크게 편집" />
-      </MenuItem>,
-      <MenuItem key="history" dense onClick={() => run(() => openHistory(location, locationLabel(location)))}>
-        <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
-        <ListItemText primary={dated ? '이 날짜의 변경 이력' : '이 List 의 변경 이력'} />
       </MenuItem>,
       <Divider key="d2" />,
       <MenuItem key="delete" dense onClick={() => run(() => actions.remove(item))} sx={{ color: 'error.main' }}>

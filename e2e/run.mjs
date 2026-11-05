@@ -102,12 +102,14 @@ step('image', async () => {
   await app.shot('03-image');
 });
 
-step('search-history', async () => {
+step('search-no-edit-snapshot', async () => {
   const hits = await app.invoke('memo_search', { query: '초안' });
   assert.ok(hits.items.length >= 1, '서식 태그를 무시하고 찾는다');
   await app.invoke('item_update_content', { id: firstItemId, html: 'AWS 비용 확인' });
+  await app.invoke('item_update_content', { id: firstItemId, html: 'AWS 비용 확인 — 다시 고침' });
+  await app.invoke('item_update_content', { id: firstItemId, html: 'AWS 비용 확인' });
   const history = await app.invoke('history_list', { location: loc() });
-  assert.ok(history.length >= 1, '수정 전 상태가 History 에');
+  assert.equal(history.length, 0, '일상 편집은 Snapshot 을 남기지 않는다');
 });
 
 step('restart-persistence', async () => {
@@ -161,7 +163,16 @@ step(
     await app.page.locator('[data-testid="conflict-dialog"] button:has-text("이 내용을 최신으로 사용")').first().click(); // Desktop
     await waitFor(async () => (await app.invoke('conflicts_list')).length === 0, '선택 반영');
     const history = await app.invoke('history_list', { location: loc() });
-    assert.ok(history.some(v => v.reason === 'conflict_remote'), '선택하지 않은 PLAN-A Work 내용은 History 에');
+    assert.ok(history.some(v => v.reason === 'conflict_remote'), '선택하지 않은 PLAN-A Work 내용을 보존한다');
+    // 안내한 대로 설정 > 보존된 내용에서 다시 볼 수 있다
+    await app.page.click('[data-testid="open-settings"]');
+    await app.page.click('[data-testid="settings-preserved"]');
+    await app.page.locator('[data-testid="preserved-entry"][data-reason="conflict_remote"]').first().click();
+    await waitFor(async () => (await app.page.locator('[data-testid="preserved-detail"]').innerText()).includes('Web 에서 추가한 일'), '선택하지 않은 내용 보기');
+    await app.shot('07a-preserved');
+    await app.page.locator('[data-testid="preserved-dialog"] button:has-text("닫기")').click();
+    await app.page.locator('[data-testid="settings-dialog"] button:has-text("닫기")').last().click();
+    await app.page.locator('[role="dialog"]').waitFor({ state: 'detached' });
   },
   { mockOnly: true },
 );
@@ -214,11 +225,83 @@ step(
     );
     await app.page.click('[data-testid="header-sync-problem"]').catch(() => undefined);
     await app.page.waitForSelector('[data-testid="conflict-dialog"]', { timeout: 10000 });
-    await app.page.waitForSelector('text=처음 연결하는데', { timeout: 5000 });
+    await app.page.waitForSelector('text=연결하려는 메모의 내용이', { timeout: 5000 });
     await app.shot('07b-first-link-compare');
     await app.page.locator('[data-testid="conflict-dialog"] button:has-text("나중에 선택")').click();
     const items = (await app.invoke('memo_day', { date })).items.map(i => i.contentHtml);
     assert.deepEqual(items, ['AWS 확인(Desktop)'], '고르기 전에는 이 PC 내용을 바꾸지 않는다');
+  },
+  { mockOnly: true },
+);
+
+step(
+  'relink-same-content',
+  async () => {
+    const page = app.page;
+    // Staging 충돌을 만든 그대로 — style 끝 ';' 이 있는 이미지·색 글자. Mock 서버도 ';' 를 지워 저장한다.
+    const png = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+    const image = await page.evaluate(bytes => window.__TAURI_INTERNALS__.invoke('attachment_import', new Uint8Array(bytes)), png);
+    const styled = `글<div><img src="${image.url}" alt="붙여넣은 이미지" style="width: 572px; height: auto;"><br></div><span style="color: rgb(1, 2, 3);">색</span>`;
+    const date = plusDays(today, 170);
+    const location = { kind: 'day', date };
+    await addItem(date, 'main', styled);
+    await addItem(date, 'am', '오전 메모');
+    const pm = await addItem(date, 'pm', '오후 메모');
+    await app.invoke('item_set_completed', { id: pm.id, completed: true });
+    const relink = async target => {
+      await app.invoke('sync_unlink', { location: target });
+      await app.invoke('sync_now');
+      await app.invoke('sync_link', { location: target });
+      const report = await app.invoke('sync_now');
+      assert.equal(report.conflicts, 0, '같은 내용 — 비교 화면 없음');
+      assert.equal(report.pushed, 0, '같은 내용을 다시 보내지 않는다');
+    };
+    await app.invoke('sync_link', { location });
+    await app.invoke('sync_now');
+    const server = (await dayOf(date)).document.serverVersion;
+    const before = (await dayOf(date)).items.map(i => [i.id, i.contentHtml, i.completed]);
+    for (let round = 0; round < 3; round++) await relink(location);
+    const after = await dayOf(date);
+    assert.equal(after.document.syncStatus, 'synced', 'DAY 자동 연결');
+    assert.equal(after.document.serverVersion, server, '서버 version 그대로');
+    assert.deepEqual(after.items.map(i => [i.id, i.contentHtml, i.completed]), before, '메모·이미지·체크 그대로');
+    assert.equal((await app.invoke('conflicts_list')).filter(c => c.location.date === date).length, 0);
+    // 화면에서 다시 연결해도 비교 창 없이 간단한 안내만
+    await openDate(date);
+    await page.click('[data-testid="sync-header-button"]');
+    await page.locator('[data-testid="sync-unlink"]').click();
+    await waitFor(async () => !(await dayOf(date)).document.syncEnabled, '해제');
+    await page.mouse.move(5, 300);
+    await page.click('[data-testid="sync-header-button"]');
+    await page.click('[data-testid="sync-link-button"]');
+    await page.locator('text=PLAN-A Work와 연결되었습니다.').waitFor({ timeout: 5000 });
+    await waitFor(async () => (await dayOf(date)).document.syncStatus === 'synced', '화면에서 다시 연결');
+    await sleep(800);
+    assert.equal(await page.locator('[data-testid="conflict-dialog"]').count(), 0, '비교 창이 뜨지 않는다');
+    await app.shot('07c-relink-same');
+    // NEXT_LIST
+    const list = await app.invoke('list_create', { name: '재연결 시험' });
+    const listLocation = { kind: 'next', listId: list.id };
+    await app.invoke('item_create', { input: { id: crypto.randomUUID(), location: listLocation, section: 'next', kind: 'checklist', contentHtml: '<span style="color: rgb(9, 9, 9);">List 메모</span>' } });
+    await app.invoke('sync_link', { location: listLocation });
+    await app.invoke('sync_now');
+    await relink(listLocation);
+    assert.equal((await app.invoke('memo_list', { listId: list.id })).list.document.syncStatus, 'synced', 'NEXT_LIST 자동 연결');
+    // 실제로 다르면 — 비교 화면, 양쪽 그대로
+    await app.invoke('sync_unlink', { location });
+    await app.invoke('sync_now');
+    await app.invoke('mock_remote_edit', { location, text: '해제 뒤 Web 에서 추가' });
+    await app.invoke('sync_link', { location });
+    assert.equal((await app.invoke('sync_now')).conflicts, 1, '실제 차이 — 비교 화면');
+    const conflict = (await app.invoke('conflicts_list')).find(c => c.location.date === date);
+    assert.equal(conflict.local.items.length, 3);
+    assert.ok(conflict.remote.items.some(i => i.contentHtml === '해제 뒤 Web 에서 추가'));
+    assert.deepEqual((await dayOf(date)).items.map(i => [i.id, i.contentHtml, i.completed]), before, '고르기 전에는 바꾸지 않는다');
+    await page.reload();
+    await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+    // 뒤 단계에 영향 없게 이 PC 내용을 골라 끝낸다
+    await app.invoke('conflict_resolve', { id: conflict.id, choice: 'local' });
+    await waitFor(async () => (await dayOf(date)).document.syncStatus === 'synced', '선택 반영');
   },
   { mockOnly: true },
 );
@@ -401,15 +484,11 @@ step('header-today', async () => {
   await page.locator('[data-testid="carryover-open"]').hover();
   await page.locator('[role="tooltip"]:has-text("지난 미완료 가져오기")').waitFor({ timeout: 5000 });
   await page.mouse.move(5, 300);
-  // History 는 연동과 분리 — 날짜 보조 메뉴에서(연결·로그인 없이, 메모가 없는 날에도)
+  // 일반 변경 이력 메뉴는 어디에도 없다(보존된 내용은 설정에서)
   await page.click('[data-testid="sync-header-button"]');
   assert.ok(!(await page.locator('[data-testid="sync-header-menu"]').innerText()).includes('History'), '연동 메뉴에 History 없음');
   await page.keyboard.press('Escape');
-  await page.click('[data-testid="memo-doc-menu"]');
-  await page.click('[data-testid="memo-open-history"]');
-  await page.locator('[role="dialog"]').waitFor();
-  await page.keyboard.press('Escape');
-  await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
+  assert.equal(await page.locator('[data-testid="memo-doc-menu"]').count(), 0, '요일에 변경 이력 메뉴 없음');
   await page.mouse.move(5, 300);
   // 빈 날짜는 메인·오전·오후가 적당한 기본 높이 — 다음 구역이 첫 화면에 보인다(자세히는 e2e/section-heights.mjs)
   const grid = await page.locator('[data-testid="personal-memo-day-sections"]').boundingBox();
@@ -541,12 +620,6 @@ step('date-labels', async () => {
   await openDate('2027-01-01');
   assert.equal(await title(), 'January 1, 2027');
   assert.equal(await label(), '금요일');
-  // 요일 버튼의 보조 메뉴(History) 유지
-  await page.click('[data-testid="memo-doc-menu"]');
-  await page.click('[data-testid="memo-open-history"]');
-  await page.locator('[role="dialog"]').waitFor();
-  await page.keyboard.press('Escape');
-  await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
 
   // Next List: 제목은 오늘, 이동 영역은 List 이름 — 화살표 없음
   await page.click('[data-testid="memo-back-to-week"]');
@@ -990,22 +1063,23 @@ step('rich-menu-content-safety', async () => {
   await check('저장');
   assert.ok(lengthBefore > 100000, `긴 글 ${lengthBefore}자`);
 
-  // History — 다음 변경이 지금 서식을 담은 버전을 남긴다(메모 추가·삭제), 화면에서도 보인다
+  // 보존된 내용 — 삭제 직전 Snapshot 에 지금 서식이 그대로 담기고, 설정 화면에서도 보인다
   const extra = await addItem(date, 'pm', '이력 남기기');
   await app.invoke('item_delete', { id: extra.id });
   const versions = await app.invoke('history_list', { location: { kind: 'day', date } });
-  assert.ok(versions.length > 0, 'History 있음');
+  assert.ok(versions.length > 0, '보존된 내용 있음');
   const detail = await app.invoke('history_get', { versionId: versions[0].id });
   const snapshotItem = detail.snapshot.items.find(i => i.contentHtml?.includes('서식 대상') || i.content_html?.includes('서식 대상'));
-  assert.ok(snapshotItem, 'History 에 그 메모');
+  assert.ok(snapshotItem, '보존된 내용에 그 메모');
   const snapshotHtml = snapshotItem.contentHtml ?? snapshotItem.content_html;
-  assert.ok(snapshotHtml.includes('data-text-size="18"') && /<table/.test(snapshotHtml) && snapshotHtml.includes('[END-LONG]'), 'History 에 서식·표·긴 글');
-  await page.click('[data-testid="memo-doc-menu"]');
-  await page.click('[data-testid="memo-open-history"]');
-  await page.locator('[role="dialog"]').waitFor();
+  assert.ok(snapshotHtml.includes('data-text-size="18"') && /<table/.test(snapshotHtml) && snapshotHtml.includes('[END-LONG]'), '보존된 내용에 서식·표·긴 글');
+  await page.click('[data-testid="open-settings"]');
+  await page.click('[data-testid="settings-preserved"]');
+  await page.locator('[data-testid="preserved-dialog"]').waitFor();
   await sleep(500);
-  await app.shot('45-history-formats');
-  await page.keyboard.press('Escape');
+  await app.shot('45-preserved-formats');
+  await page.locator('[data-testid="preserved-dialog"] button:has-text("닫기")').click();
+  await page.locator('[data-testid="settings-dialog"] button:has-text("닫기")').last().click();
   await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
 
   // 강제 종료 후 재실행 — SQLite 에서 그대로 복원(앞 단계의 서식·목록 메모 포함)
@@ -1228,7 +1302,11 @@ step('upcoming-weekday', async () => {
   assert.ok(text7.includes('정기 점검') && text7.includes('예약한 일정 확인'), '다음 주 카드에 실제 내용');
   assert.equal(await card7.locator('[data-testid="upcoming-card-title"]').innerText(), `다음 ${weekdayText} · ${md(d7)}`, '카드 제목: 다음 ○요일 · 날짜');
   assert.equal(await card7.locator('[data-testid="personal-memo-quick-input"]').count(), 0, '접힌 카드 — 입력칸 없음');
-  assert.ok(!text7.includes('추가 항목 5') && text7.includes('외 '), '접힌 카드는 앞의 메모만 미리 보기');
+  assert.ok(!text7.includes('추가 항목 5') && text7.includes('나머지 3개 펼치기'), '접힌 카드는 구역마다 앞의 메모만 미리 보기');
+  await card7.locator('[data-testid="upcoming-show-more"]').click();
+  assert.ok((await card7.innerText()).includes('추가 항목 5') && (await card7.locator('[data-testid="personal-memo-quick-input"]').count()) === 0, '펼쳐도 입력칸 없이 모두 보인다');
+  await card7.locator('[data-testid="upcoming-show-more"]').click();
+  assert.ok(!(await card7.innerText()).includes('추가 항목 5'), '간단히 보기');
   await card7.locator('[data-testid="upcoming-toggle"]').click();
   await card7.locator('[data-testid="upcoming-group-main"] [data-testid="personal-memo-quick-input"]').waitFor();
   assert.ok((await card7.innerText()).includes('추가 항목 5'), '펼치면 모든 항목');
@@ -1290,6 +1368,97 @@ step('upcoming-weekday', async () => {
   // 카드 제목은 이동 버튼이 아니다 — 보고 있는 날짜는 그대로
   assert.equal(await card7.locator(`[aria-label="${d7} 날짜 상세로"]`).count(), 0, '카드에서 날짜 상세로 옮기지 않는다');
   assert.equal(await page.locator('[data-testid="memo-search-input"]').count(), 0, '검색 입력칸은 머리 줄에서 펼칠 때만');
+});
+
+step('upcoming-sections', async () => {
+  const page = app.page;
+  const labels = async card => card.locator('[data-testid^="upcoming-preview-group-"]').evaluateAll(nodes => nodes.map(n => n.dataset.testid.replace('upcoming-preview-group-', '')));
+  const titled = async (card, section) => card.locator(`[data-testid="upcoming-preview-group-${section}"]`).innerText();
+  // 메인만 · 오전만
+  const base1 = plusDays(today, 210);
+  const [mainOnly, amOnly] = [plusDays(base1, 7), plusDays(base1, 14)];
+  await addItem(mainOnly, 'main', '메인만 있는 날');
+  await addItem(amOnly, 'am', '오전만 있는 날');
+  await openDate(base1);
+  const cardMain = page.locator(`[data-testid="upcoming-card-${mainOnly}"]`);
+  const cardAm = page.locator(`[data-testid="upcoming-card-${amOnly}"]`);
+  assert.deepEqual(await labels(cardMain), ['main'], '메인만 — 다른 구역 제목 없음');
+  assert.ok((await titled(cardMain, 'main')).startsWith('메인 할 일'));
+  assert.deepEqual(await labels(cardAm), ['am'], '오전만');
+  assert.ok((await titled(cardAm, 'am')).startsWith('오전 할 일'));
+  assert.ok(!(await cardAm.innerText()).includes('메인 할 일'), '빈 구역은 생략');
+  // 오후만 · 세 구역 모두
+  const base2 = plusDays(today, 280);
+  const [pmOnly, all] = [plusDays(base2, 7), plusDays(base2, 14)];
+  await addItem(pmOnly, 'pm', '오후만 있는 날');
+  await addItem(all, 'main', '보고서 작성');
+  await addItem(all, 'main', '자료 정리');
+  const am = await addItem(all, 'am', '회의 준비');
+  await addItem(all, 'pm', '일정 검토');
+  await addItem(all, 'pm', '일반 텍스트 메모', 'text');
+  await addItem(all, 'pm', `긴 메모 ${'가나다라마바사 '.repeat(200)}[긴 메모 끝]`);
+  await addItem(all, 'am', '<table><tbody><tr><td>표 칸1</td><td>표 칸2</td></tr><tr><td>표 칸3</td><td>표 칸4</td></tr></tbody></table>', 'text');
+  await openDate(base2);
+  const cardPm = page.locator(`[data-testid="upcoming-card-${pmOnly}"]`);
+  const card = page.locator(`[data-testid="upcoming-card-${all}"]`);
+  assert.deepEqual(await labels(cardPm), ['pm'], '오후만');
+  assert.deepEqual(await labels(card), ['main', 'am', 'pm'], '메인·오전·오후 순서');
+  assert.equal(await card.locator('[data-testid="personal-memo-quick-input"]').count(), 0, '입력칸은 숨김');
+  const allText = await titled(card, 'main');
+  assert.ok(allText.includes('보고서 작성') && allText.includes('자료 정리'), '구역 안 정렬 유지');
+  assert.ok((await titled(card, 'pm')).includes('일반 텍스트 메모'), '일반 텍스트도 표시');
+  const longRow = card.locator('[data-testid="personal-memo-row"]').filter({ hasText: '긴 메모' });
+  assert.ok((await longRow.boundingBox()).height < 70, '긴 본문은 일부만');
+  assert.ok((await titled(card, 'am')).includes('표 칸1'), '표도 미리 보기');
+  await card.scrollIntoViewIfNeeded();
+  await app.shot('22b-upcoming-sections');
+  // 접힌 채 체크 → 그 미래 날짜에만, 취소선 유지
+  const todayRevision = (await dayOf(base2)).document?.localRevision ?? null;
+  const box = card.locator(`[data-testid="personal-memo-row"][data-memo-id="${am.id}"] input[type="checkbox"]`);
+  await box.click();
+  await waitFor(async () => (await dayOf(all)).items.find(i => i.id === am.id)?.completed, '접힌 카드에서 완료');
+  assert.equal((await dayOf(base2)).document?.localRevision ?? null, todayRevision, '보고 있는 날짜는 바뀌지 않는다');
+  await waitFor(async () => (await card.locator(`[data-testid="personal-memo-row"][data-memo-id="${am.id}"] [data-testid="personal-memo-content"]`).evaluate(el => getComputedStyle(el).textDecorationLine)) === 'line-through', '취소선');
+  await box.click();
+  await waitFor(async () => !(await dayOf(all)).items.find(i => i.id === am.id)?.completed, '접힌 카드에서 완료 해제');
+  // 접기·펼치기 반복
+  for (let i = 0; i < 3; i++) {
+    await card.locator('[data-testid="upcoming-toggle"]').click();
+    await card.locator('[data-testid="upcoming-group-main"] [data-testid="personal-memo-quick-input"]').waitFor();
+    await card.locator('[data-testid="upcoming-toggle"]').click();
+    await card.locator(`[data-testid="upcoming-preview-${all}"]`).waitFor();
+  }
+  assert.deepEqual(await labels(card), ['main', 'am', 'pm'], '반복해도 그대로');
+  // 전부 지우면 '메모 없음'
+  for (const item of (await dayOf(pmOnly)).items) await app.invoke('item_delete', { id: item.id });
+  await openDate(base2);
+  assert.equal(await cardPm.locator('[data-testid="upcoming-empty"]').innerText(), '메모 없음', '모든 구역이 비면 메모 없음');
+  // 앱을 다시 켜도 그대로
+  await app.restart();
+  await openDate(base2);
+  assert.deepEqual(await labels(app.page.locator(`[data-testid="upcoming-card-${all}"]`)), ['main', 'am', 'pm'], '재실행 후 유지');
+  // 연결된 날짜(Mock Sync) — 접힌 카드에서 체크해도 그 날짜 문서로 전달
+  if (isMockRun()) {
+    const wasLoggedIn = (await app.invoke('auth_status')).loggedIn;
+    if (!wasLoggedIn) {
+      await app.invoke('auth_login_begin', { reconnect: false });
+      await waitFor(async () => (await app.invoke('auth_status')).loggedIn, '로그인');
+    }
+    const location = { kind: 'day', date: all };
+    await app.invoke('sync_link', { location });
+    await app.invoke('sync_now');
+    await waitFor(async () => (await dayOf(all)).document.syncStatus === 'synced', '미래 날짜 연결');
+    const revision = (await dayOf(all)).document.localRevision;
+    const linkedCard = app.page.locator(`[data-testid="upcoming-card-${all}"]`);
+    await linkedCard.locator(`[data-testid="personal-memo-row"][data-memo-id="${am.id}"] input[type="checkbox"]`).click();
+    await waitFor(async () => (await dayOf(all)).document.localRevision > revision, '연결된 미래 날짜 저장');
+    const report = await app.invoke('sync_now');
+    assert.equal(report.conflicts, 0);
+    await waitFor(async () => (await dayOf(all)).document.syncStatus === 'synced', '연결된 미래 날짜 전달');
+    await app.invoke('sync_unlink', { location });
+    await app.invoke('sync_now');
+    if (!wasLoggedIn) await app.invoke('auth_logout');
+  }
 });
 
 step('date-search', async () => {
@@ -1433,7 +1602,7 @@ step('memo-drag', async () => {
     return (a.y + a.height + b.y) / 2;
   };
   const line = page.locator('[data-testid="memo-drop-line"]');
-  const versions = async () => (await app.invoke('history_list', { location })).length;
+  const revision = async () => (await app.invoke('memo_day', { date: location.date })).document.localRevision;
 
   // ① 끄는 동안 메모 자리는 그대로, 삽입선이 뜨고, 가운데선 주변의 흔들림에 위치가 왔다 갔다 하지 않는다
   const before = await main.locator('[data-testid="personal-memo-row"]').evaluateAll(nodes => nodes.map(n => Math.round(n.getBoundingClientRect().top)));
@@ -1498,14 +1667,14 @@ step('memo-drag', async () => {
   await waitFor(async () => (await order('main')).join() === 'E,C,A,D,B', '맨 아래로');
 
   // ④ 제자리에 놓으면 저장하지 않는다
-  const historyBefore = await versions();
+  const revisionBefore = await revision();
   const startC = await dragStart(rowOf('C'));
   await page.mouse.move(startC.x, startC.y + 3, { steps: 3 });
   await sleep(60);
   assert.equal(await line.count(), 0, '제자리에는 삽입선이 없다');
   await page.mouse.up();
   await sleep(300);
-  assert.equal(await versions(), historyBefore, '제자리에 놓으면 저장 요청 없음(History 그대로)');
+  assert.equal(await revision(), revisionBefore, '제자리에 놓으면 저장 요청 없음');
 
   // ⑤ Esc 취소 — 원래 순서
   const startA = await dragStart(rowOf('A'));
@@ -1762,9 +1931,9 @@ step('list-manage-trash', async () => {
   assert.equal((await app.invoke('list_delete', { id: target.id })).already, true, '두 번 실행 — 오류 없음');
   assert.equal((await app.invoke('memo_search', { query: '복구될' })).items.length, 0, '휴지통 메모는 검색되지 않는다');
 
-  // History 보존(이미지 보존은 Rust 테스트 — 첨부 파일까지 확인)
+  // 보존된 내용 유지(이미지 보존은 Rust 테스트 — 첨부 파일까지 확인)
   const historyInTrash = await app.invoke('history_list', { location: { kind: 'next', listId: target.id } });
-  assert.ok(historyInTrash.some(v => v.reason === 'list_delete'), '삭제 전 내용이 History 에');
+  assert.ok(historyInTrash.some(v => v.reason === 'list_delete'), '삭제 전 내용을 보존한다');
 
   // 설정 → 휴지통: 정보 · 복구
   await page.mouse.move(5, 300);
@@ -1781,7 +1950,7 @@ step('list-manage-trash', async () => {
   const restored = await app.invoke('memo_list', { listId: target.id });
   assert.deepEqual(restored.items.map(i => [i.contentHtml, i.completed]), [['<p><b>복구</b>될 메모</p>', true], ['두 번째 메모', false]], '내용·서식·완료 그대로');
   assert.equal((await app.invoke('memo_lists')).findIndex(l => l.id === target.id), indexBefore, '원래 순서로');
-  assert.ok((await app.invoke('history_list', { location: { kind: 'next', listId: target.id } })).length >= historyInTrash.length, 'History 유지');
+  assert.ok((await app.invoke('history_list', { location: { kind: 'next', listId: target.id } })).length >= historyInTrash.length, '보존된 내용 유지');
   assert.equal((await app.invoke('trash_restore', { id: target.id })).id, target.id, '복구를 두 번 실행해도 안전');
 
   // 영구 삭제 — 확인 후. 취소하면 그대로.
@@ -1793,7 +1962,7 @@ step('list-manage-trash', async () => {
   await page.locator('[data-testid="trash-section"] [data-testid="trash-purge"]').first().click();
   await page.locator('[data-testid="trash-purge-confirm"]').waitFor();
   const purgeText = await page.locator('[data-testid="trash-purge-confirm"]').innerText();
-  assert.ok(purgeText.includes('영구 삭제하시겠습니까') && purgeText.includes('이미지 및 History가 삭제됩니다') && purgeText.includes('휴지통에서 복구할 수 없습니다'), purgeText);
+  assert.ok(purgeText.includes('영구 삭제하시겠습니까') && purgeText.includes('이미지 및 보존된 내용이 삭제됩니다') && purgeText.includes('휴지통에서 복구할 수 없습니다'), purgeText);
   await app.shot('25f-trash-purge-confirm');
   await page.locator('[data-testid="trash-purge-confirm"] button:has-text("취소")').click();
   assert.equal((await app.invoke('trash_list')).length, 1, '취소 — 그대로');
@@ -1802,7 +1971,7 @@ step('list-manage-trash', async () => {
   await page.click('[data-testid="trash-purge-confirm-button"]');
   await waitFor(async () => (await app.invoke('trash_list')).length === 0, '영구 삭제');
   assert.ok((await app.invoke('backup_list')).filter(b => b.fileName.includes('pre-trash-purge')).length > backupsBefore, '영구 삭제 전 Backup');
-  assert.equal((await app.invoke('history_list', { location: { kind: 'next', listId: target.id } })).length, 0, 'History 도 삭제');
+  assert.equal((await app.invoke('history_list', { location: { kind: 'next', listId: target.id } })).length, 0, '보존된 내용도 삭제');
   await app.invoke('trash_purge', { id: target.id }); // 두 번 실행 — 오류 없음
   await page.locator('[data-testid="settings-dialog"] button:has-text("닫기")').click();
   // 재실행해도 다시 나타나지 않는다

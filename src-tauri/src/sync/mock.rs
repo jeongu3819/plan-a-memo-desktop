@@ -217,6 +217,28 @@ pub const MOCK_ITEM_RAW_HTML_BYTES: usize = 1024 * 1024;
 const IMAGE_ONLY_OWNED: &str = "개인 메모에 붙여넣은 이미지만 사용할 수 있습니다. 이미지를 다시 붙여넣어주세요.";
 
 /// 서버 참조 검사 거절(422 `{code, item}` — 경로·본문은 싣지 않는다).
+/// 서버 sanitizer 흉내 — 저장할 때 본문을 다시 쓴다. Staging 에서 실제로 본 `style` 끝 `;` 제거와,
+/// 허용 목록 밖 속성 제거(시험용 표식 `data-server-strips` — 규칙을 모르는 정리도 같은 내용으로 다루는지 확인).
+fn sanitize_like_server(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(pos) = rest.find("style=\"") {
+        let start = pos + "style=\"".len();
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail.find('"').unwrap_or(tail.len());
+        out.push_str(tail[..end].trim_end().trim_end_matches(';'));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    while let Some(pos) = out.find(" data-server-strips=\"") {
+        let value = pos + " data-server-strips=\"".len();
+        let end = out[value..].find('"').map(|p| value + p + 1).unwrap_or(out.len());
+        out.replace_range(pos..end, "");
+    }
+    out
+}
+
 fn reference_rejected(code: &str, item: usize) -> TransportError {
     TransportError::Rejected { status: 422, message: code.into(), code: Some(code.into()), item: Some(item) }
 }
@@ -461,7 +483,7 @@ impl MockServerState {
                 client_key: item.client_key.clone(),
                 section: item.section.clone(),
                 kind: item.kind.clone(),
-                content: item.content.clone(),
+                content: sanitize_like_server(&item.content),
                 completed: item.kind == "checklist" && item.completed,
                 sort_order: item.sort_order,
             });

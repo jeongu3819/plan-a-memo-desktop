@@ -90,6 +90,8 @@ cursor_namespace_mismatch · device_revoked(교환), 413/422 → 거절(문서�
      (서버에서 삭제된 tombstone 은 '빈 문서' 가 아니다 → base 0 비교, 몰래 되살리지 않음).
      로컬 빈 문서 → 서버 내용 받기. 둘 다 내용이 있고 다르면 **base_version=0** 으로 push → 서버가 비교를 만든다.
      같으면 id 만 맞춘다. 비교하는 사이 로컬이 또 바뀌면 다음 실행에서 다시 비교.
+     **'같다' 의 판단**(`mapper::same_content`): ① 정규형 digest 가 같다(`sync/canonical.rs` — 서버 sanitizer 의 표현 차이는 무시, 글자·서식·이미지·체크·순서·구역·삭제 상태는 모두 비교) 또는
+     ② 지금 양쪽이 서버가 받아 준 짝(`sync_state` `accepted|<account>|<doc>` — 보낸 digest ↔ 저장된 digest) 그대로다. 이미지 서버 이름을 모르는 등 비교할 수 없으면 같다고 하지 않는다.
    * PUSH: 이미지 먼저 업로드(request id = 로컬 첨부 id — 재전송해도 한 장) → 본문 → **요청 전체를 Outbox 에 저장한 뒤** 보낸다.
      응답을 잃으면 같은 request_id·같은 본문으로 다시 보내 서버의 처음 결과를 받는다(중복 항목·중복 version 없음).
    * 실패: 오프라인·429 → 멈춤(Outbox 유지). 401 → '다시 연결 필요'. 거절(413/422) → 그 문서만 오류.
@@ -110,7 +112,9 @@ cursor_namespace_mismatch · device_revoked(교환), 413/422 → 거절(문서�
   Desktop 선택 후 이 PC 에 더 고친 내용이 있으면 새 version 위에 이어 보낸다.
 * 409 `resolution_stale` → 비교 화면을 최신으로 다시 채우고 다시 묻는다(오래된 선택으로 덮지 않음).
 * 다른 곳(Web)에서 해결됨 → 로컬 비교를 닫고 서버 결과를 받는다(이 PC 내용은 History `conflict_local`).
-* 선택하지 않은 쪽은 로컬 History 에(`conflict_local` / `conflict_remote`). 서버 History API 는 Desktop 에 없어 부르지 않는다.
+* 선택하지 않은 쪽은 로컬 보존된 내용에(`conflict_local` / `conflict_remote`, 설정 > 보존된 내용). 서버 History API 는 Desktop 에 없어 부르지 않는다.
+* **같은 내용의 비교는 묻지 않는다**(`settle_identical_conflicts`): 이 PC = 서버 현재 = 모든 제안일 때만 `resolve(side=web)` 로 서버 내용을 그대로 두고 닫는다(서버 비교 목록은 기기별이 아니므로 다른 제안이 하나라도 있으면 닫지 않는다).
+  방금 보낸 제안을 서버가 정리한 결과가 서버 현재와 같으면 서버가 '같은 내용' 이라고 확인한 것으로 본다. 이전 버전이 표현 차이로 연 비교도 다음 동기화 때 같은 방식으로 닫힌다.
 
 ### 다른 날짜로 이동(§27)
 
@@ -150,5 +154,12 @@ Desktop 은 기본 버튼 [Desktop에서만 이동] 이 이 의미이고, [○�
 | https 링크가 있는 메모 | 완료 | 완료(4차: 서버의 URL 위치 검사 규칙으로 Mock 교체) | 아직(서버 수정 완료, 통합 확인 전) |
 | 폐기된 기기(device_revoked)·새 기기 등록 | 완료 | 완료(Mock + 실제 loopback) | 아직 |
 | 연결된 List 이름 변경 | 이 PC 에만(안내) | 완료 | 서버 API 없음(인계 §2) |
+| 같은 내용 재연결(DAY·NEXT_LIST, 이미지, 반복, 재시작) — 비교 화면 없이 연결 | 완료 | 완료(`tests/relink_tests.rs`, E2E `relink-same-content`) | **아직** — 실제 충돌 2건을 Staging DB 복사본으로 재생한 것만 확인 |
+| 실제 차이(글자·체크·서식·추가·삭제·순서·구역·이미지·삭제 상태)가 있는 재연결 — 비교 화면, 양쪽 보존 | 완료 | 완료 | **아직** |
+| 다른 기기가 만든 충돌을 닫지 않음 · 이전 버전의 잘못된 충돌 자동 정리(`resolve(side=web)`) | 완료 | 완료 | **아직** |
+| 신규 기기 첫 Sync 전 연결 · 재연결 뒤 v2 복사 이력·알림 설정 유지 | 완료 | 완료 | **아직** |
+
+실제 서버 재연결 시험을 하지 못한 이유: Staging Web 의 `/memo-desktop/authorize` 가 비활성 빌드라 새 기기를 등록할 수 없다(2026-11-05 확인, 인계 §7).
+Sanitizer 규칙 중 실제 서버에서 관찰한 것은 `style` 끝 `;` 제거뿐이다. Mock 은 이 규칙과 '알 수 없는 속성 제거' 만 흉내 낸다 — 다른 규칙은 서버가 받아 준 짝을 기억하는 방식으로 처리하며, 실제 서버에서는 확인하지 않았다.
 
 3차 Contract 대조의 항목별 표·테스트 목록: [sync-contract-verification.md](sync-contract-verification.md).

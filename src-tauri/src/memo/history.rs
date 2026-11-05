@@ -1,4 +1,5 @@
-//! 문서 History — 목록·보기·복원.
+//! 보존된 내용 — 데이터 보호를 위해 남긴 문서 Snapshot 의 목록·보기·복원.
+//! 일상 편집의 변경 이력이 아니다. 예전 버전이 남긴 `edit` 기록은 지우지 않지만 목록에 보이지 않는다.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -28,6 +29,18 @@ pub struct VersionDetail {
     pub snapshot: DocumentSnapshot,
 }
 
+/// 보존된 내용 목록 한 줄 — 어느 날짜·List 의 내용인지 함께.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreservedVersion {
+    #[serde(flatten)]
+    pub summary: VersionSummary,
+    pub location: Location,
+    pub list_name: Option<String>,
+}
+
+const PRESERVED_LIMIT: i64 = 200;
+
 pub fn reason_label(reason: &str) -> &'static str {
     match reason {
         "edit" => "수정 전",
@@ -37,6 +50,7 @@ pub fn reason_label(reason: &str) -> &'static str {
         "list_restore" => "휴지통에서 복구 전",
         "restore" => "복원 전",
         "carryover" => "지난 미완료 가져오기 전",
+        "carry_mapping" | "carry_review" => "지난 미완료 복사본 맞추기 전",
         "remote_apply" => "PLAN-A Work 변경 반영 전",
         "remote_deleted" => "PLAN-A Work 에서 삭제됨",
         "conflict_local" => "충돌 — 선택하지 않은 Desktop 내용",
@@ -91,6 +105,37 @@ pub fn list_for_location(conn: &Connection, location: &Location) -> AppResult<Ve
     rows.into_iter().map(|(id, doc_id, reason, rev, created, json)| Ok(summary(id, doc_id, reason, rev, created, &json)?.0)).collect()
 }
 
+/// 모든 날짜·List 의 보존된 내용(최근 순). 휴지통에 있는 List 는 복구한 뒤에 보인다.
+pub fn list_preserved(conn: &Connection) -> AppResult<Vec<PreservedVersion>> {
+    let rows = conn
+        .prepare(
+            "SELECT v.id, v.document_id, v.reason, v.local_revision, v.created_at, v.snapshot_json
+               FROM document_versions v
+               JOIN documents d ON d.id = v.document_id
+               LEFT JOIN next_lists l ON l.id = d.next_list_id
+              WHERE v.reason <> 'edit' AND (d.next_list_id IS NULL OR l.deleted_at IS NULL)
+              ORDER BY v.id DESC LIMIT ?1",
+        )?
+        .query_map([PRESERVED_LIMIT], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, doc_id, reason, rev, created, json) in rows {
+        let Some(doc) = repo::doc_by_id(conn, &doc_id)? else { continue };
+        let list_name = doc.next_list_id.as_deref().map(|l| repo::list_name(conn, l)).transpose()?.flatten();
+        out.push(PreservedVersion { summary: summary(id, doc_id, reason, rev, created, &json)?.0, location: repo::location_of_doc(&doc), list_name });
+    }
+    Ok(out)
+}
+
 pub fn get(conn: &Connection, version_id: i64) -> AppResult<VersionDetail> {
     let row = conn
         .query_row(
@@ -108,13 +153,13 @@ pub fn get(conn: &Connection, version_id: i64) -> AppResult<VersionDetail> {
             },
         )
         .optional()?
-        .ok_or_else(|| AppError::not_found("History"))?;
+        .ok_or_else(|| AppError::not_found("보존된 내용"))?;
     let doc = repo::doc_by_id(conn, &row.1)?.ok_or_else(|| AppError::not_found("문서"))?;
     let (summary, snapshot) = summary(row.0, row.1, row.2, row.3, row.4, &row.5)?;
     Ok(VersionDetail { summary, location: repo::location_of_doc(&doc), snapshot })
 }
 
-/// 이 버전으로 되돌린다. 지금 내용은 먼저 History 로 남긴다(되돌리기도 되돌릴 수 있게).
+/// 이 내용으로 되돌린다. 지금 내용을 먼저 보존한다(되돌리기도 되돌릴 수 있게).
 pub fn restore(conn: &mut Connection, version_id: i64) -> AppResult<Location> {
     let detail = get(conn, version_id)?;
     let tx = conn.transaction()?;
@@ -126,7 +171,7 @@ pub fn restore(conn: &mut Connection, version_id: i64) -> AppResult<Location> {
             })
             .optional()?;
         if alive.is_none() {
-            return Err(AppError::validation("삭제된 List 의 History 는 복원할 수 없습니다. 내용을 복사해 사용해주세요."));
+            return Err(AppError::validation("삭제된 List 의 내용은 복원할 수 없습니다. 내용을 복사해 사용해주세요."));
         }
     }
     repo::record_version(&tx, &doc.id, "restore")?;

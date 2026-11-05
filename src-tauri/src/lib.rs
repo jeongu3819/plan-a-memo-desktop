@@ -328,6 +328,7 @@ pub fn run() {
             commands::memo_days_in_month,
             commands::lists_reorder,
             commands::history_list,
+            commands::history_preserved,
             commands::history_get,
             commands::history_restore,
             commands::attachment_import,

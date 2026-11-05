@@ -27,7 +27,7 @@
 | `memo_items` | `section` main/am/pm(날짜) · next(List), `kind` checklist/text, `content_html`, `content_text`(검색용 평문), `completed`, `favorite`, `sort_order`, soft delete |
 | `next_lists` | List 이름·순서. 기본 Next 는 고정 id `00000000-0000-4000-8000-000000000001` |
 | `attachments` | `relative_path`(상대 경로만), `mime_type`, `size`, `content_hash`(sha256), `server_attachment_id`, `sync_status` |
-| `document_versions` | History — 문서 전체 Snapshot(JSON) + 검색용 평문, 사유(수정/삭제/이동/충돌…) |
+| `document_versions` | 보존된 내용 — 문서 전체 Snapshot(JSON) + 평문, 사유(삭제/이동/복원/지난 미완료 가져오기/PLAN-A Work 변경 반영/충돌). 일상 편집(수정·순서 변경)은 남기지 않는다. 예전 `edit` 기록은 지우지 않지만 화면에 보이지 않는다 |
 | `sync_links` | 문서 ↔ 서버 문서 id |
 | `sync_outbox` | 영속 대기열. 문서·작업(LINK/PUSH/UNLINK)당 1건, idempotency key, 재시도·backoff |
 | `sync_state` | cursor · device id · account |

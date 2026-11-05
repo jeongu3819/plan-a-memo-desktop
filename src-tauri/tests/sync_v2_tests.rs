@@ -690,6 +690,46 @@ async fn unlink_drops_pending_management_commands_but_keeps_local_copies() {
 }
 
 #[tokio::test]
+async fn same_content_relink_keeps_shared_rule_copies_and_sends_nothing_again() {
+    let e = ready().await;
+    let (source, target) = linked_pair(&e, &["보고서 작성"]).await;
+    let ids: Vec<String> = e.carry(&target).items.iter().map(|i| i.id.clone()).collect();
+    e.import(&target, &ids);
+    e.settle().await;
+    let date = shift(&target, 20);
+    add(&e.storage, day(&date), "main", "그날 할 일");
+    e.link(day(&date));
+    e.settle().await;
+    set_reminder(&e, &date, &[7, 2], "09:00");
+    e.settle().await;
+    let (rule, copies) = (e.mock.v2_rule_of(1, &date), e.mock.v2_copies(1));
+    assert_eq!(copies.len(), 1);
+    let target_items = e.server_ids(&target).len();
+    let pushes = e.mock.pushes().len();
+    let local_target = e.local_texts(&target);
+
+    for location in [day(&target), day(&date)] {
+        e.unlink(location.clone());
+        e.settle().await;
+        e.link(location);
+        e.settle().await;
+    }
+
+    assert_eq!(count(&e.storage, "SELECT COUNT(*) FROM conflicts"), 0, "비교 화면 없음");
+    assert_eq!(e.mock.pushes().len(), pushes, "본문을 다시 보내지 않는다");
+    assert_eq!(e.mock.v2_rule_of(1, &date).version, rule.version, "서버 알림 설정 그대로(덮어쓰지 않음)");
+    assert_eq!(e.mock.v2_rule_of(1, &date).days_before, rule.days_before);
+    let local = e.storage.with_conn(|c| reminders::get(c, &date)).unwrap().unwrap();
+    assert_eq!((local.offsets.clone(), local.time.as_str()), (vec![7, 2], "09:00"), "이 PC 알림 설정 그대로");
+    assert_eq!(e.mock.v2_copies(1), copies, "복사 이력 그대로 — 복사를 다시 만들지 않는다");
+    assert_eq!(e.server_ids(&target).len(), target_items, "복사본이 늘지 않는다");
+    assert_eq!(e.local_texts(&target), local_target);
+    assert_eq!(e.import(&target, &ids).created.len(), 0, "이미 복사한 것을 다시 만들지 않는다");
+    assert_eq!(e.local_texts(&source), vec!["보고서 작성"], "원본 보존");
+    assert_eq!(e.ops("pending"), 0);
+}
+
+#[tokio::test]
 async fn revoked_credential_stops_v2_without_losing_work() {
     let e = ready().await;
     let date = linked_future_day(&e, 20).await;

@@ -1,7 +1,7 @@
 /**
  * 'List' 화면 — 찾아보는 화면(Web PersonalMemoBrowse 와 같은 역할).
  *   검색어가 없으면: 즐겨찾기 · Next List · 지난 메모(월 카드)
- *   검색어가 있으면: 날짜(검색어가 날짜로 읽힐 때) · List 이름 · 메모 본문(DayMemo + Next) · History(지금은 없는 내용)
+ *   검색어가 있으면: 날짜(검색어가 날짜로 읽힐 때) · List 이름 · 메모 본문(DayMemo + Next)
  *   입력칸은 하나다 — 날짜와 본문을 따로 고르지 않는다. 월 카드가 접혀 있어도 모든 달을 찾는다.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -9,7 +9,6 @@ import { Box, Button, ButtonBase, CircularProgress, IconButton, InputAdornment, 
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
-import HistoryIcon from '@mui/icons-material/History';
 import { useQuery } from '@tanstack/react-query';
 import type { Location } from '../../domain/types';
 import { parseDateQuery } from '../../domain/memoBrowse';
@@ -151,7 +150,7 @@ export default function BrowseView({
         inputRef={inputRef}
         value={query}
         onChange={event => onQueryChange(event.target.value)}
-        placeholder="메모 전체 검색 — 날짜 메모 · Next · 지난 기록(History)"
+        placeholder="메모 전체 검색 — 날짜 메모 · Next"
         inputProps={{ 'aria-label': '메모 검색', 'data-testid': 'memo-search-input' }}
         startAdornment={<InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment>}
         endAdornment={
@@ -236,23 +235,6 @@ export default function BrowseView({
               <Button size="small" data-testid="memo-search-more" onClick={() => setLimit(value => value + SEARCH_STEP)} sx={{ alignSelf: 'center', mt: 0.5 }}>
                 결과 더 보기
               </Button>
-            )}
-            {results.data.history.length > 0 && (
-              <>
-                <GroupTitle><HistoryIcon sx={{ fontSize: 16 }} /> History — 지금은 없는 내용</GroupTitle>
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                  {results.data.history.map(hit => (
-                    <Card key={hit.versionId} testId="memo-search-history-hit" onClick={() => onOpen({ location: hit.location })}>
-                      <Typography sx={{ fontSize: '0.74rem', color: MEMO_MUTED, mb: 0.25 }}>
-                        {placeLabel(hit.location, hit.listName)} · {hit.reasonLabel} · {hit.createdAt.slice(0, 16).replace('T', ' ')}
-                      </Typography>
-                      <Typography sx={{ fontSize: '0.9rem' }}>
-                        <Highlighted text={hit.excerpt} tokens={results.data!.tokens} />
-                      </Typography>
-                    </Card>
-                  ))}
-                </Box>
-              </>
             )}
           </>
         ) : (

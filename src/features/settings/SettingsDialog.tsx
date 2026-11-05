@@ -27,11 +27,13 @@ import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import RestoreOutlinedIcon from '@mui/icons-material/RestoreOutlined';
 import { getName, getVersion } from '@tauri-apps/api/app';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AppInfo, LocationInspection, TrashEntry, UpdateInfo } from '../../domain/types';
 import { keys, refreshMemo, useSyncOverview, useTrash } from '../../services/queries';
+import PreservedDialog from '../history/PreservedDialog';
 import { attachmentService, errorMessage, mockServerService, storageService, syncService, trashService, updateService } from '../../tauri/api';
 import { useAppUi } from '../../app/AppUi';
 import {
@@ -142,7 +144,7 @@ function TrashSection({ open, onNotice }: { open: boolean; onNotice: (notice: { 
   };
 
   return (
-    <SettingsSection icon={<DeleteOutlineIcon />} title="휴지통" description="삭제한 List 와 그 안의 메모·이미지·History 를 7일 동안 보관합니다. 기간이 지나면 자동으로 영구 삭제합니다.">
+    <SettingsSection icon={<DeleteOutlineIcon />} title="휴지통" description="삭제한 List 와 그 안의 메모·이미지·보존된 내용을 7일 동안 보관합니다. 기간이 지나면 자동으로 영구 삭제합니다.">
       <Box data-testid="trash-section">
         {!entries?.length && (
           <SettingsRow>
@@ -177,7 +179,7 @@ function TrashSection({ open, onNotice }: { open: boolean; onNotice: (notice: { 
         <DialogTitle>List를 영구 삭제하시겠습니까?</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ fontSize: '0.88rem' }}>
-            '{purging?.name}' List의 메모 {purging?.itemCount ?? 0}개, 이미지 및 History가 삭제됩니다. 이 작업은 휴지통에서 복구할 수 없습니다.
+            '{purging?.name}' List의 메모 {purging?.itemCount ?? 0}개, 이미지 및 보존된 내용이 삭제됩니다. 이 작업은 휴지통에서 복구할 수 없습니다.
           </DialogContentText>
           <DialogContentText sx={{ fontSize: '0.76rem', mt: 1 }}>
             삭제 직전에 Backup 을 만듭니다. 기존 Backup 파일에는 삭제 이전 내용이 남아 있고, 이미지 파일은 그 Backup 이 정리된 뒤 지워집니다.
@@ -278,7 +280,7 @@ function RelocateDialog({ target, onClose, onDone }: { target: LocationInspectio
       <DialogTitle>저장 위치 변경</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ fontSize: '0.88rem' }}>
-          메모 DB · 첨부 이미지 · History · Backup · Sync 대기열을 아래 위치로 복사하고 검증한 뒤 새 위치를 사용합니다.
+          메모 DB · 첨부 이미지 · 보존된 내용 · Backup · Sync 대기열을 아래 위치로 복사하고 검증한 뒤 새 위치를 사용합니다.
           실패하면 지금 위치를 그대로 씁니다. 기존 폴더는 지우지 않으니 확인 후 직접 정리해주세요.
         </DialogContentText>
         <Typography sx={{ mt: 1.5, fontSize: '0.85rem', fontWeight: 700, wordBreak: 'break-all' }}>{target.resolvedPath}</Typography>
@@ -375,6 +377,7 @@ function MockTools() {
 }
 
 export default function SettingsDialog({ open, info, onClose }: { open: boolean; info: AppInfo; onClose: () => void }) {
+  const [preservedOpen, setPreservedOpen] = useState(false);
   const ui = useAppUi();
   const queryClient = useQueryClient();
   const status = useQuery({ queryKey: ['storage', 'status'], queryFn: storageService.status, enabled: open });
@@ -420,7 +423,7 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
           return;
         }
         const mb = (preview.candidateBytes / 1024 / 1024).toFixed(1);
-        if (!window.confirm(`쓰지 않는 이미지 ${preview.candidates}개(${mb}MB)를 지울까요? 메모와 History 는 바뀌지 않습니다.`)) return;
+        if (!window.confirm(`쓰지 않는 이미지 ${preview.candidates}개(${mb}MB)를 지울까요? 메모와 보존된 내용은 바뀌지 않습니다.`)) return;
         const done = await attachmentService.cleanup(false);
         setNotice({ severity: 'success', text: `이미지 ${done.removed}개를 정리했습니다.` });
       })
@@ -458,7 +461,7 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
       >
         {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
 
-        <SettingsSection icon={<FolderOutlinedIcon />} title="저장 위치" description="메모 · 이미지 · History · Backup 이 모두 이 폴더에 저장됩니다.">
+        <SettingsSection icon={<FolderOutlinedIcon />} title="저장 위치" description="메모 · 이미지 · 보존된 내용 · Backup 이 모두 이 폴더에 저장됩니다.">
           <SettingsRow
             actions={
               <>
@@ -499,7 +502,7 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
             />
           </SettingsRow>
           <SettingsRow actions={<Button size="small" variant="outlined" onClick={cleanupImages}>쓰지 않는 이미지 정리</Button>}>
-            <RowLabel title="이미지 정리" detail="메모·History·비교 화면·Backup 어디에서도 쓰지 않고 7일 넘은 이미지만 지웁니다." />
+            <RowLabel title="이미지 정리" detail="메모·보존된 내용·비교 화면·Backup 어디에서도 쓰지 않고 7일 넘은 이미지만 지웁니다." />
           </SettingsRow>
         </SettingsSection>
 
@@ -516,6 +519,20 @@ export default function SettingsDialog({ open, info, onClose }: { open: boolean;
         </SettingsSection>
 
         <TrashSection open={open} onNotice={setNotice} />
+
+        <SettingsSection icon={<RestoreOutlinedIcon />} title="보존된 내용" description="충돌에서 선택하지 않은 내용과, 삭제·이동·PLAN-A Work 변경 반영 직전의 내용을 보관합니다.">
+          <SettingsRow actions={<Button size="small" variant="outlined" data-testid="settings-preserved" onClick={() => setPreservedOpen(true)}>내용 보기</Button>}>
+            <RowLabel title="보기 · 되돌리기" detail="일상적인 수정 내역은 남기지 않습니다. 편집 중 되돌리기는 Ctrl+Z, 앱 전체 복구는 Backup 을 사용하세요." />
+          </SettingsRow>
+        </SettingsSection>
+        <PreservedDialog
+          open={preservedOpen}
+          onClose={() => setPreservedOpen(false)}
+          onRestored={() => {
+            refreshMemo(queryClient);
+            setNotice({ severity: 'success', text: '선택한 내용으로 되돌렸습니다. 되돌리기 전 내용도 보존된 내용에 있습니다.' });
+          }}
+        />
 
         <SettingsSection
           icon={<CloudOutlinedIcon />}

@@ -14,7 +14,7 @@ describe('비교 화면 문구는 서버 Conflict 의 실제 출처를 따른다
   });
 
   it('첫 연결(base_version=0) 비교는 어느 쪽도 지우지 않았다고 안내', () => {
-    expect(conflictReason({ source: 'desktop', firstLink: true })).toContain('처음 연결');
+    expect(conflictReason({ source: 'desktop', firstLink: true })).toContain('연결하려는 메모');
     expect(conflictReason({ source: 'desktop', firstLink: true })).toContain('지우지 않았습니다');
   });
 });

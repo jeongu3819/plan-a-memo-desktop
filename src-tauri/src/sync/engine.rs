@@ -75,27 +75,28 @@ pub const NOTICE_PREVIOUS_DEVICE: &str =
 /// 이 계정의 Sync 상태를 지금 서버 기기에 묶는다. 기기 id 가 바뀌었으면(이전 기기 폐기 후 새 등록) 이전 기기의
 /// 연결·UNLINK 를 `<account_key>#device:<이전 id>` 로 옮겨 **보존만** 한다 — 새 credential 로 보내지 않고, 몰래 새 기기에
 /// 다시 연결하지 않는다(memo-sync-v1: old links/cursors are never inherited). 옮긴 연결 수를 돌려준다.
-pub fn retire_previous_device(conn: &mut Connection, ctx: &SyncContext) -> AppResult<usize> {
-    let key = format!("device|{}", ctx.account_key);
+/// 사용자가 새로 연결할 때도 먼저 부른다 — 새 기기 등록 직후 첫 Sync 전에 만든 연결이 이전 기기 연결로 옮겨지지 않게.
+pub fn retire_previous_device(conn: &mut Connection, account_key: &str, server_device_id: &str) -> AppResult<usize> {
+    let key = format!("device|{account_key}");
     let previous = state_get(conn, &key)?;
-    if previous.as_deref() == Some(ctx.server_device_id.as_str()) {
+    if previous.as_deref() == Some(server_device_id) {
         return Ok(0);
     }
     let tx = conn.transaction()?;
     let moved = match previous {
         None => 0, // 처음 — 지금 기기로 기록만
         Some(old) => {
-            let retired = format!("{}{}{old}", ctx.account_key, link::PREVIOUS_DEVICE_MARK);
-            let moved = tx.execute("UPDATE sync_links SET account_key = ?2 WHERE account_key = ?1", params![ctx.account_key, retired])?;
+            let retired = format!("{account_key}{}{old}", link::PREVIOUS_DEVICE_MARK);
+            let moved = tx.execute("UPDATE sync_links SET account_key = ?2 WHERE account_key = ?1", params![account_key, retired])?;
             tx.execute(
                 "UPDATE sync_outbox SET account_key = ?2 WHERE op = 'UNLINK' AND account_key = ?1",
-                params![ctx.account_key, retired],
+                params![account_key, retired],
             )?;
-            tx.execute("DELETE FROM sync_state WHERE key LIKE ?1", [format!("weblink|{}|%", ctx.account_key)])?;
+            tx.execute("DELETE FROM sync_state WHERE key LIKE ?1", [format!("weblink|{account_key}|%")])?;
             moved
         }
     };
-    state_set(&tx, &key, &ctx.server_device_id)?;
+    state_set(&tx, &key, server_device_id)?;
     tx.commit()?;
     Ok(moved)
 }
@@ -306,7 +307,7 @@ impl SyncEngine {
             return Ok(report);
         };
         // 같은 계정이지만 서버 기기가 바뀌었다(이전 기기 폐기 → 새 기기 등록) — 이전 기기의 연결·cursor 를 이어받지 않는다.
-        if storage.with_conn(|c| retire_previous_device(c, &ctx))? > 0 {
+        if storage.with_conn(|c| retire_previous_device(c, &ctx.account_key, &ctx.server_device_id))? > 0 {
             report.notice(NOTICE_PREVIOUS_DEVICE);
         }
         // 다른 계정(또는 계정 정보 없는 예전 개발용 연결)·이전 기기의 문서는 멈춤 표시만(Outbox·내용 보존, 보내지 않음).
@@ -731,9 +732,15 @@ impl SyncEngine {
                 tx.execute("UPDATE documents SET server_version = ?2 WHERE id = ?1", params![doc_id, server.version])?;
                 false
             } else {
-                let local_plan = mapper::build_push(&tx, &doc, &ctx.account_key);
-                let same = match &local_plan {
-                    Ok(plan) => mapper::digest_push(plan) == mapper::digest_wire(server.deleted, &server.items),
+                // 비교할 수 없으면(서버 이름을 모르는 이미지 등) 같다고 하지 않는다 — 아래 base 0 Push 로 서버 판단을 받는다.
+                let same = match mapper::build_push(&tx, &doc, &ctx.account_key) {
+                    Ok(plan) => mapper::same_content(
+                        &tx,
+                        doc_id,
+                        &ctx.account_key,
+                        &mapper::digest_push(&plan),
+                        &mapper::digest_wire(server.deleted, &server.items),
+                    )?,
                     Err(_) => false,
                 };
                 if same {
@@ -770,6 +777,10 @@ impl SyncEngine {
                 // 비교하는 동안 로컬 편집이 없었다(revision 확인) — 연결 작업 끝.
                 tx.execute("DELETE FROM sync_outbox WHERE document_id = ?1 AND op IN ('LINK', 'PUSH')", [doc_id])?;
                 settle_status(&tx, doc_id)?;
+                // 연결을 끊기 전에 서버에 남아 있던 비교가 있다 — 내용이 같으면 refresh_conflict 가 조용히 닫는다.
+                if pulled.status == "conflict" {
+                    tx.execute("UPDATE sync_links SET remote_pending = 1 WHERE document_id = ?1", [doc_id])?;
+                }
             } else {
                 tx.execute("DELETE FROM sync_outbox WHERE document_id = ?1 AND op = 'LINK'", [doc_id])?;
                 repo::enqueue(&tx, doc_id, "PUSH", doc.local_revision, None)?;
@@ -832,7 +843,11 @@ impl SyncEngine {
                     let doc = repo::doc_by_id(&tx, &doc.id)?.ok_or_else(|| AppError::not_found("문서"))?;
                     let plan = mapper::build_push(&tx, &doc, &ctx.account_key)?;
                     let base = doc.server_version.unwrap_or(0);
-                    if base > 0 && server_digest.as_deref() == Some(mapper::digest_push(&plan).as_str()) {
+                    let unchanged = match &server_digest {
+                        Some(server) => mapper::same_content(&tx, &doc.id, &ctx.account_key, &mapper::digest_push(&plan), server)?,
+                        None => false,
+                    };
+                    if base > 0 && unchanged {
                         // 서버와 내용이 같다(정렬 숫자만 바뀜 등) — 보낼 것이 없다.
                         tx.execute(
                             "DELETE FROM sync_outbox WHERE id = ?1 AND local_revision <= ?2",
@@ -903,10 +918,9 @@ impl SyncEngine {
                         "UPDATE documents SET server_version = ?2, synced_revision = MAX(synced_revision, ?3) WHERE id = ?1",
                         params![doc.id, document.version, inflight.local_revision],
                     )?;
-                    tx.execute(
-                        "UPDATE sync_links SET server_digest = ?2 WHERE document_id = ?1",
-                        params![doc.id, mapper::digest_wire(document.deleted, &document.items)],
-                    )?;
+                    let accepted = mapper::digest_wire(document.deleted, &document.items);
+                    tx.execute("UPDATE sync_links SET server_digest = ?2 WHERE document_id = ?1", params![doc.id, accepted])?;
+                    mapper::remember_accepted(&tx, &doc.id, &ctx.account_key, &mapper::digest_request(&inflight.body), &accepted)?;
                     clear_inflight(&tx, entry.id)?;
                     // 보내는 사이 새 편집이 없었으면 Outbox 정리(있으면 다음에 새 base 로).
                     tx.execute(
@@ -937,7 +951,8 @@ impl SyncEngine {
             PushResponse::Conflict { conflict_id, version } => {
                 storage.with_conn(|c| clear_inflight(c, entry.id))?;
                 report.touched(&doc.id);
-                if self.refresh_conflict(storage, ctx, &doc.id, &server_id, Some(&conflict_id), report).await? {
+                let sent = mapper::digest_request(&inflight.body);
+                if self.refresh_conflict(storage, ctx, &doc.id, &server_id, Some(&conflict_id), Some(&sent), report).await? {
                     report.conflicts += 1;
                 }
                 let _ = version;
@@ -1041,6 +1056,13 @@ impl SyncEngine {
                     report.failed += 1;
                     log::warn!("web link adopt failed: {}", error.code());
                 }
+            }
+        }
+        // 이미 열려 있는 비교 중 두 내용이 같은 것(이전 버전이 표현 차이로 연 비교) — 사용자에게 다시 묻지 않고 정리한다.
+        let identical: Vec<(String, String)> = storage.with_conn(|c| identical_open_conflicts(c, &ctx.account_key))?;
+        for (doc_id, server_id) in identical {
+            if let Err(StepError::Transport(error)) = self.refresh_conflict(storage, ctx, &doc_id, &server_id, None, None, report).await {
+                log::info!("identical conflict check deferred: {error}");
             }
         }
         // 받지 못한 문서는 '동기화됨' 으로 두지 않는다(이미지 저장 실패 등) — 다음 실행에서 다시 받는다.
@@ -1165,7 +1187,7 @@ impl SyncEngine {
             Ok(())
         })?;
         if pulled.status == "conflict" {
-            if self.refresh_conflict(storage, ctx, doc_id, server_id, None, report).await? {
+            if self.refresh_conflict(storage, ctx, doc_id, server_id, None, None, report).await? {
                 report.conflicts += 1;
             }
             storage.with_conn(|c| Ok(c.execute("UPDATE sync_links SET remote_pending = 0 WHERE document_id = ?1", [doc_id])?))?;
@@ -1223,7 +1245,7 @@ impl SyncEngine {
                 )?;
                 tx.execute("DELETE FROM sync_outbox WHERE document_id = ?1 AND op IN ('LINK', 'PUSH')", [doc_id])?;
                 tx.execute("UPDATE documents SET synced_revision = local_revision WHERE id = ?1", [doc_id])?;
-                report.notice("다른 곳(PLAN-A Work)에서 비교가 해결되어 그 결과를 받았습니다. 이 PC 의 이전 내용은 History 에 있습니다.");
+                report.notice("다른 곳(PLAN-A Work)에서 비교가 해결되어 그 결과를 받았습니다. 이 PC 의 이전 내용은 설정 > 보존된 내용에 있습니다.");
             }
             let doc = repo::doc_by_id(&tx, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
             let known = doc.server_version.unwrap_or(0);
@@ -1265,7 +1287,7 @@ impl SyncEngine {
             report.pulled += 1;
             report.touched(doc_id);
             if server.deleted {
-                report.notice("PLAN-A Work 에서 삭제된 메모가 있습니다. 이전 내용은 History 에서 복원할 수 있습니다.");
+                report.notice("PLAN-A Work 에서 삭제된 메모가 있습니다. 이전 내용은 설정 > 보존된 내용에서 복원할 수 있습니다.");
             }
             self.ack_document(storage, ctx, doc_id, report).await;
         }
@@ -1280,6 +1302,7 @@ impl SyncEngine {
         doc_id: &str,
         server_id: &str,
         prefer: Option<&str>,
+        sent: Option<&str>,
         report: &mut SyncReport,
     ) -> Step<bool> {
         let view = self.transport.conflicts(ctx, server_id).await?;
@@ -1289,6 +1312,9 @@ impl SyncEngine {
             storage.with_conn(|c| Ok(c.execute("UPDATE sync_links SET remote_pending = 1 WHERE document_id = ?1", [doc_id])?))?;
             return Ok(false);
         };
+        if self.settle_identical_conflicts(storage, ctx, doc_id, server_id, &view, prefer, sent, report).await? {
+            return Ok(false);
+        }
         // PLAN-A Work 쪽으로 보여 줄 내용: 제안이 Web 에서 왔으면 그 제안, Desktop 제안이면 서버 현재 내용.
         let (remote_deleted, remote_items) = if chosen.source == "web" {
             (chosen.proposal.deleted, chosen.proposal.items.clone())
@@ -1354,6 +1380,88 @@ impl SyncEngine {
         Ok(opened)
     }
 
+    /// 서버의 열린 비교가 실제로는 같은 내용이면 사용자에게 묻지 않고 닫는다(true = 모두 닫았다).
+    /// 이 PC·서버 현재·제안이 **모두** 같을 때만 — 다른 기기가 낸 다른 제안(비교 목록은 기기별이 아니다)은 닫지 않는다.
+    /// `sent` 는 방금 보낸 요청의 digest: 서버가 정리한 그 제안이 서버 현재와 같으면 '같은 내용' 이라는 서버의 확인이다.
+    #[allow(clippy::too_many_arguments)]
+    async fn settle_identical_conflicts(
+        &self,
+        storage: &Storage,
+        ctx: &SyncContext,
+        doc_id: &str,
+        server_id: &str,
+        view: &ConflictsResponse,
+        prefer: Option<&str>,
+        sent: Option<&str>,
+        report: &mut SyncReport,
+    ) -> Step<bool> {
+        let server_digest = mapper::digest_wire(view.server.deleted, &view.server.items);
+        if view.conflicts.iter().any(|c| mapper::digest_wire(c.proposal.deleted, &c.proposal.items) != server_digest) {
+            return Ok(false);
+        }
+        let same = storage.with_conn(|c| {
+            let tx = c.transaction()?;
+            if let (Some(sent), true) = (sent, view.conflicts.iter().any(|c| Some(c.id.as_str()) == prefer)) {
+                mapper::remember_accepted(&tx, doc_id, &ctx.account_key, sent, &server_digest)?;
+            }
+            let doc = repo::doc_by_id(&tx, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
+            let same = match mapper::build_push(&tx, &doc, &ctx.account_key) {
+                Ok(plan) => mapper::same_content(&tx, doc_id, &ctx.account_key, &mapper::digest_push(&plan), &server_digest)?,
+                Err(_) => false,
+            };
+            tx.commit()?;
+            Ok(same)
+        })?;
+        if !same {
+            return Ok(false);
+        }
+        let mut base = view.server.version;
+        let mut settled = None;
+        for conflict in &view.conflicts {
+            // 서버 쪽 내용을 그대로 둔다. 실패하면(그 사이 바뀜 등) 평소처럼 비교 화면으로 — 다음 실행에서 다시 판단한다.
+            match self.transport.resolve(ctx, server_id, &conflict.id, &ResolveRequest { base_version: base, side: Side::Web }).await {
+                Ok(document) => {
+                    base = document.version;
+                    settled = Some(document);
+                }
+                Err(error) => {
+                    log::info!("identical conflict not settled: {error}");
+                    return Ok(false);
+                }
+            }
+        }
+        let Some(document) = settled else { return Ok(false) };
+        storage.with_conn(|c| {
+            let tx = c.transaction()?;
+            let doc = repo::doc_by_id(&tx, doc_id)?.ok_or_else(|| AppError::not_found("문서"))?;
+            let digest = mapper::digest_wire(document.deleted, &document.items);
+            tx.execute(
+                "UPDATE conflicts SET status = 'closed', resolved_at = ?2, updated_at = ?2 WHERE document_id = ?1 AND status = 'open'",
+                params![doc_id, now()],
+            )?;
+            tx.execute("UPDATE documents SET server_version = ?2 WHERE id = ?1", params![doc_id, document.version])?;
+            tx.execute("UPDATE sync_links SET server_digest = ?2 WHERE document_id = ?1", params![doc_id, digest])?;
+            let still_same = match mapper::build_push(&tx, &doc, &ctx.account_key) {
+                Ok(plan) => mapper::same_content(&tx, doc_id, &ctx.account_key, &mapper::digest_push(&plan), &digest)?,
+                Err(_) => false,
+            };
+            tx.execute("DELETE FROM sync_outbox WHERE document_id = ?1 AND op IN ('LINK', 'PUSH')", [doc_id])?;
+            if still_same {
+                mapper::adopt_positionally(&tx, &doc, &ctx.account_key, &document.items)?;
+                tx.execute("UPDATE documents SET synced_revision = local_revision WHERE id = ?1", [doc_id])?;
+            } else {
+                // 닫는 사이 이 PC 에서 더 고쳤다 — 새 version 위에 이어 보낸다.
+                mapper::adopt_server_ids(&tx, doc_id, &ctx.account_key, &document.items)?;
+                repo::enqueue(&tx, doc_id, "PUSH", doc.local_revision, None)?;
+            }
+            settle_status(&tx, doc_id)?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        report.touched(doc_id);
+        Ok(true)
+    }
+
     // ── 4. ACK ────────────────────────────────────────────────────────
 
     async fn ack_phase(&self, storage: &Storage, ctx: &SyncContext, report: &mut SyncReport) -> AppResult<()> {
@@ -1408,6 +1516,26 @@ impl SyncEngine {
             Err(error) => log::info!("ack deferred: {error}"),
         }
     }
+}
+
+/// 열린 비교 중 지금 이 PC 내용과 저장된 PLAN-A Work 내용이 같은 문서.
+fn identical_open_conflicts(conn: &Connection, account_key: &str) -> AppResult<Vec<(String, String)>> {
+    let rows: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT c.document_id, l.server_document_id, c.remote_snapshot_json FROM conflicts c JOIN sync_links l ON l.document_id = c.document_id
+              WHERE c.status = 'open' AND l.account_key = ?1 AND l.server_document_id IS NOT NULL",
+        )?
+        .query_map([account_key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut out = Vec::new();
+    for (doc_id, server_id, remote_json) in rows {
+        let Some(doc) = repo::doc_by_id(conn, &doc_id)? else { continue };
+        let remote: DocumentSnapshot = serde_json::from_str(&remote_json)?;
+        if mapper::digest_snapshot(&remote) == mapper::digest_snapshot(&repo::build_snapshot(conn, &doc, false)?) {
+            out.push((doc_id, server_id));
+        }
+    }
+    Ok(out)
 }
 
 fn clear_inflight(conn: &Connection, outbox_id: i64) -> AppResult<()> {
@@ -1592,7 +1720,7 @@ impl SyncEngine {
         let document = match result {
             Ok(document) => document,
             Err(TransportError::Conflict { code }) if code == "resolution_stale" => {
-                let _ = self.refresh_conflict(storage, &ctx, &doc_id, &server_id, Some(&server_conflict), &mut report).await;
+                let _ = self.refresh_conflict(storage, &ctx, &doc_id, &server_id, Some(&server_conflict), None, &mut report).await;
                 return Err(AppError::new(
                     "conflict_stale",
                     "그 사이 PLAN-A Work 내용이 다시 바뀌었습니다. 최신 내용으로 비교 화면을 새로 고쳤으니 다시 선택해주세요.",
@@ -1601,7 +1729,7 @@ impl SyncEngine {
             Err(TransportError::Conflict { code }) if code == "item_moved_or_not_owned" || code == "client_key_in_use" => {
                 // 고른 내용 안의 메모가 그 사이 다른 날짜/List 로 옮겨졌다 — 서버는 그 메모를 가져오지 않는다(v1).
                 // 양쪽 내용은 그대로, 비교 화면을 최신으로 다시 채우고 사용자가 다시 판단하게 한다.
-                let _ = self.refresh_conflict(storage, &ctx, &doc_id, &server_id, Some(&server_conflict), &mut report).await;
+                let _ = self.refresh_conflict(storage, &ctx, &doc_id, &server_id, Some(&server_conflict), None, &mut report).await;
                 return Err(AppError::new(
                     "conflict_items_moved",
                     "고른 내용의 메모 일부가 그 사이 PLAN-A Work 에서 다른 날짜/List 로 옮겨져 그대로 적용할 수 없습니다. \
@@ -1662,8 +1790,16 @@ impl SyncEngine {
                         params![doc.id, mapper::digest_wire(document.deleted, &document.items)],
                     )?;
                     // 이 PC 내용이 서버 결과와 다르면(비교 뒤에 더 고친 내용 등) 새 version 위에 이어 보낸다.
-                    let plan = mapper::build_push(&tx, &doc, &ctx.account_key);
-                    let same = plan.as_ref().map(|p| mapper::digest_push(p) == mapper::digest_wire(document.deleted, &document.items)).unwrap_or(false);
+                    let same = match mapper::build_push(&tx, &doc, &ctx.account_key) {
+                        Ok(plan) => mapper::same_content(
+                            &tx,
+                            &doc.id,
+                            &ctx.account_key,
+                            &mapper::digest_push(&plan),
+                            &mapper::digest_wire(document.deleted, &document.items),
+                        )?,
+                        Err(_) => false,
+                    };
                     tx.execute("DELETE FROM sync_outbox WHERE document_id = ?1 AND op IN ('LINK', 'PUSH')", [&doc.id])?;
                     if same {
                         tx.execute("UPDATE documents SET synced_revision = local_revision WHERE id = ?1", [&doc.id])?;

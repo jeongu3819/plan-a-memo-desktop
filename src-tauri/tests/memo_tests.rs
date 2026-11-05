@@ -112,20 +112,77 @@ fn delete_keeps_history_and_restore_undoes() {
 }
 
 #[test]
-fn edits_are_coalesced_in_history_and_restore_works() {
+fn everyday_edits_leave_no_snapshots_and_protective_records_still_restore() {
     let (_d, s) = temp_storage();
     let item = add(&s, day("2026-10-07"), "main", "v1");
-    for v in 2..6 {
-        s.with_conn(|c| service::update_content(c, &item.id, &format!("v{v}"))).unwrap();
+    let other = add(&s, day("2026-10-07"), "main", "다른 메모");
+    // 긴 메모를 200번 고쳐도(이전: 5분마다 문서 전체 Snapshot) 일상 편집은 쌓이지 않는다
+    let body = "가".repeat(20_000);
+    for v in 0..200 {
+        s.with_conn(|c| service::update_content(c, &item.id, &format!("{body}{v}"))).unwrap();
     }
+    s.with_conn(|c| service::reorder(c, &day("2026-10-07"), "main", &[other.id.clone(), item.id.clone()])).unwrap();
+    s.with_conn(|c| service::set_completed(c, &item.id, true)).unwrap();
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM document_versions"), 0, "수정·순서 변경·체크는 Snapshot 을 남기지 않는다");
+    assert_eq!(count(&s, "SELECT local_revision > 0 FROM documents"), 1, "Sync 가 쓰는 revision 은 그대로 오른다");
+    // 데이터 보호 기록은 그대로 — 삭제 직전 내용이 남고 복원된다(지금 내용은 먼저 보존)
+    s.with_conn(|c| service::update_content(c, &item.id, "삭제 직전")).unwrap();
+    s.with_conn(|c| service::delete_item(c, &other.id)).unwrap();
     let versions = s.with_conn(|c| history::list_for_location(c, &day("2026-10-07"))).unwrap();
-    assert_eq!(versions.len(), 1, "연속 편집은 5분 안에서 한 번만 남긴다");
-    assert!(versions[0].preview.contains("v1"));
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0].reason, "delete");
+    s.with_conn(|c| service::update_content(c, &item.id, "그 뒤 수정")).unwrap();
     s.with_conn(|c| history::restore(c, versions[0].id)).unwrap();
-    assert_eq!(texts(&s, "2026-10-07"), vec!["v1"]);
-    // 복원 전 상태(v5)도 History 에 남는다
+    assert_eq!(texts(&s, "2026-10-07"), vec!["다른 메모", "삭제 직전"]);
     let after = s.with_conn(|c| history::list_for_location(c, &day("2026-10-07"))).unwrap();
-    assert!(after.iter().any(|v| v.reason == "restore" && v.preview.contains("v5")));
+    assert!(after.iter().any(|v| v.reason == "restore" && v.preview.contains("그 뒤 수정")));
+}
+
+#[test]
+fn moving_to_another_day_still_preserves_the_previous_content() {
+    let (_d, s) = temp_storage();
+    let a = add(&s, day("2026-10-07"), "main", "옮길 메모");
+    s.with_conn(|c| service::move_item(c, MoveItem { id: a.id.clone(), target: day("2026-10-08"), section: None, index: None, policy: None })).unwrap();
+    let versions = s.with_conn(|c| history::list_for_location(c, &day("2026-10-07"))).unwrap();
+    assert_eq!(versions[0].reason, "move");
+    assert!(versions[0].preview.contains("옮길 메모"));
+    // 같은 날짜 안의 구역 이동은 일상 편집이다
+    s.with_conn(|c| service::move_item(c, MoveItem { id: a.id.clone(), target: day("2026-10-08"), section: Some("am".into()), index: None, policy: None })).unwrap();
+    assert_eq!(s.with_conn(|c| history::list_for_location(c, &day("2026-10-08"))).unwrap().len(), 0);
+}
+
+#[test]
+fn old_edit_history_is_kept_but_not_listed_and_preserved_list_covers_every_document() {
+    let (_d, s) = temp_storage();
+    let a = add(&s, day("2026-10-07"), "main", "새 내용");
+    let list = s.with_conn(|c| service::create_list(c, None, "보관 List")).unwrap();
+    let b = add(&s, next(Some(&list.id)), "next", "List 메모");
+    // 이전 버전이 남긴 일반 편집 기록
+    let doc_id = a.document_id.clone();
+    s.with_conn(|c| {
+        c.execute(
+            "INSERT INTO document_versions (document_id, reason, local_revision, snapshot_json, content_text, created_at)
+             SELECT ?1, 'edit', 1, snapshot_json, content_text, created_at FROM (SELECT '{\"kind\":\"DAY\",\"items\":[]}' AS snapshot_json, '옛 내용' AS content_text, '2026-10-01T00:00:00Z' AS created_at)",
+            [&doc_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    s.with_conn(|c| service::update_content(c, &a.id, "또 고침")).unwrap();
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM document_versions WHERE reason = 'edit'"), 1, "기존 기록을 지우지 않는다");
+    assert!(s.with_conn(|c| history::list_preserved(c)).unwrap().is_empty(), "일반 편집 기록은 목록에 없다");
+    s.with_conn(|c| service::delete_item(c, &a.id)).unwrap();
+    s.with_conn(|c| service::delete_item(c, &b.id)).unwrap();
+    let preserved = s.with_conn(|c| history::list_preserved(c)).unwrap();
+    assert_eq!(preserved.len(), 2, "모든 날짜·List 의 보호 기록");
+    assert_eq!(preserved[0].list_name.as_deref(), Some("보관 List"));
+    assert_eq!(preserved[1].location, day("2026-10-07"));
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM document_versions WHERE reason = 'edit'"), 1);
+    // 휴지통에 있는 List 의 기록은 복구한 뒤에 보인다
+    s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
+    assert!(s.with_conn(|c| history::list_preserved(c)).unwrap().iter().all(|v| v.list_name.is_none()));
+    s.with_conn(|c| trash::restore(c, &list.id)).unwrap();
+    assert!(s.with_conn(|c| history::list_preserved(c)).unwrap().iter().any(|v| v.list_name.is_some()));
 }
 
 #[test]
@@ -370,16 +427,14 @@ fn history_survives_the_trash_and_is_removed_by_purge() {
     let list = s.with_conn(|c| service::create_list(c, None, "기록 List")).unwrap();
     let location = next(Some(&list.id));
     let item = add(&s, location.clone(), "next", "처음 내용");
-    s.with_conn(|c| service::update_content(c, &item.id, "고친 내용")).unwrap();
+    s.with_conn(|c| service::update_content(c, &item.id, "처음 내용 고침")).unwrap();
     s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
     s.with_conn(|c| trash::restore(c, &list.id)).unwrap();
     let versions = s.with_conn(|c| history::list_for_location(c, &location)).unwrap();
-    assert!(versions.iter().any(|v| v.preview.contains("처음 내용")), "복구 후 수정 전 내용이 History 에 있다");
-    assert!(versions.iter().any(|v| v.reason == "list_delete" || v.reason_label.contains("삭제")), "삭제 전 내용도");
+    assert!(versions.iter().any(|v| v.reason == "list_delete" && v.preview.contains("처음 내용 고침")), "복구 후 삭제 직전 내용이 남아 있다");
     s.with_conn(|c| trash::move_to_trash(c, &list.id)).unwrap();
     s.with_conn(|c| trash::purge(c, &s.paths, &list.id)).unwrap();
     assert_eq!(count(&s, "SELECT COUNT(*) FROM document_versions WHERE content_text LIKE '%처음 내용%'"), 0, "영구 삭제 — History 도 지운다");
-    assert_eq!(s.with_conn(|c| search::search(c, "처음")).unwrap().history.len(), 0);
 }
 
 #[test]
@@ -487,7 +542,7 @@ fn months_group_by_memo_date_not_edit_time() {
 }
 
 #[test]
-fn search_finds_text_not_tags_and_history_only_content() {
+fn search_finds_text_not_tags_and_only_current_content() {
     let (_d, s) = temp_storage();
     add(&s, day("2026-10-07"), "main", "<p>A<b>W</b>S 비용 확인</p>");
     let list = s.with_conn(|c| service::create_list(c, None, "회사 업무")).unwrap();
@@ -505,9 +560,7 @@ fn search_finds_text_not_tags_and_history_only_content() {
     let r = s.with_conn(|c| search::search(c, "cmp")).unwrap();
     assert_eq!(r.items[0].located.list_name.as_deref(), Some("회사 업무"));
     let r = s.with_conn(|c| search::search(c, "사라질")).unwrap();
-    assert!(r.items.is_empty());
-    assert_eq!(r.history.len(), 1, "지금은 없는 내용도 History 에서 찾는다");
-    assert_eq!(r.history[0].location, day("2026-10-08"));
+    assert!(r.items.is_empty(), "지운 메모는 검색되지 않는다");
     // LIKE 특수문자
     assert_eq!(s.with_conn(|c| search::search(c, "%")).unwrap().items.len(), 0);
 }

@@ -6,9 +6,8 @@
 use rusqlite::{params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 
-use super::history::reason_label;
 use super::repo::{self, ITEM_COLUMNS};
-use super::{text, DocKind, LocatedItem, Location, MemoItem, DEFAULT_LIST_ID};
+use super::{text, DocKind, LocatedItem, MemoItem, DEFAULT_LIST_ID};
 use crate::error::AppResult;
 
 #[derive(Debug, Serialize)]
@@ -25,18 +24,6 @@ pub struct ListHit {
     pub id: String,
     pub name: String,
     pub is_default: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryHit {
-    pub version_id: i64,
-    pub document_id: String,
-    pub location: Location,
-    pub list_name: Option<String>,
-    pub reason_label: &'static str,
-    pub created_at: String,
-    pub excerpt: String,
 }
 
 /// 검색어에서 읽어 낸 날짜.
@@ -70,7 +57,6 @@ pub struct SearchResult {
     pub days: Vec<DayHit>,
     pub items: Vec<SearchHit>,
     pub lists: Vec<ListHit>,
-    pub history: Vec<HistoryHit>,
     pub truncated: bool,
 }
 
@@ -155,7 +141,7 @@ pub fn search_with(conn: &Connection, query: &str, date: Option<&DateQuery>, lim
     let tokens = text::search_tokens(query);
     let days = date.map(|d| day_hits(conn, d)).transpose()?.unwrap_or_default();
     if tokens.is_empty() {
-        return Ok(SearchResult { query: query.to_string(), tokens, days, items: vec![], lists: vec![], history: vec![], truncated: false });
+        return Ok(SearchResult { query: query.to_string(), tokens, days, items: vec![], lists: vec![], truncated: false });
     }
     let limit = limit.clamp(1, MAX_ITEM_LIMIT);
     let patterns: Vec<String> = tokens.iter().map(|t| like_pattern(t)).collect();
@@ -196,41 +182,5 @@ pub fn search_with(conn: &Connection, query: &str, date: Option<&DateQuery>, lim
         })?
         .collect::<Result<_, _>>()?;
 
-    // History — 지금 내용에는 없는데 예전 버전에 있던 것(문서당 가장 최근 1건).
-    let rows: Vec<(i64, String, String, String, String)> = conn
-        .prepare(&format!(
-            "SELECT v.id, v.document_id, v.reason, v.created_at, v.content_text FROM document_versions v
-              WHERE {} AND v.id = (SELECT MAX(v2.id) FROM document_versions v2 WHERE v2.document_id = v.document_id AND {})
-              ORDER BY v.id DESC LIMIT 30",
-            where_all("v.content_text", patterns.len()),
-            where_all("v2.content_text", patterns.len()),
-        ))?
-        .query_map(params_from_iter(patterns.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
-        .collect::<Result<_, _>>()?;
-    let mut history = Vec::new();
-    for (version_id, document_id, reason, created_at, content) in rows {
-        if hits.iter().any(|h| h.located.item.document_id == document_id) {
-            continue; // 지금 내용에서 이미 찾았다
-        }
-        let Some(doc) = repo::doc_by_id(conn, &document_id)? else { continue };
-        // 삭제된 List(휴지통 포함)의 History 는 열 수 있는 화면이 없다 — 복구는 휴지통에서.
-        if let Some(list_id) = doc.next_list_id.as_deref() {
-            let alive: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM next_lists WHERE id = ?1 AND deleted_at IS NULL)", [list_id], |r| r.get(0))?;
-            if !alive {
-                continue;
-            }
-        }
-        let list_name = doc.next_list_id.as_deref().map(|id| repo::list_name(conn, id)).transpose()?.flatten();
-        history.push(HistoryHit {
-            version_id,
-            document_id,
-            location: repo::location_of_doc(&doc),
-            list_name,
-            reason_label: reason_label(&reason),
-            created_at,
-            excerpt: excerpt(&content.replace('\n', " "), &tokens),
-        });
-    }
-
-    Ok(SearchResult { query: query.to_string(), tokens, days, items: hits, lists, history, truncated })
+    Ok(SearchResult { query: query.to_string(), tokens, days, items: hits, lists, truncated })
 }

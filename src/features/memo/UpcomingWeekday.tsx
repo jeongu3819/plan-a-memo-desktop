@@ -2,8 +2,8 @@
  * 날짜 상세 아래 '다가오는 토요일' — **보고 있는 날짜** 기준 다음 같은 요일(+7·+14일)의 메모장.
  * 카드 제목은 몇 주 뒤든 '다음 토요일 · 10/17' — 날짜로 구분하고 '다음 주·2주 후' 같은 상대 표현은 쓰지 않는다.
  *
- * · 현재 날짜가 주인공이므로 카드는 접힌 채로 시작한다. 메모가 없으면 제목·'메모 없음'·[알림]·[기록] 한 줄, 메모가 있으면 앞의 몇 개만
- *   보인다(그 자리에서 체크·편집·삭제 가능). [기록] 을 누르면 메인·오전·오후 입력칸이 펼쳐지고, 사용자가 [접기] 를 누르기 전에는 접히지 않는다.
+ * · 현재 날짜가 주인공이므로 카드는 접힌 채로 시작한다. 메모가 없으면 제목·'메모 없음'·[알림]·[기록] 한 줄, 메모가 있으면 메인·오전·오후
+ *   제목 아래에 구역별로 앞의 몇 개만 보인다(메모가 없는 구역은 생략, 그 자리에서 체크·편집·삭제 가능). [기록] 을 누르면 메인·오전·오후 입력칸이 펼쳐지고, 사용자가 [접기] 를 누르기 전에는 접히지 않는다.
  *   접을 때 쓰던 글은 입력칸이 닫히며 저장된다(QuickInput) — 접는다고 지워지지 않는다.
  * · 입력·체크·편집·삭제는 카드의 날짜(그 날짜의 DAY 문서)로 저장되고, 보고 있는 날짜·화면은 바뀌지 않는다
  *   — 날짜 상세로 옮겨 가는 버튼이 없다(Web MemoUpcomingDays 와 같다).
@@ -39,8 +39,8 @@ import ReminderDialog from '../reminders/ReminderDialog';
 /** [더 보기] 한 번에 더 읽는 날짜 수. */
 const MORE_STEP = 4;
 const FUTURE_PLACEHOLDER = '진행할 일을 기록하세요';
-/** 접힌 카드에 미리 보여 주는 메모 수. */
-const PREVIEW_ROWS = 3;
+/** 접힌 카드에 구역마다 미리 보여 주는 메모 수. */
+const PREVIEW_ROWS_PER_SECTION = 3;
 
 function ReminderButton({ date, onOpen }: { date: string; onOpen: () => void }) {
   const { today } = usePersonalMemo();
@@ -75,8 +75,10 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
   // 사용자가 누를 때만 바뀐다 — 첫 메모를 저장해 '메모 없음' 이 아니게 되어도, 다 지워도 저절로 접히거나 펼쳐지지 않는다.
   const [expanded, setExpanded] = useState(false);
   const [focusMain, setFocusMain] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const empty = !isPending && items.length === 0;
-  const preview = items.slice(0, PREVIEW_ROWS);
+  const groups = SECTION_ORDER.map((section: MemoSection) => ({ section, rows: items.filter(m => m.section === section) })).filter(g => g.rows.length > 0);
+  const hiddenCount = groups.reduce((sum, g) => sum + Math.max(0, g.rows.length - PREVIEW_ROWS_PER_SECTION), 0);
 
   return (
     <Box
@@ -119,6 +121,7 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
           onClick={() => {
             setFocusMain(!expanded);
             setExpanded(!expanded);
+            setShowAll(false);
           }}
           sx={{ flexShrink: 0, height: 26, px: 1, fontSize: '0.74rem', color: MEMO_SECTION_TITLE, borderRadius: '8px' }}
         >
@@ -127,12 +130,27 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
       </Box>
 
       {!isPending && !expanded && !empty && (
-        <Box data-testid={`upcoming-preview-${date}`}>
-          {preview.map(item => (
-            <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} />
+        <Box data-testid={`upcoming-preview-${date}`} sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+          {groups.map(({ section, rows }) => (
+            <Box key={section} data-testid={`upcoming-preview-group-${section}`} sx={{ minWidth: 0 }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: MEMO_SECTION_TITLE, letterSpacing: '0.02em', px: 0.25 }}>
+                {SECTION_LABELS[section]}
+              </Typography>
+              {(showAll ? rows : rows.slice(0, PREVIEW_ROWS_PER_SECTION)).map(item => (
+                <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} />
+              ))}
+            </Box>
           ))}
-          {items.length > preview.length && (
-            <Typography sx={{ fontSize: '0.72rem', color: MEMO_MUTED, px: 0.75, pt: 0.25 }}>외 {items.length - preview.length}개 — [기록] 을 누르면 모두 보입니다</Typography>
+          {hiddenCount > 0 && (
+            <Button
+              size="small"
+              data-testid="upcoming-show-more"
+              aria-expanded={showAll}
+              onClick={() => setShowAll(!showAll)}
+              sx={{ alignSelf: 'flex-start', height: 24, px: 0.75, fontSize: '0.72rem', color: MEMO_SECTION_TITLE, borderRadius: '8px' }}
+            >
+              {showAll ? '간단히 보기' : `나머지 ${hiddenCount}개 펼치기`}
+            </Button>
           )}
         </Box>
       )}

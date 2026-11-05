@@ -47,7 +47,7 @@ import type {
   UpdateInfo,
   UpdateStatus,
   VersionDetail,
-  VersionSummary,
+  PreservedVersion,
   WeekMemo,
 } from '../domain/types';
 import type { DateQuery } from '../domain/memoBrowse';
@@ -150,7 +150,7 @@ export const searchService = {
 };
 
 export const historyService = {
-  list: (location: Location) => call<VersionSummary[]>('history_list', { location }),
+  preserved: () => call<PreservedVersion[]>('history_preserved'),
   get: (versionId: number) => call<VersionDetail>('history_get', { versionId }),
   restore: (versionId: number) => call<Location>('history_restore', { versionId }),
 };

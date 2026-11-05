@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::canonical::canonical_html;
 use super::contract::*;
 use crate::error::{AppError, AppResult};
 use crate::memo::{repo, DocKind, DocumentInfo, DocumentSnapshot, SnapshotItem};
@@ -434,6 +435,7 @@ fn section_rank(section: &str) -> u8 {
 pub type DigestRow = (String, i64, Option<i64>, String, String, bool);
 
 /// 내용 비교용 digest — id·정렬 숫자 값과 무관하게 (구역별 순서, 유형, 본문, 체크)만 본다.
+/// 본문은 정규형으로 비교한다(서버 sanitizer 의 표현 차이를 내용 차이로 보지 않는다 — sync/canonical.rs).
 pub fn digest_of(deleted: bool, items: impl IntoIterator<Item = DigestRow>) -> String {
     type Ordered = (i64, i64, String, String, bool);
     let mut sections: BTreeMap<String, Vec<Ordered>> = BTreeMap::new();
@@ -444,7 +446,7 @@ pub fn digest_of(deleted: bool, items: impl IntoIterator<Item = DigestRow>) -> S
         .into_iter()
         .map(|(section, mut list)| {
             list.sort_by_key(|a| (a.0, a.1));
-            (section, list.into_iter().map(|(_, _, kind, content, completed)| (kind, content, completed)).collect())
+            (section, list.into_iter().map(|(_, _, kind, content, completed)| (kind, canonical_html(&content), completed)).collect())
         })
         .collect();
     crate::util::sha256_hex(serde_json::to_string(&(deleted, normalized)).unwrap_or_default().as_bytes())
@@ -464,6 +466,38 @@ pub fn digest_push(plan: &PushPlan) -> String {
         plan.deleted,
         plan.items.iter().map(|i| (i.section.clone(), i.sort_order, i.id, i.kind.clone(), i.content.clone(), i.completed)),
     )
+}
+
+/// 보낸 요청의 digest — 서버가 받아 준 결과와 짝지어 둔다(`remember_accepted`).
+pub fn digest_request(body: &PushRequest) -> String {
+    digest_of(body.deleted, body.items.iter().map(|i| (i.section.clone(), i.sort_order, i.id, i.kind.clone(), i.content.clone(), i.completed)))
+}
+
+/// 로컬 Snapshot 끼리 비교(비교 화면의 저장된 두 내용 — 둘 다 로컬 형식).
+pub fn digest_snapshot(snapshot: &DocumentSnapshot) -> String {
+    digest_of(
+        snapshot.deleted,
+        snapshot.items.iter().map(|i| (i.section.clone(), i.sort_order, None, i.kind.clone(), i.content_html.clone(), i.kind == "checklist" && i.completed)),
+    )
+}
+
+fn accepted_key(account_key: &str, doc_id: &str) -> String {
+    format!("accepted|{account_key}|{doc_id}")
+}
+
+/// 서버가 '이 PC 가 보낸 내용(local) = 서버에 저장한 내용(server)' 이라고 확인해 준 짝을 남긴다.
+/// 서버가 본문을 어떻게 고쳐 저장하든(허용하지 않는 속성 제거 등) 양쪽이 그대로면 같은 내용이다 — 연결을 해제해도 남긴다.
+pub fn remember_accepted(conn: &Connection, doc_id: &str, account_key: &str, local: &str, server: &str) -> AppResult<()> {
+    super::engine::state_set(conn, &accepted_key(account_key, doc_id), &format!("{local}|{server}"))
+}
+
+/// 이 PC 의 내용(digest)과 서버 내용(digest)이 같은가 — 정규형이 같거나, 서버가 확인해 준 짝 그대로일 때만 true.
+pub fn same_content(conn: &Connection, doc_id: &str, account_key: &str, local: &str, server: &str) -> AppResult<bool> {
+    if local == server {
+        return Ok(true);
+    }
+    let accepted = super::engine::state_get(conn, &accepted_key(account_key, doc_id))?;
+    Ok(accepted.as_deref() == Some(format!("{local}|{server}").as_str()))
 }
 
 /// 같은 내용이면 서버 항목 id 를 순서대로 로컬 항목에 붙인다(처음 연결했는데 양쪽 내용이 같을 때).

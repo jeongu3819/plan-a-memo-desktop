@@ -109,7 +109,7 @@ export function SyncHeaderButton({
     try {
       await syncService.link(location);
       refreshMemo(queryClient);
-      notify({ message: `${label} 메모를 연동했습니다. 연동을 허용한 모든 기기에 같은 내용으로 맞춰집니다.`, variant: 'success' });
+      notify({ message: 'PLAN-A Work와 연결되었습니다.', variant: 'success' });
     } catch (error) {
       if (error instanceof AppError && error.code === 'auth_required') {
         ui.openAccount('PLAN-A Work 계정 연결이 필요합니다.', () => void link());

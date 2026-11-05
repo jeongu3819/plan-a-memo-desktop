@@ -184,6 +184,7 @@ fn purge_one(conn: &mut Connection, id: &str) -> AppResult<()> {
         }
         // 메모·History·연결 기록은 문서를 따라 지워진다(ON DELETE CASCADE).
         tx.execute("DELETE FROM documents WHERE id = ?1", [&doc.id])?;
+        tx.execute("DELETE FROM sync_state WHERE key LIKE ?1", [format!("accepted|%|{}", doc.id)])?;
     }
     tx.execute("DELETE FROM next_lists WHERE id = ?1 AND is_default = 0 AND deleted_at IS NOT NULL", [id])?;
     tx.execute("DELETE FROM list_trash WHERE list_id = ?1", [id])?;

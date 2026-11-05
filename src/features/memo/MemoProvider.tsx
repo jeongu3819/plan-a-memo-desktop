@@ -13,7 +13,6 @@ import { koreanMonthDay } from '../../domain/location';
 import { movedMessage } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import MemoNotice, { type Notice } from './MemoNotice';
 import { DatePickerDialog, LargeEditorDialog, MoveDecisionDialog } from './MemoDialogs';
-import HistoryDialog from '../history/HistoryDialog';
 
 interface MoveRequest {
   item: MemoItem;
@@ -44,7 +43,6 @@ interface MemoContextValue {
   actions: MemoActions;
   openLargeEditor: (item: MemoItem) => void;
   openDatePicker: (item: MemoItem) => void;
-  openHistory: (location: Location, title: string) => void;
 }
 
 const MemoContext = createContext<MemoContextValue | null>(null);
@@ -67,7 +65,6 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
   const [decision, setDecision] = useState<MoveRequest | null>(null);
   const [datePick, setDatePick] = useState<MemoItem | null>(null);
   const [large, setLarge] = useState<MemoItem | null>(null);
-  const [history, setHistory] = useState<{ location: Location; title: string } | null>(null);
 
   useEffect(() => {
     store.onSaved = item => patchItemInCaches(queryClient, item);
@@ -178,7 +175,7 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
       reorder: (location, section, ids) => void doReorder(location, section, ids),
       moveToTop: (item, location) => {
         moveToTopQueue.current = moveToTopQueue.current.then(async () => {
-          // 편집 중인 본문을 먼저 저장한다 — 순서 변경이 남기는 History 에 지금 내용이 들어가게(본문·편집 상태는 그대로).
+          // 편집 중인 본문을 먼저 저장한다 — 순서 변경과 함께 동기화되게(본문·편집 상태는 그대로).
           await store.flush(item.id);
           await run(async () => {
             const { items } = location.kind === 'day' ? await dayMemoService.day(location.date) : await nextListService.list(location.listId);
@@ -214,7 +211,6 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
     actions,
     openLargeEditor: setLarge,
     openDatePicker: setDatePick,
-    openHistory: (location, title) => setHistory({ location, title }),
   };
 
   return (
@@ -241,15 +237,6 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
         }}
       />
       <LargeEditorDialog item={large} onClose={() => setLarge(null)} />
-      <HistoryDialog
-        location={history?.location ?? null}
-        title={history?.title ?? ''}
-        onClose={() => setHistory(null)}
-        onRestored={() => {
-          refreshMemo(queryClient);
-          notify({ message: '이 버전으로 되돌렸습니다. 되돌리기 전 내용은 History 에 남아 있습니다.', variant: 'success' });
-        }}
-      />
     </MemoContext.Provider>
   );
 }

@@ -1,4 +1,4 @@
-/** 변경 이력 — 날짜 하루(또는 List) 단위 버전 목록 · 보기 · 이 버전으로 되돌리기. */
+/** 보존된 내용 — 충돌에서 선택하지 않은 내용, 삭제·이동·PLAN-A Work 변경 반영 직전의 내용. 보기 · 이 내용으로 되돌리기(설정에서 연다). */
 import { useEffect, useState } from 'react';
 import {
   Box,
@@ -14,8 +14,8 @@ import {
   Typography,
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import type { Location } from '../../domain/types';
-import { useHistory } from '../../services/queries';
+import { locationLabel } from '../../domain/location';
+import { usePreserved } from '../../services/queries';
 import { errorMessage, historyService } from '../../tauri/api';
 import { MEMO_MUTED } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import SnapshotView from './SnapshotView';
@@ -25,59 +25,56 @@ function when(iso: string) {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-export default function HistoryDialog({
-  location,
-  title,
-  onClose,
-  onRestored,
-}: {
-  location: Location | null;
-  title: string;
-  onClose: () => void;
-  onRestored: () => void;
-}) {
-  const versions = useHistory(location);
+export default function PreservedDialog({ open, onClose, onRestored }: { open: boolean; onClose: () => void; onRestored: () => void }) {
+  const versions = usePreserved(open);
   const [selected, setSelected] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     setSelected(null);
     setError(null);
-  }, [location]);
+  }, [open]);
   useEffect(() => {
     if (selected === null && versions.data?.length) setSelected(versions.data[0].id);
   }, [versions.data, selected]);
   const detail = useQuery({
-    queryKey: ['memo', 'history-detail', selected],
+    queryKey: ['memo', 'preserved-detail', selected],
     queryFn: () => historyService.get(selected!),
-    enabled: selected !== null,
+    enabled: open && selected !== null,
   });
 
   return (
-    <Dialog open={!!location} onClose={onClose} maxWidth="md" fullWidth data-personal-memo-overlay="true" data-testid="history-dialog">
-      <DialogTitle>변경 이력 · {title}</DialogTitle>
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth data-personal-memo-overlay="true" data-testid="preserved-dialog">
+      <DialogTitle>보존된 내용</DialogTitle>
       <DialogContent sx={{ display: 'flex', gap: 2, minHeight: 360 }}>
         {versions.isPending ? (
           <CircularProgress size={20} />
         ) : !versions.data?.length ? (
-          <Typography sx={{ fontSize: '0.88rem', color: MEMO_MUTED }}>
-            아직 남은 이력이 없습니다. 수정·삭제·이동·충돌 해결 전에 자동으로 남습니다.
+          <Typography data-testid="preserved-empty" sx={{ fontSize: '0.88rem', color: MEMO_MUTED }}>
+            보존된 내용이 없습니다. 충돌에서 선택하지 않은 내용이나 삭제·이동 직전의 내용이 여기에 남습니다.
           </Typography>
         ) : (
           <>
-            <List dense sx={{ width: 260, flexShrink: 0, overflowY: 'auto', maxHeight: 460, borderRight: '1px solid', borderColor: 'divider', pr: 1 }}>
+            <List dense sx={{ width: 280, flexShrink: 0, overflowY: 'auto', maxHeight: 460, borderRight: '1px solid', borderColor: 'divider', pr: 1 }}>
               {versions.data.map(version => (
-                <ListItemButton key={version.id} selected={version.id === selected} onClick={() => setSelected(version.id)} sx={{ borderRadius: 1.5 }}>
+                <ListItemButton
+                  key={version.id}
+                  data-testid="preserved-entry"
+                  data-reason={version.reason}
+                  selected={version.id === selected}
+                  onClick={() => setSelected(version.id)}
+                  sx={{ borderRadius: 1.5 }}
+                >
                   <ListItemText
-                    primary={`${version.reasonLabel}`}
-                    secondary={`${when(version.createdAt)} · 메모 ${version.itemCount}개`}
+                    primary={version.reasonLabel}
+                    secondary={`${locationLabel(version.location, version.listName)} · ${when(version.createdAt)} · 메모 ${version.itemCount}개`}
                     primaryTypographyProps={{ fontSize: '0.84rem', fontWeight: 700 }}
                     secondaryTypographyProps={{ fontSize: '0.72rem' }}
                   />
                 </ListItemButton>
               ))}
             </List>
-            <Box sx={{ flex: 1, minWidth: 0, overflowY: 'auto', maxHeight: 460 }}>
+            <Box data-testid="preserved-detail" sx={{ flex: 1, minWidth: 0, overflowY: 'auto', maxHeight: 460 }}>
               {detail.data ? <SnapshotView snapshot={detail.data.snapshot} /> : <CircularProgress size={20} />}
             </Box>
           </>
@@ -88,6 +85,7 @@ export default function HistoryDialog({
         <Button onClick={onClose}>닫기</Button>
         <Button
           variant="contained"
+          data-testid="preserved-restore"
           disabled={selected === null || busy}
           onClick={async () => {
             if (selected === null) return;
@@ -104,7 +102,7 @@ export default function HistoryDialog({
             }
           }}
         >
-          이 버전으로 되돌리기
+          이 내용으로 되돌리기
         </Button>
       </DialogActions>
     </Dialog>

@@ -257,8 +257,14 @@ pub async fn item_restore(state: State<'_, AppState>, id: String) -> Cmd<MemoIte
 #[tauri::command]
 pub async fn item_move(state: State<'_, AppState>, input: service::MoveItem) -> Cmd<service::MoveOutcome> {
     // 계정은 화면이 보낸 값이 아니라 지금 로그인 상태에서만 가져온다.
-    let account = state.auth.session_context().map(|s| s.account_key);
-    write(&state, |c| service::move_item_linking(c, input, account.as_deref()))
+    let session = state.auth.session_context();
+    let account = session.as_ref().map(|s| s.account_key.as_str());
+    write(&state, |c| {
+        if let Some(s) = &session {
+            engine::retire_previous_device(c, &s.account_key, &s.server_device_id)?;
+        }
+        service::move_item_linking(c, input, account)
+    })
 }
 
 #[tauri::command]
@@ -317,6 +323,11 @@ pub async fn lists_reorder(state: State<'_, AppState>, ids: Vec<String>) -> Cmd<
 #[tauri::command]
 pub async fn history_list(state: State<'_, AppState>, location: Location) -> Cmd<Vec<history::VersionSummary>> {
     state.storage()?.with_conn(|c| history::list_for_location(c, &location))
+}
+
+#[tauri::command]
+pub async fn history_preserved(state: State<'_, AppState>) -> Cmd<Vec<history::PreservedVersion>> {
+    state.storage()?.with_conn(|c| history::list_preserved(c))
 }
 
 #[tauri::command]
@@ -452,6 +463,7 @@ pub async fn sync_link(state: State<'_, AppState>, location: Location) -> Cmd<cr
         return Err(AppError::new("auth_required", "PLAN-A Work 계정 연결이 필요합니다."));
     };
     let doc = state.storage()?.with_conn(|c| {
+        engine::retire_previous_device(c, &session.account_key, &session.server_device_id)?;
         let tx = c.transaction()?;
         let doc = repo::ensure_doc(&tx, &location)?;
         link::enable_link(&tx, &doc.id, &session.account_key)?;
@@ -826,7 +838,7 @@ pub async fn management_day(state: State<'_, AppState>, date: String) -> Cmd<man
     state.storage()?.with_conn(|c| management::day_view(c, &date))
 }
 
-/// 복사본 선택(이 PC / PLAN-A Work) — 고르지 않은 쪽은 History 에 남는다.
+/// 복사본 선택(이 PC / PLAN-A Work) — 고르지 않은 쪽은 보존된 내용에 남는다.
 #[tauri::command]
 pub async fn carry_review_resolve(state: State<'_, AppState>, id: String, choice: management::ReviewChoice) -> Cmd<String> {
     let date = state.storage()?.with_conn(|c| management::resolve_review(c, &id, choice))?;

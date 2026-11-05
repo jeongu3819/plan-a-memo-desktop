@@ -12,6 +12,7 @@
 | 4 | 실제 통합 테스트 준비 | 환경 | **대기** — 승인된 일회용 MySQL·Staging·OAuth·저장소(READINESS §6–9) |
 | 5 | 다음 스냅샷에 넣어 줄 파일 | 자료 | 일부 — `services/memo_sync.py`·models 는 아직 스냅샷에 없음(READINESS 문서로 동작 확인) |
 | 6 | 폐기 기기 안내를 Desktop 이 받을 수 있게(선택) | 개선 제안 | 신규 — §6 |
+| 7 | Staging Desktop 승인 화면 비활성 · 재연결 실제 시험 | 환경 | **신규·대기** — §7 (Desktop 은 PLAN-A Work 를 변경하지 않음) |
 
 ---
 
@@ -299,3 +300,53 @@ npm run e2e                                         # 실제 서버 모드: Mock
    Desktop loopback 은 이미 `error` 를 읽는다 — `device_revoked` 를 구분해 '새 기기 등록 필요' 로 보여 주도록 바로 맞출 수 있다.
 
 어느 쪽이든 Contract 문장 한 줄과 함께 알려 주면 반영한다. 통합 테스트의 전제는 아니다.
+
+## 7. (2026-11-05) Staging Desktop 승인 화면 비활성 · 재연결 실제 시험
+
+**PLAN-A Work 담당 작업이다. Desktop 쪽에서는 Frontend·Backend·DB·환경변수·브랜치·배포를 변경하지 않았고, 실제 서버 재연결 시험은 보류했다.**
+
+### 7-1. 관찰한 내용(공개 응답·배포 번들 기준)
+
+| 대상 | 관찰 |
+|---|---|
+| `/memo-desktop/authorize` | "현재 Desktop 연동을 사용할 수 없습니다."만 표시. 새 기기 등록 불가 |
+| 배포 Frontend | 빌드 커밋 `96d5e36`, 2026-11-03T05:19:24Z. `memoSyncEnabled`·`memoPlanningEnabled`·`memoManagementEnabled` 모두 꺼진 채 빌드됨 |
+| 배포 Backend | `/api/health`: `96d5e36c9`, `outside`, 수정 없음, 2026-11-03T05:16:31Z 시작 |
+| Native v1·v2 경로 | 인증 없는 GET 에 404 가 아닌 401 — 서버 기능 플래그는 켜진 것으로 판단 |
+| 기존 등록 기기 | 2026-11-04 까지 정상 동기화(v2 capability 사용 가능 기록은 2026-11-05 04:05 KST) |
+
+서버 환경변수와 MySQL 테이블은 직접 확인하지 않았다(서버 접속 없음). 11/3 빌드에서 플래그가 빠진 것이 의도인지도 확인하지 못했다.
+
+### 7-2. 요청(승인된 절차로, PLAN-A Work 담당이 판단)
+
+1. Staging 서버에서 읽기 전용으로 확인: `MEMO_SYNC_ENABLED`, `MEMO_SYNC_SCHEMA_READY`, `MEMO_SYNC_ENVIRONMENT`, `MEMO_PLANNING_ENABLED`, `MEMO_PLANNING_SCHEMA_READY`, `MEMO_SYNC_V2_ENABLED`, `MEMO_SYNC_V2_SCHEMA_READY`, 해당 테이블.
+2. Staging Frontend 를 `VITE_API_URL=/api`, `VITE_MEMO_SYNC_ENABLED=true`, `VITE_MEMO_PLANNING_ENABLED=true`, `VITE_MEMO_SYNC_V2_ENABLED=true` 로 빌드해 정적 파일만 배포.
+   이 값은 `.env.production` 이 아니라 Staging 빌드 환경에만 준다 — Production 빌드에 섞이지 않게.
+3. 배포 뒤 `/memo-desktop/authorize` 에 승인 화면이 나오는지 확인하고 Desktop 쪽에 알린다.
+
+**시한 참고:** Desktop credential 은 30일짜리이고 재연결에도 이 화면이 필요하다. 2026-10-24 에 등록된 기존 Staging 기기는 2026-11-23 무렵 만료될 수 있다.
+
+### 7-3. 준비되면 실제 서버에서 확인할 항목(격리된 Development 빌드 · 별도 시험 계정 · 2028년 날짜만)
+
+1. DAY 연결 → 해제 → 수정 없이 재연결: 비교 화면 없음, 서버 version 그대로. 3회 반복. NEXT_LIST 도 같게.
+2. 해제 중 Web 에서 글자·체크·서식·이미지·순서·삭제 변경 → 재연결: 비교 화면, 양쪽 보존.
+3. 다른 기기가 만든 다른 제안의 충돌은 닫지 않음. 같은 내용의 충돌만 자동 정리(`resolve(side=web)`) — 실제 서버 동작 미확인 항목.
+4. 재연결 뒤 v2 복사 이력·알림 설정 유지.
+5. 재로그인(새 기기) 직후 첫 Sync 전 연결.
+
+### 7-4. 확인 요청(선택, 계약 변경 아님)
+
+sanitizer 가 `style` 끝 `;` 제거 외에 저장 시 어떤 정규화를 하는지(속성 순서·따옴표·빈 속성·엔티티·CSS 속성 제거 등) 목록을 주면 Desktop 비교 규칙과 Mock 을 그 기준으로 맞춘다.
+
+### 7-5. v0.2.7 보류 · 게시 전 최종 검증
+
+Desktop 수정은 유지하지만 실제 서버에서 검증하지 못해 v0.2.7 서명 빌드·게시·자동 업데이트는 보류했다. 설치된 Staging v0.2.6 은 그대로다(2026-11-05).
+재개 방법: [e2e/README.md '실제 Staging 재연결 시험 재개'](../e2e/README.md).
+
+게시 전에 모두 확인한다.
+
+1. §7-2 완료 — Staging 승인 화면 표시, 서버 플래그·테이블 확인.
+2. §7-3 항목 1~5 를 실제 Staging 에서 통과. 서버 정규화 차이로 같은 내용이 충돌로 나오면 `sync/canonical.rs` 를 고친 뒤 다시 시험한다.
+3. 전체 회귀: `tsc`, ESLint, Vitest, `cargo test`, `npm run e2e`, `e2e/long-paste.mjs`. 2026-11-05 에 실행하지 않은 `e2e/section-heights.mjs`, `npm run e2e:installer` 도 포함한다.
+4. 재연결 수정을 끈 상태에서 추가 테스트가 실패하는지 다시 확인한다 — 2026-11-05 에 추가한 8개는 아직 하지 않았다.
+5. v0.2.6 → v0.2.7 업데이트 후 메모·이미지·Backup·보존된 내용·연결 유지.

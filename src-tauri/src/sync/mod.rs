@@ -12,6 +12,7 @@
 //! memo-sync-v2(연결된 DAY 의 복사·안내·알림 설정·알림 확인 공통 관리)는 `management` — 같은 Transport 의 `native/v2` 경로,
 //! 별도 Outbox(management_outbox)·별도 cursor. v1 의 Snapshot·cursor·Conflict 규칙은 바뀌지 않는다.
 
+pub mod canonical;
 pub mod contract;
 pub mod contract_v2;
 pub mod engine;

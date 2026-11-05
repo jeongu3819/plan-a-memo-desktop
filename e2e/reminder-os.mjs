@@ -210,7 +210,7 @@ function cleanupAll() {
   spawnSync('reg', ['delete', `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${NAME}`, '/f'], { stdio: 'ignore' });
   spawnSync('reg', ['delete', `HKCU\\Software\\PLAN-A\\${NAME}`, '/f'], { stdio: 'ignore' });
   for (const dir of [path.join(ROAMING, ID), path.join(LOCAL, ID)]) rmSync(dir, { recursive: true, force: true });
-  rmSync(work, { recursive: true, force: true });
+  rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }
 
 // ── 실행 ────────────────────────────────────────────────────────────────

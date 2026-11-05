@@ -40,7 +40,7 @@ fn add_text(s: &Storage, date: &str, section: &str, html: &str) {
 
 #[test]
 fn v2_database_upgrades_to_v3_with_backup_and_keeps_memos() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     let paths = StoragePaths::new(dir.path().join("PLAN-A Memo"));
     paths.ensure_dirs().unwrap();
     {
@@ -212,7 +212,7 @@ fn carryover_rejects_future_sources_and_foreign_items() {
 
 #[test]
 fn skipping_is_remembered_across_restart() {
-    let (dir, s) = temp_storage();
+    let (_dir, s) = temp_storage();
     add(&s, day("2026-10-03"), "main", "보고서 작성");
     s.with_conn(|c| carryover::mark_shown(c, "2026-10-10")).unwrap();
     assert!(s.with_conn(|c| carryover::get(c, "2026-10-10", "2026-10-10")).unwrap().auto_prompt, "보이기만 했으면 아직 결정 전");
@@ -225,7 +225,6 @@ fn skipping_is_remembered_across_restart() {
     assert_eq!(info.status.as_deref(), Some("skipped"));
     assert!(!info.auto_prompt, "건너뛴 안내는 다시 저절로 보이지 않는다");
     assert_eq!(info.items.len(), 1, "보조 메뉴에서는 여전히 가져올 수 있다");
-    drop(dir);
 }
 
 #[test]

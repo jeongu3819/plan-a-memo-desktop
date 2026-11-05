@@ -8,11 +8,12 @@ const { DatabaseSync } = require('node:sqlite');
 
 const src = path.join(os.homedir(), 'PLAN-A Memo Staging', 'data');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plana-fingerprint-'));
+let db;
 try {
   for (const f of ['memo.sqlite3', 'memo.sqlite3-wal', 'memo.sqlite3-shm']) {
     if (fs.existsSync(path.join(src, f))) fs.copyFileSync(path.join(src, f), path.join(tmp, f));
   }
-  const db = new DatabaseSync(path.join(tmp, 'memo.sqlite3'));
+  db = new DatabaseSync(path.join(tmp, 'memo.sqlite3'));
   const q = (s) => db.prepare(s).all();
   const h = (rows) => crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0, 16);
   const items = q('SELECT * FROM memo_items ORDER BY id');
@@ -29,8 +30,8 @@ try {
     outbox: q('SELECT COUNT(*) n FROM sync_outbox')[0].n,
     dateRange: q("SELECT MIN(memo_date) a, MAX(memo_date) b FROM documents WHERE kind='DAY'").map((r) => [r.a, r.b])[0],
   };
-  db.close();
   console.log(JSON.stringify(out, null, 1));
 } finally {
-  fs.rmSync(tmp, { recursive: true, force: true });
+  db?.close();
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

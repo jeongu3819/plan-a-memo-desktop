@@ -23,11 +23,21 @@ use plan_a_memo_lib::sync::transport::TransportError;
 const REDIRECT_BASE: &str = "http://127.0.0.1:54321";
 
 struct Env {
-    _dir: tempfile::TempDir,
     storage: Storage,
     mock: Arc<MockSyncTransport>,
     auth: Arc<DesktopAuth>,
     engine: SyncEngine,
+    // 맨 뒤 — 필드는 적은 순서로 정리된다. Windows 는 열린 DB 가 있으면 폴더를 지우지 못한다.
+    _dir: tempfile::TempDir,
+}
+
+#[test]
+fn env_leaves_no_temp_folder_behind() {
+    let e = env_with(Arc::new(MockSyncTransport::new()));
+    let dir = e._dir.path().to_path_buf();
+    assert!(e.storage.paths.db_path().is_file());
+    drop(e);
+    assert!(!dir.exists(), "DB 를 닫은 뒤 폴더가 지워진다");
 }
 
 fn env_with(mock: Arc<MockSyncTransport>) -> Env {
@@ -758,7 +768,7 @@ async fn transport_errors_are_classified() {
 
 #[test]
 fn v3_database_upgrades_to_v4_with_backup_and_keeps_day_tools() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     let paths = StoragePaths::new(dir.path().join("PLAN-A Memo"));
     paths.ensure_dirs().unwrap();
     {

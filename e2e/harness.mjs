@@ -105,7 +105,12 @@ export class App {
   }
 
   cleanup() {
-    if (!process.env.PLANA_E2E_KEEP) rmSync(this.workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    if (process.env.PLANA_E2E_KEEP) return;
+    try {
+      rmSync(this.workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    } catch (error) {
+      console.warn(`임시 폴더를 지우지 못했습니다: ${this.workDir} — ${error.message}`);
+    }
   }
 }
 

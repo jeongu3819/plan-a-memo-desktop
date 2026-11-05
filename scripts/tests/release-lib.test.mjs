@@ -1,10 +1,9 @@
 // @vitest-environment node
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   NOTES_DRAFT_MARK,
   SERVER_PROBE,
@@ -22,6 +21,7 @@ import {
   installerName,
   limitBuildJobs,
   loadStagingConfig,
+  probeSigning,
   publishRelease,
   readPublished,
   readTransaction,
@@ -32,6 +32,11 @@ import {
   toolEnv,
   verifySignature,
 } from '../lib/release-lib.mjs';
+import { createTempDirs, recoverStaleTempDirs } from './temp-dirs.mjs';
+
+const temp = createTempDirs();
+beforeAll(() => recoverStaleTempDirs());
+afterEach(() => temp.cleanup());
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BASE = 'https://updates.test/memo-updates';
@@ -93,7 +98,7 @@ describe('버전', () => {
   });
 
   it('버전이 적힌 곳을 함께 바꾸고 다른 패키지 버전·서식은 그대로 둔다', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'plana-ver-'));
+    const dir = temp.make('ver');
     mkdirSync(path.join(dir, 'src-tauri'));
     for (const file of ['package.json', 'package-lock.json', 'src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock']) {
       cpSync(path.join(repo, file), path.join(dir, file));
@@ -137,7 +142,7 @@ describe('빌드 설정', () => {
     expect(shared.ssh).toBeUndefined();
     expect(shared.baseUrl).toBe('https://staging.planawork.com/memo-updates');
 
-    const root = mkdtempSync(path.join(tmpdir(), 'plana-config-'));
+    const root = temp.make('config');
     mkdirSync(path.join(root, 'scripts'));
     writeFileSync(path.join(root, 'scripts', 'release.staging.json'), JSON.stringify({ baseUrl: BASE }));
     expect(loadStagingConfig(root).ssh).toBeUndefined();
@@ -148,7 +153,7 @@ describe('빌드 설정', () => {
 
 describe('실패 시 되돌리기', () => {
   function makeTree() {
-    const root = mkdtempSync(path.join(tmpdir(), 'plana-tx-'));
+    const root = temp.make('tx');
     const version = path.join(root, 'package.json');
     const created = path.join(root, 'latest.json');
     const folder = path.join(root, '0.2.4');
@@ -244,12 +249,38 @@ describe('서명 확인', () => {
     expect(verifySignature(data, 'bm90IGEgc2lnbmF0dXJl', keys.pub).ok).toBe(false);
     expect(verifySignature(data, makeSig(keys, data, trusted), 'bm90IGEga2V5').ok).toBe(false);
   });
+
+  describe('빌드 전 시험 서명', () => {
+    const signWith = signer => probe => {
+      writeFileSync(`${probe}.sig`, makeSig(signer, readFileSync(probe), 'timestamp:1'));
+      return true;
+    };
+
+    it('개인키와 공개키가 짝이면 통과', () => {
+      const tmp = temp.make('sign');
+      expect(probeSigning({ signFile: signWith(keys), pubkey: keys.pub, tmp })).toBeNull();
+      expect(readdirSync(tmp)).toEqual([]);
+    });
+
+    it('서명 실패 · 다른 키 · 예외 — 어느 경우에도 임시 폴더를 남기지 않는다', () => {
+      const tmp = temp.make('sign');
+      expect(probeSigning({ signFile: () => false, pubkey: keys.pub, tmp })).toMatch(/비밀번호/);
+      expect(readdirSync(tmp)).toEqual([]);
+      expect(probeSigning({ signFile: signWith(makeKeys('d1d2d3d4d5d6d7d8')), pubkey: keys.pub, tmp })).toMatch(/짝이 아닙니다/);
+      expect(readdirSync(tmp)).toEqual([]);
+      const broken = () => {
+        throw new Error('sign crashed');
+      };
+      expect(() => probeSigning({ signFile: broken, pubkey: keys.pub, tmp })).toThrow('sign crashed');
+      expect(readdirSync(tmp)).toEqual([]);
+    });
+  });
 });
 
 /** 임시 폴더에 dist 결과와 같은 구성을 만든다. */
 function makeBuild(version = '0.2.5', over = {}) {
   const keys = makeKeys();
-  const dir = path.join(mkdtempSync(path.join(tmpdir(), 'plana-art-')), version);
+  const dir = path.join(temp.make('art'), version);
   mkdirSync(dir);
   const exe = Buffer.concat([Buffer.from('MZ'), Buffer.from(`installer ${version}`)]);
   const name = installerName(version);
@@ -295,7 +326,7 @@ describe('산출물 검증', () => {
   });
 
   it('파일이 없으면 문제로 보고', () => {
-    const empty = mkdtempSync(path.join(tmpdir(), 'plana-empty-'));
+    const empty = temp.make('empty');
     expect(inspectArtifacts({ versionDir: empty, version: '0.2.5', baseUrl: BASE, pubkey: makeKeys().pub }).problems.length).toBe(3);
   });
 

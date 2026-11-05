@@ -21,11 +21,21 @@ use plan_a_memo_lib::sync::transport::{SyncContext, SyncTransport, TransportErro
 const REDIRECT_BASE: &str = "http://127.0.0.1:54321";
 
 struct Env {
-    _dir: tempfile::TempDir,
     storage: Storage,
     mock: Arc<MockSyncTransport>,
     auth: Arc<DesktopAuth>,
     engine: SyncEngine,
+    // 맨 뒤 — 필드는 적은 순서로 정리된다. Windows 는 열린 DB 가 있으면 폴더를 지우지 못한다.
+    _dir: tempfile::TempDir,
+}
+
+#[test]
+fn env_leaves_no_temp_folder_behind() {
+    let e = env();
+    let dir = e._dir.path().to_path_buf();
+    assert!(e.storage.paths.db_path().is_file());
+    drop(e);
+    assert!(!dir.exists(), "DB 를 닫은 뒤 폴더가 지워진다");
 }
 
 fn env() -> Env {
@@ -224,9 +234,9 @@ async fn offline_queue_survives_restart_and_retries() {
     assert!(report.offline);
     assert_eq!(e.status(&day("2026-10-07")), "pending", "전달 대기");
     assert_eq!(e.outbox(), 1);
-    // 앱 강제 종료 후 재실행
+    // 앱 강제 종료 후 재실행 — 이전 연결은 닫지 않은 채로(테스트가 끝날 때 닫는다)
     let root = e.storage.paths.root.clone();
-    std::mem::forget(e.storage);
+    let _crashed = e.storage;
     let (storage, _) = Storage::open(&root, false).unwrap();
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM sync_outbox"), 1, "Outbox 는 재실행 후에도 남는다");
     e.mock.set_online(true);
@@ -1212,7 +1222,7 @@ async fn cursor_and_pending_documents_survive_a_crash() {
     e.mock.inject("document", TransportError::Offline);
     e.sync().await;
     let root = e.storage.paths.root.clone();
-    std::mem::forget(e.storage);
+    let _crashed = e.storage;
     let (storage, _) = Storage::open(&root, false).unwrap();
     assert_eq!(count(&storage, "SELECT remote_pending FROM sync_links"), 1, "받아야 할 문서 표시가 cursor 와 함께 남았다");
     let report = e.engine.run_once(&storage, true).await.unwrap();

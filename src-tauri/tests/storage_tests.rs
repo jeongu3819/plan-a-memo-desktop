@@ -25,7 +25,7 @@ fn first_open_creates_folder_layout_and_schema() {
 
 #[test]
 fn reopen_keeps_data_and_applies_no_migration() {
-    let (dir, storage) = temp_storage();
+    let (_dir, storage) = temp_storage();
     let root = storage.paths.root.clone();
     add(&storage, day("2026-10-07"), "main", "AWS 확인");
     storage.close();
@@ -34,12 +34,11 @@ fn reopen_keeps_data_and_applies_no_migration() {
     assert!(report.applied_migrations.is_empty());
     assert!(!report.created);
     assert_eq!(texts(&reopened, "2026-10-07"), vec!["AWS 확인"]);
-    drop(dir);
 }
 
 #[test]
 fn missing_configured_location_is_not_silently_recreated() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     let error = Storage::open(&dir.path().join("gone"), false).err().unwrap();
     assert_eq!(error.code(), "storage_missing");
     assert!(!dir.path().join("gone").exists(), "빈 저장소를 만들면 안 된다");
@@ -62,7 +61,7 @@ fn newer_database_is_refused() {
 
 #[test]
 fn failed_migration_rolls_back_completely() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     let paths = StoragePaths::new(dir.path().join("broken"));
     std::fs::create_dir_all(paths.data_dir()).unwrap();
     {
@@ -114,14 +113,11 @@ fn uncommitted_transaction_disappears_after_crash_and_committed_data_survives() 
     let (_dir, storage) = temp_storage();
     let root = storage.paths.root.clone();
     add(&storage, day("2026-10-07"), "main", "commit 된 메모");
-    // 쓰는 도중 꺼짐: transaction 을 열고 commit 없이 연결을 버린다.
-    {
-        let conn = plan_a_memo_lib::storage::open_connection(&storage.paths.db_path()).unwrap();
-        conn.execute_batch("BEGIN; UPDATE memo_items SET content_html = '반쯤 쓴 내용';").unwrap();
-        std::mem::forget(conn); // 정리(rollback/close) 없이 사라짐
-    }
+    // 쓰는 도중 꺼짐: transaction 을 열고 commit 없이 둔다. 재실행까지 정리(rollback/close)하지 않는다 — 테스트가 끝날 때 닫는다.
+    let crashed_conn = plan_a_memo_lib::storage::open_connection(&storage.paths.db_path()).unwrap();
+    crashed_conn.execute_batch("BEGIN; UPDATE memo_items SET content_html = '반쯤 쓴 내용';").unwrap();
     // 앱도 정상 종료 없이 꺼짐(WAL checkpoint 없음)
-    std::mem::forget(storage);
+    let _crashed_storage = storage;
     let (reopened, _) = Storage::open(&root, false).unwrap();
     assert_eq!(texts(&reopened, "2026-10-07"), vec!["commit 된 메모"]);
     let check: String = reopened.with_conn(|c| Ok(c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?)).unwrap();
@@ -130,7 +126,7 @@ fn uncommitted_transaction_disappears_after_crash_and_committed_data_survives() 
 
 #[test]
 fn inspect_location_rules() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     // 드라이브 최상위는 거절
     let root = std::path::Path::new(if cfg!(windows) { "C:\\" } else { "/" });
     assert!(inspect_location(root).problem.is_some());
@@ -231,7 +227,7 @@ fn install_folder_is_never_used_as_storage() {
 /// 올리기 전에 Backup 이 생긴다.
 #[test]
 fn upgrade_from_v1_database_keeps_everything_and_backs_up_first() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     let root = dir.path().join("PLAN-A Memo");
     let paths = StoragePaths::new(&root);
     paths.ensure_dirs().unwrap();
@@ -267,7 +263,7 @@ fn upgrade_from_v1_database_keeps_everything_and_backs_up_first() {
 
 #[test]
 fn migration_v5_backs_up_first_and_the_backup_restores_v4_data() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     let root = dir.path().join("PLAN-A Memo");
     let paths = StoragePaths::new(&root);
     paths.ensure_dirs().unwrap();

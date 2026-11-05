@@ -11,8 +11,7 @@
 // 어느 단계에서 실패하든 버전 파일·산출물은 시작 전으로 되돌린다(릴리스 노트만 남는다). 프로세스가 강제 종료되면 다음 실행이 먼저 되돌린다.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +31,7 @@ import {
   nodeBin,
   npmCli,
   parseVersion,
+  probeSigning,
   readRecord,
   readTransaction,
   readVersions,
@@ -40,7 +40,6 @@ import {
   rollbackTransaction,
   tauriCli,
   toolEnv,
-  verifySignature,
 } from './lib/release-lib.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -181,18 +180,13 @@ if (!env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
 }
 {
   // 작은 파일에 시험 서명 → 공개키로 확인. 틀리면 몇 분 뒤 빌드 끝에서야 실패하므로 여기서 멈춘다.
-  const probeDir = mkdtempSync(path.join(tmpdir(), 'plana-sign-'));
-  try {
-    const probe = path.join(probeDir, 'probe.bin');
-    writeFileSync(probe, 'plan-a-memo signing probe');
-    const r = spawnSync(node, [tauriCli(root), 'signer', 'sign', '--private-key-path', keyPath, probe], { cwd: root, env, stdio: 'ignore' });
-    if (r.status !== 0) fail('서명 시험에 실패했습니다 — 비밀번호를 확인해주세요(키 파일을 새로 만들지 마세요).');
-    const checked = verifySignature(readFileSync(probe), readFileSync(`${probe}.sig`, 'utf8'), pubkey);
-    if (!checked.ok) fail(`개인키와 staging.pub 이 짝이 아닙니다(${checked.reason}). 이대로 빌드하면 설치된 앱이 업데이트를 거부합니다.`);
-    info('비밀번호 확인 · 개인키와 공개키 짝 확인');
-  } finally {
-    rmSync(probeDir, { recursive: true, force: true });
-  }
+  // fail 은 process.exit 이라 finally 를 건너뛴다 — 임시 폴더를 지운 뒤에 멈춘다.
+  const problem = probeSigning({
+    pubkey,
+    signFile: probe => spawnSync(node, [tauriCli(root), 'signer', 'sign', '--private-key-path', keyPath, probe], { cwd: root, env, stdio: 'ignore' }).status === 0,
+  });
+  if (problem) fail(problem);
+  info('비밀번호 확인 · 개인키와 공개키 짝 확인');
 }
 
 // ── 4. 버전 ────────────────────────────────────────────────────────────

@@ -2,8 +2,8 @@
 // 개인키·비밀번호는 여기서 다루지 않는다(release-staging.mjs 가 빌드 프로세스 환경으로만 넘긴다).
 
 import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
 // ── 도구 경로 ──────────────────────────────────────────────────────────
@@ -184,6 +184,27 @@ export function verifySignature(data, signatureB64, pubkeyB64) {
   if (!globalOk) return { ok: false, reason: 'trusted comment 가 서명과 맞지 않습니다.' };
   const signedVersion = trusted.split('\t').find(field => field.startsWith('version:'))?.slice('version:'.length) ?? null;
   return { ok: true, signedVersion };
+}
+
+/**
+ * 작은 파일에 시험 서명 → 공개키로 확인. 문제가 있으면 안내 문구를, 없으면 null 을 돌려준다.
+ * signFile(경로) 은 `<경로>.sig` 를 만들고 성공 여부를 돌려준다. 어떤 경우에도 임시 폴더를 남기지 않는다.
+ */
+export function probeSigning({ signFile, pubkey, tmp = tmpdir() }) {
+  const dir = mkdtempSync(path.join(tmp, 'plana-sign-'));
+  try {
+    const probe = path.join(dir, 'probe.bin');
+    writeFileSync(probe, 'plan-a-memo signing probe');
+    if (!signFile(probe)) return '서명 시험에 실패했습니다 — 비밀번호를 확인해주세요(키 파일을 새로 만들지 마세요).';
+    const checked = verifySignature(readFileSync(probe), readFileSync(`${probe}.sig`, 'utf8'), pubkey);
+    return checked.ok ? null : `개인키와 staging.pub 이 짝이 아닙니다(${checked.reason}). 이대로 빌드하면 설치된 앱이 업데이트를 거부합니다.`;
+  } finally {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`시험 서명 임시 폴더를 지우지 못했습니다: ${dir} — ${error.message}`);
+    }
+  }
 }
 
 // ── 산출물 ─────────────────────────────────────────────────────────────

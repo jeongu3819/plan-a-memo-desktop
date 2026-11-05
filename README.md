@@ -37,7 +37,7 @@ npm run dev              # 화면 개발 서버만(브라우저에서는 로컬 
 
 ```bash
 npm run e2e:build && npm run e2e   # 실제 앱 E2E(개발용 Mock 서버) — e2e/README.md
-npm test                 # Frontend(vitest) — Web 공용 코드 테스트 포함
+npm test                 # Frontend(vitest) — Web 공용 코드 테스트 포함. 시작할 때 강제 종료로 남은 plana-test-* 임시 폴더를 치운다(scripts/tests/temp-dirs.mjs)
 npm run lint             # ESLint(React 에 SQL 금지 규칙 포함)
 npm run type-check
 npm run test:rust        # Rust — SQLite·Migration·Crash·위치 변경·Contract DTO·HTTP Adapter·Mock Sync·Auth·네트워크 오류 분류

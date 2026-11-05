@@ -11,8 +11,13 @@ pub const PNG: &[u8] = &[
     0xAE, 0x42, 0x60, 0x82,
 ];
 
+/// 이름에 프로세스 번호를 넣는다 — 강제 종료로 남으면 다음 `npm test` 가 치운다(scripts/tests/temp-dirs.mjs).
+pub fn temp_dir() -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(&format!("plana-test-rust-{}-", std::process::id())).tempdir().unwrap()
+}
+
 pub fn temp_storage() -> (tempfile::TempDir, Storage) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir();
     let root = dir.path().join("PLAN-A Memo");
     let (storage, _) = Storage::open(&root, true).unwrap();
     (dir, storage)

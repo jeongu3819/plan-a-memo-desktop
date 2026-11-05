@@ -25,11 +25,21 @@ const DATE: &str = "2026-11-04";
 const STYLED: &str = "경로에서 내용 업데이트<br>-&gt; 내용 입력<div><span style=\"color: rgb(1, 2, 3);\">글</span><br></div>";
 
 struct Env {
-    _dir: tempfile::TempDir,
     storage: Storage,
     mock: Arc<MockSyncTransport>,
     auth: Arc<DesktopAuth>,
     engine: SyncEngine,
+    // 맨 뒤 — 필드는 적은 순서로 정리된다. Windows 는 열린 DB 가 있으면 폴더를 지우지 못한다.
+    _dir: tempfile::TempDir,
+}
+
+#[tokio::test]
+async fn env_leaves_no_temp_folder_behind() {
+    let e = ready().await;
+    let dir = e._dir.path().to_path_buf();
+    assert!(e.storage.paths.db_path().is_file());
+    drop(e);
+    assert!(!dir.exists(), "DB 를 닫은 뒤 폴더가 지워진다");
 }
 
 async fn ready() -> Env {

@@ -335,8 +335,15 @@ try {
     const selection = getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
-    el.scrollTop = el.scrollHeight;
+    // 편집기는 안쪽 스크롤 없이 다 펼쳐진다 — 화면(바깥 스크롤)을 끝으로 내린다.
+    el.scrollIntoView({ block: 'end' });
   });
+  const outerScrollTop = el => {
+    let scroller = el.parentElement;
+    while (scroller && getComputedStyle(scroller).overflowY !== 'auto') scroller = scroller.parentElement;
+    return scroller.scrollTop;
+  };
+  const scrolledTo = await editable.evaluate(outerScrollTop);
   await page.keyboard.type('끝에 입력');
   await sleep(1200); // 자동 저장 반영까지
   const caret = await editable.evaluate(el => {
@@ -345,10 +352,12 @@ try {
     const before = document.createRange();
     before.selectNodeContents(el);
     before.setEnd(selection.anchorNode, selection.anchorOffset);
-    return { inside: el.contains(anchor), atEnd: before.toString().endsWith('끝에 입력'), scrollTop: el.scrollTop };
+    return { inside: el.contains(anchor), atEnd: before.toString().endsWith('끝에 입력'), innerScroll: el.scrollHeight - el.clientHeight };
   });
+  caret.scrollTop = await editable.evaluate(outerScrollTop);
   check(caret.inside && caret.atEnd, `자동 저장 뒤 커서 유지: ${JSON.stringify(caret)}`);
-  check(caret.scrollTop > 0, `자동 저장 뒤 편집기 스크롤 유지: ${caret.scrollTop}`);
+  check(caret.innerScroll <= 1, `편집기 안 스크롤 없음: ${caret.innerScroll}`);
+  check(caret.scrollTop > 0 && Math.abs(caret.scrollTop - scrolledTo) <= 1, `자동 저장 뒤 화면 스크롤 유지: ${scrolledTo} → ${caret.scrollTop}`);
   await page.locator('[data-testid="memo-header-date"]').click();
   rows.push({ window: 'default', scenario: 'caret-scroll', caret });
   console.log(`\n커서·스크롤: ${JSON.stringify(caret)}`);

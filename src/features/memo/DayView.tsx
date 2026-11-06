@@ -149,7 +149,8 @@ const Section = memo(function Section({
           )}
         </Box>
       )}
-      <Box sx={{ flex: grow ? '1 1 0' : '0 0 auto', minHeight: bodyMinHeight, display: 'flex', flexDirection: 'column' }}>
+      {/* Next List 도 기준 높이는 내용 높이(auto) — 남는 자리만 채우고 내용보다 작아지지 않는다(긴 메모가 카드 밖으로 나오지 않게). */}
+      <Box sx={{ flex: grow ? '1 0 auto' : '0 0 auto', minHeight: bodyMinHeight, display: 'flex', flexDirection: 'column' }}>
         {items.map((item, index) => (
           <DraggableMemo key={item.id} item={item} location={location} firstInPlace={index === 0} />
         ))}
@@ -342,7 +343,8 @@ export default function DayView({
       data-testid="personal-memo-day"
       sx={{
         display: 'flex', flexDirection: 'column', gap: 1, minHeight: 0,
-        ...(isNext ? { flex: 1 } : { flex: '0 0 auto' }),
+        // Next List: 창 높이를 채우되(짧을 때) 내용보다 줄지 않는다(길면 화면 스크롤로).
+        ...(isNext ? { flex: '1 0 auto' } : { flex: '0 0 auto' }),
         ...(activeItem ? { userSelect: 'none', '& *': { cursor: 'grabbing !important' } } : {}),
         '& [data-search-hit="true"]': {
           bgcolor: 'rgba(250, 204, 21, 0.16)',
@@ -357,7 +359,7 @@ export default function DayView({
           data-testid="personal-memo-day-sections"
           sx={{
             display: 'grid',
-            flex: isNext ? '1 1 0' : '0 0 auto',
+            flex: isNext ? '1 0 auto' : '0 0 auto',
             minHeight: 0,
             gap: { xs: 1.25, sm: 1.5 },
             gridTemplateColumns: isNext ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))',

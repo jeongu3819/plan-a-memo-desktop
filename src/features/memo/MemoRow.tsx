@@ -2,8 +2,12 @@
  * 메모 한 줄 — Web PersonalMemoRow 와 같은 모양·동작.
  *   체크박스(체크리스트) 또는 점(텍스트) · 본문 읽기 화면 → 누르면 그 자리에서 편집(Rich Editor)
  *   · 우클릭/⋮ 메뉴 · 끌기 손잡이. 바깥을 누르면 편집이 끝나고 자동 저장된다.
+ *
+ * 읽기 화면과 편집기는 같은 배치다 — 글자 크기·줄 높이·문단 간격이 같고(editorMatchSx), 편집기에 최대 높이가 없어
+ * 긴 메모도 안쪽 스크롤 없이 그대로 펼쳐진다(스크롤은 화면 하나). 누른 글자 자리에 커서가 놓이므로(editor/caretSpot)
+ * 읽던 자리에서 바로 고친다 — 편집을 시작·끝내도 높이와 스크롤 위치가 바뀌지 않는다.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Box, Button, Checkbox, IconButton, Tooltip, Typography } from '@mui/material';
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
@@ -15,6 +19,7 @@ import { RICH_LIST_INDENT, RICH_LIST_MARKER_GUTTER, RICH_LIST_WIDE_INDENT, richL
 import type { Location, MemoItem } from '../../domain/types';
 import MemoEditor from '../../editor/MemoEditor';
 import { withDisplayImageUrls } from '../../editor/displayHtml';
+import { caretSpotFromPoint, placeCaret, type CaretSpot } from '../../editor/caretSpot';
 import { usePersonalMemo } from './MemoProvider';
 import MemoMenu, { type MenuAnchor } from './MemoMenu';
 
@@ -33,6 +38,11 @@ const OVERLAY_SELECTOR = [
 
 const MARKER_WIDTH = 24;
 
+/**
+ * 편집기를 읽기 화면(PersonalMemoContentView)과 같은 배치로 — 편집을 시작해도 줄 높이·문단 간격이 그대로라
+ * 메모 높이가 변하지 않는다(긴 메모에서 줄마다 조금씩 줄어 카드가 작아지고 글이 위로 밀리지 않게).
+ * 편집기 기본값(문단·목록 줄 높이 1.55, 제목·인용 여백)을 읽기 화면 값으로 덮는다.
+ */
 function editorMatchSx(comfortable: boolean) {
   return {
     '& [contenteditable][contenteditable]': {
@@ -42,7 +52,10 @@ function editorMatchSx(comfortable: boolean) {
       p: 0,
       borderWidth: 0,
       color: comfortable ? MEMO_TEXT : 'text.primary',
-      '& p': { m: 0 },
+      '& p': { m: 0, lineHeight: 'inherit' },
+      '& li': { lineHeight: 'inherit' },
+      '& :is(h1, h2, h3, h4, h5, h6)': { m: 0, lineHeight: 'inherit', fontSize: 'revert' },
+      '& blockquote': { m: 0, pl: 0, borderLeft: 0, color: 'inherit' },
       // 들여쓰기 폭은 읽기 화면과 같은 값(utils/richListSx).
       '& ul, & ol': { m: 0, pl: RICH_LIST_MARKER_GUTTER },
       '& :is(ul, ol) :is(ul, ol)': { pl: RICH_LIST_INDENT },
@@ -70,11 +83,42 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
   const editing = editingId === item.id;
   const rowRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
+  /** 읽기 화면에서 누른 글자 자리 — 편집기가 열리면 그 자리에 커서. 키보드로 열면 없음(끝에). */
+  const caretSpot = useRef<CaretSpot | null>(null);
   const checklist = item.kind === 'checklist';
 
   useEffect(() => {
     if (editing) store.open(item);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing]);
+
+  /** 편집 시작·끝 직전의 화면 스크롤 — 바꾼 뒤 그리기 전에 되돌린다(아래 layout effect). */
+  const keptScroll = useRef<{ el: HTMLElement; top: number } | null>(null);
+
+  /**
+   * 읽기 화면 ↔ 편집기 전환. 둘은 같은 높이라 화면이 움직일 이유가 없지만, 전환하는 순간(새 쪽이 내용을 채우기 전)에
+   * 다른 곳이 배치를 재면(입력칸 자동 높이 등) 브라우저가 스크롤을 줄어든 높이에 맞춰 잘라 버린다 — 긴 메모에서 편집을
+   * 시작·끝낼 때 화면이 위로 튀던 원인(실측). 그래서 직전 스크롤을 기억했다가 그리기 전에 되돌린다.
+   * 포커스도 먼저 놓는다 — 포커스를 가진 요소(누른 읽기 화면·편집기)가 빠질 때도 WebView2 가 스크롤을 처음으로 돌린다.
+   */
+  const switchEditing = useCallback(
+    (next: string | null) => {
+      const row = rowRef.current;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && row?.contains(active)) active.blur();
+      let scroller = row?.parentElement ?? null;
+      while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+      keptScroll.current = scroller ? { el: scroller, top: scroller.scrollTop } : null;
+      setEditingId(next);
+    },
+    [setEditingId],
+  );
+
+  // 편집기·읽기 화면이 내용을 채운 뒤(자식 layout effect 다음), 그리기 전에 스크롤을 되돌린다.
+  useLayoutEffect(() => {
+    const kept = keptScroll.current;
+    keptScroll.current = null;
+    if (kept && kept.el.scrollTop !== kept.top) kept.el.scrollTop = kept.top;
   }, [editing]);
 
   useEffect(() => {
@@ -85,24 +129,19 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
       if (!target || !row || row.contains(target)) return;
       const overlay = target.closest?.(OVERLAY_SELECTOR);
       if (overlay && !overlay.contains(row)) return;
-      setEditingId(null);
+      switchEditing(null);
     };
     document.addEventListener('pointerdown', handler, true);
     return () => document.removeEventListener('pointerdown', handler, true);
-  }, [editing, setEditingId]);
+  }, [editing, switchEditing]);
 
   useEffect(() => {
     if (!editing) return undefined;
     const frame = requestAnimationFrame(() => {
       const editable = rowRef.current?.querySelector<HTMLElement>('[contenteditable="true"]');
-      if (!editable) return;
-      editable.focus({ preventScroll: true });
-      const range = document.createRange();
-      range.selectNodeContents(editable);
-      range.collapse(false);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
+      const spot = caretSpot.current;
+      caretSpot.current = null;
+      if (editable) placeCaret(editable, spot);
     });
     return () => cancelAnimationFrame(frame);
   }, [editing]);
@@ -128,7 +167,7 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
       onKeyDown={event => {
         if (editing && event.key === 'Escape' && !event.defaultPrevented) {
           event.stopPropagation();
-          setEditingId(null);
+          switchEditing(null);
         }
       }}
       sx={{
@@ -195,7 +234,8 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
               onChange={onChange}
               onUploadingChange={onUploading}
               onError={message => notify({ message, variant: 'error' })}
-              maxHeight={variant === 'compact' ? 260 : 520}
+              // 최대 높이 없음 — 긴 메모도 읽기 화면처럼 다 펼친다(편집기 안 스크롤 없이 화면 스크롤 하나).
+              maxHeight="none"
               // 편집 중 우클릭(서식 메뉴)에서도 행 메뉴와 같은 '맨 위로 보내기'. 본문 초안은 그대로 남는다.
               contextMenuActions={[{
                 key: 'move-top',
@@ -215,15 +255,21 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
             onClick={event => {
               event.stopPropagation();
               if ((window.getSelection()?.toString() || '').trim()) return;
-              if (onOpenEdit) onOpenEdit();
-              else setEditingId(item.id);
+              if (onOpenEdit) {
+                onOpenEdit();
+                return;
+              }
+              const content = event.currentTarget.querySelector<HTMLElement>('[data-testid="personal-memo-content"]');
+              caretSpot.current = content ? caretSpotFromPoint(content, event.clientX, event.clientY) : null;
+              switchEditing(item.id);
             }}
             onKeyDown={event => {
               if (event.key === 'Enter') {
                 event.preventDefault();
                 event.stopPropagation();
+                caretSpot.current = null;
                 if (onOpenEdit) onOpenEdit();
-                else setEditingId(item.id);
+                else switchEditing(item.id);
               }
             }}
             sx={{ cursor: 'text', outline: 'none', minHeight: 22 }}

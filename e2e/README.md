@@ -7,6 +7,7 @@ npm run e2e:build      # development debug 빌드(src-tauri/target/debug/PLAN-A 
 npm run e2e            # 전체 단계
 node e2e/section-heights.mjs   # 날짜 상세 메인·오전·오후 높이 — 실제 창 크기(기본·최소·최대화)별 측정·판정
 node e2e/long-memo-edit.mjs    # 긴 메모(1.2만~3.2만 자): 카드가 끝까지 감쌈 · 누른 글자 자리에서 바로 편집(높이·스크롤·커서 그대로, 편집기 안 스크롤 없음) — Next·List·DAY·다가오는 요일 (--baseline: 판정 없이 측정)
+node e2e/editor-edge-clip.mjs  # 편집 중 커서·글자·한글 조합 밑줄이 편집기 경계(첫·마지막 줄 맨 앞/끝, 빈 새 줄, 오른쪽 줄바꿈)에서 잘리지 않음 — overflow auto/visible 픽셀 비교, DAY 메인·오전·오후·Next·작은 창 (--os-ime: 실제 Windows 한국어 IME, 약 30초 키보드 사용)
 node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상태가 필요한 단계는 함께 지정)
 ```
 

@@ -51,6 +51,9 @@ function editorMatchSx(comfortable: boolean) {
       lineHeight: 1.6,
       p: 0,
       borderWidth: 0,
+      // 편집기는 스크롤 영역(overflow auto)이라 둥근 모서리(기본 12px)대로 내용을 자른다. 안쪽 여백이 0 이면 그 모서리가
+      // 글자에 바로 닿아, 첫·마지막 줄 맨 앞(뒤)의 커서·한글 조합 밑줄·글자 끝이 잘려 보였다(실측). 테두리·배경이 없으니 각지게.
+      borderRadius: 0,
       color: comfortable ? MEMO_TEXT : 'text.primary',
       '& p': { m: 0, lineHeight: 'inherit' },
       '& li': { lineHeight: 'inherit' },

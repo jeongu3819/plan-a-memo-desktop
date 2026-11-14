@@ -7,7 +7,7 @@
  *
  * 머리는 한 줄 — 왼쪽 표지(날짜·인사말), 오른쪽 조작 묶음(화면 이동 │ 도구). 본문 위에 따로 줄을 두지 않는다.
  * 오른쪽 도구는 어느 화면에서나 같은 순서·크기다: 검색 — 아이콘 자리가 입력칸으로 펼쳐지고 결과·찾아보기(즐겨찾기 · Next List ·
- * 지난 메모)는 본문에 · 오늘(**오늘 날짜의 상세**) · 연동(연결 상태·동기화·해제) · 지난 미완료 가져오기(날짜 상세에서만) · 설정.
+ * 지난 메모)는 본문에 · 오늘(**오늘 날짜의 상세**) · 연동(연결 상태·동기화·해제) · 지난 미완료 가져오기(날짜 상세에서만) · VOC 및 FAQ(PLAN-A Work /voc, 기본 브라우저) · 설정.
  * 날짜는 두 번 쓰지 않는다 — 큰 제목이 연·월·일(날짜 상세는 보고 있는 날짜, 그 밖에는 오늘)을, 작은 이동 영역은 요일만 보여 준다.
  * 주간은 요일 칸마다 날짜가 있으므로 ‹ › 만 둔다.
  * 날짜 이동은 도구 왼쪽의 ‹ › 뿐이다 — 같은 요일 고르기 메뉴는 두지 않는다(날짜 상세 아래 '다가오는 같은 요일' 카드가 대신한다).
@@ -22,6 +22,7 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import FeedbackOutlinedIcon from '@mui/icons-material/FeedbackOutlined';
 import { listen } from '@tauri-apps/api/event';
 import {
   addDays,
@@ -46,7 +47,7 @@ import { MEMO_SEARCH_HIGHLIGHT } from '../../vendor/plan-a-work/components/perso
 import type { DueReminder, Location, MemoSection } from '../../domain/types';
 import { isNextKey, koreanMonthDay, koreanWeekday, locationKey, parseLocationKey } from '../../domain/location';
 import { koreanLongDate } from '../../domain/dayTools';
-import { dayToolsService, isTauri } from '../../tauri/api';
+import { dayToolsService, errorMessage, isTauri, vocService } from '../../tauri/api';
 import { useDay, useLists, useNextList, useSyncOverview } from '../../services/queries';
 import { useAppUi } from '../../app/AppUi';
 import { SyncHeaderButton } from '../sync/SyncMark';
@@ -92,6 +93,51 @@ const HEADER_BUTTON_ACTIVE_SX = {
   bgcolor: 'rgba(37, 99, 235, 0.08)', color: 'primary.main', borderColor: 'rgba(37, 99, 235, 0.35)',
   '&:hover': { bgcolor: 'rgba(37, 99, 235, 0.12)', borderColor: 'rgba(37, 99, 235, 0.5)' },
 } as const;
+
+/**
+ * VOC 및 FAQ — PLAN-A Work 의 'VOC 및 FAQ'(/voc)를 기본 브라우저로 연다(Web 메뉴와 같은 이름·말풍선 아이콘).
+ * 주소는 앱이 이 빌드의 PLAN-A Work 주소로 만든다. 메모 내용은 보내지 않는다. 열지 못하면 이유를 알린다.
+ */
+const VOC_WIDE = '@media (min-width: 1000px)';
+
+function VocButton() {
+  const { notify } = usePersonalMemo();
+  const [opening, setOpening] = useState(false);
+  const open = async () => {
+    if (opening) return;
+    setOpening(true);
+    try {
+      await vocService.open();
+      notify({ message: '기본 브라우저에서 VOC 및 FAQ 를 열었습니다.' });
+    } catch (error) {
+      notify({ message: errorMessage(error, 'VOC 및 FAQ 를 열지 못했습니다.'), variant: 'error' });
+    } finally {
+      setOpening(false);
+    }
+  };
+  return (
+    <Tooltip title="VOC 및 FAQ" disableInteractive>
+      <Button
+        size="small"
+        aria-label="VOC 및 FAQ"
+        data-testid="open-voc"
+        onClick={() => void open()}
+        sx={{
+          ...HEADER_ICON_SX,
+          flexShrink: 0,
+          gap: 0.5,
+          // 넓은 창: 말풍선 + 'VOC'. 좁은 창(최소 850px 포함): 옆 버튼과 같은 32px 아이콘 — 제목과 도구가 한 줄에 남는다.
+          [VOC_WIDE]: { width: 'auto', px: 1 },
+        }}
+      >
+        <FeedbackOutlinedIcon sx={{ fontSize: 16 }} />
+        <Box component="span" data-testid="open-voc-label" sx={{ display: 'none', [VOC_WIDE]: { display: 'inline' } }}>
+          VOC
+        </Box>
+      </Button>
+    </Tooltip>
+  );
+}
 
 /** 동기화에 문제가 있을 때만 머리에 작게 보인다(평소에는 아무것도 없다). */
 function SyncProblems() {
@@ -264,9 +310,10 @@ export default function MemoWorkspace() {
     }
   };
 
-  // 오른쪽 도구 — 어느 화면에서나 [검색] [오늘] [연동] [가져오기] [설정]. 찾아보기 화면에서 검색을 다시 누르면 검색창으로 돌아간다.
+  // 오른쪽 도구 — 어느 화면에서나 [검색] [오늘] [연동] [가져오기] [VOC] [설정]. 찾아보기 화면에서 검색을 다시 누르면 검색창으로 돌아간다.
   const tools = (
-    <Box data-testid="memo-header-tools" sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+    // 좁은 창(1000px 미만)에서는 버튼 사이를 6px → 4px — VOC 가 더해져도 가장 긴 제목(예: September 30)과 한 줄에 든다.
+    <Box data-testid="memo-header-tools" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, [VOC_WIDE]: { gap: 0.75 } }}>
       {isBrowse ? (
         // 아이콘 자리가 그대로 검색 입력칸이 된다(Web 과 같은 인라인 검색). 결과·찾아보기는 본문에.
         <Box
@@ -326,6 +373,7 @@ export default function MemoWorkspace() {
         sx={HEADER_ICON_SX}
       />
       <CarryoverButton date={location?.kind === 'day' ? location.date : null} sx={HEADER_ICON_SX} />
+      <VocButton />
       <Tooltip title="설정" disableInteractive>
         <IconButton aria-label="설정" data-testid="open-settings" onClick={ui.openSettings} sx={HEADER_ICON_SX}>
           <SettingsOutlinedIcon sx={{ fontSize: 18 }} />
@@ -440,7 +488,7 @@ export default function MemoWorkspace() {
         </Box>
         <Box
           data-testid="personal-memo-view-header"
-          sx={{ ml: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', columnGap: 0.75, rowGap: 0.75, flexWrap: 'wrap', minHeight: 32, pt: 0.25 }}
+          sx={{ ml: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', columnGap: 0.5, [VOC_WIDE]: { columnGap: 0.75 }, rowGap: 0.75, flexWrap: 'wrap', minHeight: 32, pt: 0.25 }}
         >
           {/* 동기화에 문제가 있을 때만 작게 · 저장 상태(알릴 것이 있을 때만 — 비어 있으면 빈 자리) */}
           <SyncProblems />

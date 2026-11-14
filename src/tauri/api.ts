@@ -48,6 +48,8 @@ import type {
   UpdateStatus,
   VersionDetail,
   PreservedVersion,
+  RecurrenceInfo,
+  RecurrenceStopResult,
   WeekMemo,
 } from '../domain/types';
 import type { DateQuery } from '../domain/memoBrowse';
@@ -234,4 +236,19 @@ export const dayToolsService = {
   takeMissedReminders: () => call<DueReminder[]>('reminders_take_missed'),
   /** 알림을 눌러 열어 달라고 온 날짜(한 번 가져가면 비워진다) */
   takePendingOpen: () => call<string | null>('app_take_pending_open'),
+};
+
+/** 요일마다 생성 — 이 PC 의 반복 규칙(PLAN-A Work 로 보내지 않는다). 연결된 날짜에는 회차를 만들지 않는다. */
+export const recurrenceService = {
+  get: (itemId: string) => call<RecurrenceInfo>('recurrence_get', { itemId }),
+  /** 이미 반복 중이면 그대로 돌려준다(재클릭 안전) */
+  create: (itemId: string) => call<RecurrenceInfo>('recurrence_create', { itemId }),
+  stop: (ruleId: string) => call<RecurrenceStopResult>('recurrence_stop', { ruleId }),
+  /** 중지하면 정리될 회차 수(아무것도 바꾸지 않는다) — 확인창을 띄울지 정한다 */
+  stopPreview: (ruleId: string) => call<RecurrenceStopResult>('recurrence_stop_preview', { ruleId }),
+};
+
+/** VOC 및 FAQ — PLAN-A Work 의 /voc 를 기본 브라우저로 연다(주소는 앱이 정한다 · 메모 내용은 보내지 않는다). 연 주소를 돌려준다. */
+export const vocService = {
+  open: () => call<string>('open_voc'),
 };

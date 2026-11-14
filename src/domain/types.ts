@@ -466,3 +466,31 @@ export interface ManagementDay {
   reminderPending: boolean;
   reviews: CarryReview[];
 }
+
+/** 요일마다 생성(이 PC 의 반복 — PLAN-A Work 로 보내지 않는다). weekday: 0 = 일요일 … 6 = 토요일 */
+export interface RecurrenceRuleView {
+  id: string;
+  weekday: number;
+  sourceDate: string;
+  startsOn: string;
+  /** 이 메모가 반복의 원본인가 회차인가 */
+  role: 'source' | 'occurrence';
+  /** 오늘 이후 가장 가까운 회차 날짜 */
+  nextDate: string;
+}
+
+export interface RecurrenceInfo {
+  /** 메모가 속한 날짜의 요일(NEXT_LIST 면 null) */
+  weekday: number | null;
+  /** 진행 중인 반복(없으면 null) */
+  rule: RecurrenceRuleView | null;
+  /** 반복을 시작할 수 없는 이유(연결된 날짜 · List) */
+  blocked: string | null;
+}
+
+export interface RecurrenceStopResult {
+  /** 손대지 않은 앞으로의 회차를 정리한 수 */
+  removed: number;
+  /** 고쳤거나 완료해 남겨 둔 앞으로의 회차 수 */
+  kept: number;
+}

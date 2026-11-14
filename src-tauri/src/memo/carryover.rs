@@ -70,10 +70,12 @@ pub fn source_date_of(target: &str) -> AppResult<String> {
 /// D-7 의 미완료 체크리스트 중 아직 D 로 복사하지 않은 것(원본 순서: 메인 → 오전 → 오후).
 fn candidates(conn: &Connection, source: &str, target: &str) -> AppResult<Vec<MemoItem>> {
     let Some(doc) = repo::doc_for_location(conn, &Location::Day { date: source.to_string() })? else { return Ok(Vec::new()) };
-    let copied: Vec<String> = conn
+    let mut copied: Vec<String> = conn
         .prepare("SELECT source_item_id FROM item_copies WHERE target_date = ?1")?
         .query_map([target], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
+    // '요일마다 생성' 으로 이 날짜에 이미 회차가 있는 반복의 메모는 다시 권하지 않는다(같은 일이 두 번 생기지 않게).
+    copied.extend(super::recurrence::series_items_on(conn, target)?);
     let mut items: Vec<MemoItem> = repo::items_of(conn, &doc.id)?
         .into_iter()
         .filter(|item| item.kind == "checklist" && !item.completed && !copied.contains(&item.id))

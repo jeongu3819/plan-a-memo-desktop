@@ -7,13 +7,17 @@ import FormatListBulletedIcon from '@mui/icons-material/FormatListBulleted';
 import FormatIndentIncreaseIcon from '@mui/icons-material/FormatIndentIncrease';
 import FormatIndentDecreaseIcon from '@mui/icons-material/FormatIndentDecrease';
 import LinkIcon from '@mui/icons-material/Link';
+import FormatColorResetIcon from '@mui/icons-material/FormatColorReset';
 import {
     applyRichIndent,
     applyRichList,
     applyRichTextCommand,
     applyTextSize,
+    HIGHLIGHT_COLORS,
+    HIGHLIGHT_NONE,
     NUMERIC_TEXT_SIZES,
     selectionExplicitTextSizePx,
+    selectionHighlightColor,
     selectionLinkAnchor,
     selectionListState,
     selectionTextColor,
@@ -31,6 +35,8 @@ export interface RichTextContextMenuState {
     currentPx: number | null;
     /** 선택 위치에 지정된 글자 색(소문자 hex). 없으면 '기본 색'. 표시용. */
     currentColor?: string | null;
+    /** 선택 시작 위치의 배경색(소문자 hex). 없으면 null. 표시용. */
+    currentHighlight?: string | null;
     /** 연 순간의 굵게·밑줄·취소선·링크·목록 상태(표시용). */
     bold?: boolean;
     underline?: boolean;
@@ -69,6 +75,7 @@ function captureState(root: HTMLElement, range: Range, top: number, left: number
         top, left, range: range.cloneRange(),
         currentPx: selectionExplicitTextSizePx(root),
         currentColor: selectionTextColor(root),
+        currentHighlight: selectionHighlightColor(root),
         bold: query('bold'),
         underline: query('underline'),
         strike: query('strikeThrough'),
@@ -158,6 +165,10 @@ export default function RichTextContextMenu({
     };
     const size = (value: TextSize | null) => run(root => applyTextSize(root, value, { allowCollapsed: true }));
     const color = (value: string) => run(root => applyRichTextCommand(root, 'foreColor', value));
+    // 배경색 = 브라우저 기본 명령 한 번(실행 취소 한 단계). 연 순간의 선택(state.range)에만 적용한다.
+    // 제거는 배경 속성만 걷는다(굵게·글자색·크기·링크 그대로). 여러 색이 섞인 선택도 한 번에.
+    const highlight = (value: string) => run(root => applyRichTextCommand(root, 'hiliteColor', value));
+    const currentHighlight = state?.currentHighlight ?? null;
     const inList = !!state?.listKind;
     const currentColor = state?.currentColor ?? null;
 
@@ -258,6 +269,36 @@ export default function RichTextContextMenu({
                         </ButtonBase>
                     );
                 })}
+            </Box>
+            {sectionTitle('배경색')}
+            {/* 글자 색(동그라미)과 구분되게 둥근 네모. 옅은 색이 흰 메뉴에서도 보이도록 얇은 테두리. */}
+            <Box role="group" aria-label="배경색" sx={{ display: 'flex', gap: 0.75 }}>
+                {HIGHLIGHT_COLORS.map(({ value, label }) => {
+                    const active = currentHighlight === value.toLowerCase();
+                    return (
+                        <ButtonBase key={value} aria-label={`배경색 ${label}`} aria-pressed={active} title={`배경색 ${label}`}
+                            data-testid="rich-menu-highlight"
+                            onClick={() => highlight(value)}
+                            sx={{
+                                width: 24, height: 24, borderRadius: '6px',
+                                outline: active ? '2px solid' : 'none', outlineColor: 'text.primary',
+                                '&:hover': active ? {} : { outline: '2px solid', outlineColor: 'divider' },
+                                '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main' },
+                            }}>
+                            <Box sx={{ width: 18, height: 18, borderRadius: '4px', bgcolor: value, border: '1px solid rgba(28, 25, 23, 0.10)' }} />
+                        </ButtonBase>
+                    );
+                })}
+                <ButtonBase aria-label="배경색 제거" title="배경색 제거" data-testid="rich-menu-highlight-clear"
+                    onClick={() => highlight(HIGHLIGHT_NONE)}
+                    sx={{
+                        width: 24, height: 24, borderRadius: '6px', color: 'text.secondary',
+                        border: '1px solid', borderColor: 'divider',
+                        '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
+                        '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'primary.main' },
+                    }}>
+                    <FormatColorResetIcon sx={{ fontSize: 15 }} />
+                </ButtonBase>
             </Box>
             {sectionTitle('목록 · 들여쓰기')}
             <Box role="group" aria-label="목록" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>

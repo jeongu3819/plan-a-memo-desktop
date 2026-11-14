@@ -371,6 +371,11 @@ pub fn run() {
             commands::reminder_status,
             commands::reminders_take_missed,
             commands::app_take_pending_open,
+            commands::recurrence_get,
+            commands::recurrence_create,
+            commands::recurrence_stop,
+            commands::recurrence_stop_preview,
+            commands::open_voc,
         ])
         .run(tauri::generate_context!())
         .expect("PLAN-A Memo 실행 중 오류");

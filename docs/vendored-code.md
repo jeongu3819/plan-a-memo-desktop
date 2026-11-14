@@ -28,12 +28,12 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | 파일 | 변경 |
 |---|---|
 | `utils/richImage.ts` | **다시 작성**(export 이름·의미 동일). 보호 이미지 canonical 을 `/api/personal-memos/images/…` 대신 `attachment://<id>` 로, 화면 주소를 Bearer blob 대신 `http://attachment.localhost/<id>` 로. `serializeRichHtml` 은 화면 주소가 섞여도 `attachment://` 로 저장하고, **브라우징 컨텍스트 없는 문서**(`createHTMLDocument`)에서 복제·수정한다. `storedHtmlForDisplay` 추가(편집기에 넣기 전에 화면 주소로). `descriptionToPreviewText` 는 `div` 대신 inert `<template>` 로 파싱. 이 세 가지가 편집·저장 때 남던 `attachment://` 로딩 콘솔 오류(ERR_UNKNOWN_URL_SCHEME)의 원인이었다. `compressPastedImage` 는 원본 그대로 |
-| `components/RichDescriptionEditor.tsx` | 외부 value 동기화 한 줄: `el.innerHTML = storedHtmlForDisplay(value)` (원본은 `value` 를 그대로 넣고 나서 hydrate). `insertPlainText` 가 넣은 뒤 `revealSelection` 호출 |
+| `components/RichDescriptionEditor.tsx` | 외부 value 동기화 한 줄: `el.innerHTML = storedHtmlForDisplay(value)` (원본은 `value` 를 그대로 넣고 나서 hydrate). `insertPlainText` 가 넣은 뒤 `revealSelection` 호출. 문서 붙여넣기(`prepareDocumentPaste`)는 `sanitizeTaskDescriptionHtml(html, { dropItalic: true })` — 붙여넣은 기울임꼴만 일반 글씨로. 포커스를 잃을 때(`onBlur`)는 본문을 넣은 뒤 실제로 바꾼 적이 있을 때만 내보낸다(`touched`) — 정리 규칙과 다른 예전 HTML(예: `span style="font-style: italic"`)을 열고 닫기만 해도 다시 쓰여 저장·Sync 가 생기던 것을 막는다 |
 | `utils/richHtmlInsert.ts` | `revealSelection(root)` 추가 — `insertHtmlAsSingleTransaction` 끝에서 호출. `execCommand('insertHTML'/'insertText')` 는 캐럿으로 스크롤하지 않아 서식 있는 장문을 붙여넣으면 편집기가 위에 머문 채 커서가 화면 밖에 남았다. DOM 은 건드리지 않고(Undo 이력 그대로) 캐럿을 담은 스크롤 영역만 움직인다 |
-| `utils/taskDescription.ts` | `safeImageUrl` 에 `attachment://<uuid>` 허용 한 줄 추가(나머지 sanitizer 규칙 그대로) |
+| `utils/taskDescription.ts` | `safeImageUrl` 에 `attachment://<uuid>` 허용 한 줄 추가(나머지 sanitizer 규칙 그대로). `sanitizeTaskDescriptionHtml` 에 선택 인자 `{ dropItalic }` — 켜면 `<i>`·`<em>`(font-style italic/oblique·Word 클래스 규칙에서 만든 것 포함)을 글자만 남기고 표 칸의 `font-style` 을 뺀다. **붙여넣기 입구에서만** 켠다(저장된 메모를 다시 저장할 때는 HTML 그대로 — 열기·닫기로 저장·Sync 가 생기지 않게) |
 | `utils/inlineImageMetrics.ts` | 서버 보고 대신 no-op(같은 함수 모양) |
-| `components/RichTextContextMenu.tsx` | Web(commit `2b08b7b`) 메뉴 기준 + Desktop 추가: 취소선 버튼, 크기 순서(기본이 첫 칸), 지금 크기·색·링크 강조(`aria-pressed`), 들여쓰기 → 내어쓰기 순서 |
-| `utils/richTextFormatting.ts` | Web(commit `2b08b7b`)의 목록·들여쓰기 블록과 `applyTextSize` 의 `allowCollapsed` 를 옮김. Desktop 추가: `strikeThrough` 명령, 메뉴 표시용 `selectionExplicitTextSizePx`·`selectionTextColor`·`selectionLinkAnchor` |
+| `components/RichTextContextMenu.tsx` | Web(commit `2b08b7b`) 메뉴 기준 + Desktop 추가: 취소선 버튼, 크기 순서(기본이 첫 칸), 지금 크기·색·링크 강조(`aria-pressed`), 들여쓰기 → 내어쓰기 순서. **배경색**(Web `1b943fe` 의 HIGHLIGHT 메뉴): 글자 색상 아래 6색 + 제거, 지금 배경색 강조(`currentHighlight`) |
+| `utils/richTextFormatting.ts` | Web(commit `2b08b7b`)의 목록·들여쓰기 블록과 `applyTextSize` 의 `allowCollapsed` 를 옮김. Desktop 추가: `strikeThrough` 명령, 메뉴 표시용 `selectionExplicitTextSizePx`·`selectionTextColor`·`selectionLinkAnchor`. 배경색: `HIGHLIGHT_COLORS`(Web 값 + 회색 대신 연보라 `#DDD6FE`, 이름 포함)·`HIGHLIGHT_NONE`(transparent)·`hiliteColor` 명령(그때만 styleWithCSS)·`selectionHighlightColor`(DOM 기준). `handleRichTextShortcut` 은 Ctrl+I 를 막는다(기울임꼴을 편집 기능으로 제공하지 않음) |
 | `utils/richListSx.ts`, `components/personalMemo/PersonalMemoContentView.tsx`, `utils/taskDescription.ts`, `components/RichDescriptionEditor.tsx` | 같은 커밋의 목록 규칙만 옮김(`data-list-style` 통과, Tab·표기 Undo 처리, `contextMenuActions`). 편집기의 메뉴 '링크' 는 선택이 걸친 링크를 찾아 편집으로 연다(`onLink`) |
 | `components/personalMemo/personalMemoTheme.tsx` | Desktop 표면 톤: 창 바탕 `#F7F6F3`, 칸 경계를 반투명 선(`rgba(28,25,23,.07)`)으로, `MEMO_CARD_SHADOW`·`MEMO_CARD_SHADOW_HOVER` 추가, `MEMO_RADIUS` 18px → 14px, Today 배지 굵기 800 → 700. 다시 복사하면 이 값들만 다시 적용 |
 | `api/personalMemos.ts` | 원본 API 클라이언트 대신 **타입만**(`MemoSection`, `MemoKind`) |
@@ -55,4 +55,5 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 ## 가져오지 않은 것
 
 Web API 저장 코드(`api/client.ts`·axios·세션), `plan_a_session` Cookie, Dashboard/Project/Space 종속 코드,
-Router, Web 인증, 개발 중인 Sync/Auth/Device 코드, 반복(요일마다)·오늘 업무·작업노트 보내기(서버 기능).
+Router, Web 인증, 개발 중인 Sync/Auth/Device 코드, 오늘 업무·작업노트 보내기(서버 기능).
+반복(요일마다)은 Web 서버 기능을 가져오지 않고 Desktop 로컬 기능으로 새로 만들었다(`src-tauri/src/memo/recurrence.rs` — 규칙은 Sync 하지 않음).

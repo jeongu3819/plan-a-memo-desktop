@@ -442,8 +442,8 @@ step('header-today', async () => {
     page.$$eval('[data-testid="memo-header-tools"] > *', nodes =>
       nodes.map(n => n.getAttribute('data-testid') || n.querySelector('[data-testid]')?.getAttribute('data-testid')),
     );
-  const TOOLS = ['memo-search-open', 'memo-today', 'sync-header-button', 'carryover-open', 'open-settings'];
-  assert.deepEqual(await order(), TOOLS, '주간: 검색 → 오늘 → 연동 → 가져오기 → 설정');
+  const TOOLS = ['memo-search-open', 'memo-today', 'sync-header-button', 'carryover-open', 'open-voc', 'open-settings'];
+  assert.deepEqual(await order(), TOOLS, '주간: 검색 → 오늘 → 연동 → 가져오기 → VOC → 설정');
   assert.equal(await page.locator('[data-testid="open-settings"]').count(), 1, '설정 입구는 하나');
   assert.ok(await page.locator('[data-testid="carryover-open"]').isDisabled(), '주간에는 가져올 기준 날짜가 없다');
   // 같은 높이·세로 정렬
@@ -770,7 +770,7 @@ step('rich-menu', async () => {
   await selectText(editable, '가나다');
   await openMenu(page, editable);
   const menuText = await menuOf(page).innerText();
-  for (const word of ['글자 크기', '글자 색상', '목록 · 들여쓰기', '맨 위로 보내기', '기본']) assert.ok(menuText.includes(word), `메뉴에 ${word}`);
+  for (const word of ['글자 크기', '글자 색상', '배경색', '목록 · 들여쓰기', '맨 위로 보내기', '기본']) assert.ok(menuText.includes(word), `메뉴에 ${word}`);
   assert.equal(await pressed(page, '기본 크기'), 'true', '지정 없으면 기본 크기 강조');
   assert.equal(await pressed(page, '글자 크기 15'), 'false', '본문 크기를 숫자로 강조하지 않음');
   assert.equal(await pressed(page, '기본 색'), 'true');
@@ -808,10 +808,14 @@ step('rich-menu', async () => {
   await page.keyboard.press('Control+y');
   await saved(h => /<s>사아자<\/s>/.test(h), 'Redo 저장');
 
-  // 기존 단축키 — 기울임 Ctrl+I
+  // Ctrl+I — 기울임꼴은 편집 기능으로 제공하지 않는다(아무 서식도 생기지 않고 선택도 그대로)
   await selectText(editable, '차카타');
+  const beforeItalic = await html();
   await page.keyboard.press('Control+i');
-  await saved(h => /<(i|em)>차카타<\/(i|em)>/.test(h), 'Ctrl+I 저장');
+  await sleep(900);
+  assert.equal(await html(), beforeItalic, 'Ctrl+I 로 저장 내용이 바뀌지 않는다');
+  assert.equal(await editable.evaluate(el => el.querySelectorAll('i, em, [style*="italic"]').length), 0, '편집기에 기울임 없음');
+  assert.equal(await page.evaluate(() => window.getSelection().toString()), '차카타', 'Ctrl+I 후 선택 유지');
 
   // 글자 크기 — 기본 첫 칸, 현재 크기 강조, 기본으로 되돌리기
   await selectText(editable, '파하');
@@ -2241,6 +2245,435 @@ step(
   },
   { mockOnly: true },
 );
+
+// ── 배경색 · 기울임꼴 · 요일마다 생성 · VOC ──────────────────────────────────────────
+
+/** 글자가 들어 있는 첫 글자 노드부터 `root` 바로 아래까지 올라가며 처음 만나는 배경색(없으면 'none'). */
+const backgroundOf = (root, word) =>
+  root.evaluate((el, w) => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.textContent.includes(w)) continue;
+      for (let p = n.parentElement; p && p !== el; p = p.parentElement) {
+        const c = getComputedStyle(p).backgroundColor;
+        if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') return c;
+      }
+      return 'none';
+    }
+    return 'missing';
+  }, word);
+/** startWord 처음부터 endWord 끝까지 선택(문단을 넘어도 된다). */
+const selectBetween = (editable, startWord, endWord) =>
+  editable.evaluate((el, [a, b]) => {
+    const find = word => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const at = n.textContent.indexOf(word);
+        if (at >= 0) return [n, at];
+      }
+      throw new Error(`글자 없음: ${word}`);
+    };
+    const [sn, so] = find(a);
+    const [en, eo] = find(b);
+    el.focus();
+    const range = document.createRange();
+    range.setStart(sn, so);
+    range.setEnd(en, eo + b.length);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, [startWord, endWord]);
+const YELLOW = 'rgb(254, 240, 138)';
+const BLUE = 'rgb(191, 219, 254)';
+const PINK = 'rgb(251, 207, 232)';
+const GREEN = 'rgb(187, 247, 208)';
+
+step('rich-highlight', async () => {
+  const page = app.page;
+  const date = plusDays(today, 41);
+  const created = await addItem(date, 'main', '<p>사과 배 포도 귤 감</p><p>수박 참외</p>');
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const row = page.locator(`[data-memo-id="${created.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  const editable = row.locator('[contenteditable="true"]');
+  await editable.waitFor();
+  const html = async () => (await dayOf(date)).items.find(i => i.id === created.id).contentHtml;
+  const saved = (test, message) => waitFor(async () => test(await html()), message);
+  const click = async label => menuOf(page).locator(`[aria-label="${label}"]`).click();
+
+  // 굵게 위에 배경색 — 고른 글자에만, 다른 서식 그대로, 선택 유지, 다시 열면 강조
+  await selectText(editable, '사과');
+  await openMenu(page, editable);
+  await click('굵게');
+  await saved(h => /<(b|strong)>사과<\/(b|strong)>/.test(h), '굵게');
+  await selectBetween(editable, '사과', '배');
+  await openMenu(page, editable);
+  await app.shot('60-highlight-menu');
+  await click('배경색 연노랑');
+  await saved(h => h.includes('background-color: rgb(254, 240, 138)'), '배경색 저장');
+  assert.equal(await page.evaluate(() => window.getSelection().toString()), '사과 배', '색을 누른 뒤에도 선택 유지');
+  assert.equal(await backgroundOf(editable, '사과'), YELLOW);
+  assert.equal(await backgroundOf(editable, '배'), YELLOW);
+  assert.equal(await backgroundOf(editable, '포도'), 'none', '고르지 않은 글자는 그대로');
+  assert.match(await html(), /<(b|strong)>사과<\/(b|strong)>/, '굵게 유지');
+  await openMenu(page, editable);
+  assert.equal(await pressed(page, '배경색 연노랑'), 'true', '지금 배경색 강조');
+  await page.keyboard.press('Escape');
+
+  // 여러 줄 · 글자색과 함께
+  await selectBetween(editable, '감', '수박');
+  await openMenu(page, editable);
+  await click('배경색 연파랑');
+  await saved(h => (h.match(/rgb\(191, 219, 254\)/g) || []).length >= 2, '여러 줄 배경색');
+  assert.equal(await backgroundOf(editable, '감'), BLUE);
+  assert.equal(await backgroundOf(editable, '수박'), BLUE);
+  assert.equal(await backgroundOf(editable, '참외'), 'none');
+  await selectText(editable, '포도');
+  await openMenu(page, editable);
+  await click('글자 색 #EF4444');
+  await selectText(editable, '포도');
+  await openMenu(page, editable);
+  await click('배경색 연분홍');
+  await saved(h => h.includes('rgb(251, 207, 232)') && /color:\s*rgb\(239, 68, 68\)/.test(h), '글자색 + 배경색');
+  assert.equal(await backgroundOf(editable, '포도'), PINK);
+
+  // 일부만 제거 — 노랑 안의 '배' 만. 흰색을 칠하지 않고 속성을 걷는다. 옆 글자·굵게 그대로
+  await selectText(editable, '배');
+  await openMenu(page, editable);
+  await click('배경색 제거');
+  await waitFor(async () => (await backgroundOf(editable, '배')) === 'none', '일부 제거');
+  assert.equal(await backgroundOf(editable, '사과'), YELLOW, '옆 글자의 배경은 그대로');
+  await saved(h => h.includes('rgb(254, 240, 138)') && !/background-color:\s*(transparent|white|rgb\(255, 255, 255\))/.test(h), '제거 저장(투명·흰색 흔적 없음)');
+
+  // 여러 색이 섞인 전체를 한 번에 제거 → 저장 HTML 에 배경 속성이 없다. 굵게·글자색은 그대로
+  await selectText(editable);
+  await openMenu(page, editable);
+  await click('배경색 제거');
+  await saved(h => !/background/.test(h), '전체 제거');
+  const plain = await html();
+  assert.match(plain, /<(b|strong)>사과<\/(b|strong)>/, '제거 후 굵게 유지');
+  assert.match(plain, /color:\s*rgb\(239, 68, 68\)/, '제거 후 글자색 유지');
+  for (const w of ['사과', '배', '포도', '감', '수박', '참외']) assert.equal(await backgroundOf(editable, w), 'none', `${w} 배경 없음`);
+
+  // Undo → Redo
+  await page.keyboard.press('Control+z');
+  await saved(h => /background-color/.test(h), 'Undo 로 배경 복원');
+  await page.keyboard.press('Control+y');
+  await saved(h => !/background/.test(h), 'Redo 로 다시 제거');
+
+  // 남겨 둘 배경색 → 읽기 화면 · 재실행 후 같게
+  await selectText(editable, '참외');
+  await openMenu(page, editable);
+  await click('배경색 연초록');
+  await saved(h => h.includes('rgb(187, 247, 208)'), '연초록 저장');
+  await page.keyboard.press('Escape');
+  const content = row.locator('[data-testid="personal-memo-content"]');
+  await content.waitFor();
+  assert.equal(await backgroundOf(content, '참외'), GREEN, '읽기 화면에도 같은 배경');
+  await app.restart();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await openDate(date);
+  const after = app.page.locator(`[data-memo-id="${created.id}"]`);
+  assert.equal(await backgroundOf(after.locator('[data-testid="personal-memo-content"]'), '참외'), GREEN, '재실행 후 읽기 화면');
+  // 열고 닫기만 — 저장(수정 시각) 변화 없음
+  const before = (await dayOf(date)).items.find(i => i.id === created.id);
+  await after.locator('[aria-label="메모 편집"]').click();
+  const editor2 = after.locator('[contenteditable="true"]');
+  await editor2.waitFor();
+  assert.equal(await backgroundOf(editor2, '참외'), GREEN, '재실행 후 편집 화면');
+  await app.page.keyboard.press('Escape');
+  await sleep(1200);
+  const unchanged = (await dayOf(date)).items.find(i => i.id === created.id);
+  assert.equal(unchanged.updatedAt, before.updatedAt, '열고 닫기만 하면 저장하지 않는다');
+  assert.equal(unchanged.contentHtml, before.contentHtml);
+  await app.shot('61-highlight-read');
+});
+
+step('italic-paste', async () => {
+  const page = app.page;
+  const date = plusDays(today, 42);
+  // 예전에 저장된 기울임(Web 에서 받은 메모 등) — 화면에는 일반 글씨, 열고 닫아도 저장 HTML 그대로
+  const old = await addItem(date, 'main', '<p><em>예전 기울임</em> <span style="font-style: italic">스타일 기울임</span> 글자</p>');
+  const target = await addItem(date, 'am', '<p>붙여넣기 자리 </p>');
+  await openDate(date);
+  const italicCount = root =>
+    root.evaluate(el => Array.from(el.querySelectorAll('*')).filter(n => getComputedStyle(n).fontStyle !== 'normal').length);
+  const oldRow = page.locator(`[data-memo-id="${old.id}"]`);
+  assert.equal(await italicCount(oldRow.locator('[data-testid="personal-memo-content"]')), 0, '읽기 화면: 예전 기울임도 일반 글씨');
+  await oldRow.locator('[aria-label="메모 편집"]').click();
+  const oldEditor = oldRow.locator('[contenteditable="true"]');
+  await oldEditor.waitFor();
+  assert.equal(await italicCount(oldEditor), 0, '편집 화면: 일반 글씨');
+  await page.keyboard.press('Escape');
+  await sleep(1200);
+  const oldAfter = (await dayOf(date)).items.find(i => i.id === old.id);
+  assert.equal(oldAfter.contentHtml, old.contentHtml, '열기만 해서 HTML 을 다시 쓰지 않는다');
+  assert.equal(oldAfter.updatedAt, old.updatedAt, '열기만 해서 저장하지 않는다(Sync 도 없음)');
+
+  // Word 에서 복사한 HTML 붙여넣기 — 기울임만 빠지고 글자·다른 서식은 그대로
+  const row = page.locator(`[data-memo-id="${target.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  const editable = row.locator('[contenteditable="true"]');
+  await editable.waitFor();
+  const wordHtml =
+    '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head>'
+    + '<style><!-- p.MsoNormal{margin:0cm;font-size:11.0pt} .MsoItalicRun{font-style:italic} --></style></head><body lang=KO>'
+    + '<!--StartFragment--><p class=MsoNormal><i>워드 기울임</i> <span style="font-style:italic;color:#EF4444">빨간 기울임</span> '
+    + '<b><i>굵은 기울임</i></b> <span class=MsoItalicRun>클래스 기울임</span> <span style="font-style:oblique">비스듬</span> '
+    + '<u>밑줄</u> <span style="background:#FEF08A">노랑</span> <a href="https://example.com/doc">링크</a></p>'
+    + '<p class=MsoNormal><span style="font-style:italic"><span style="font-weight:bold">중첩 굵게</span></span></p><!--EndFragment--></body></html>';
+  await editable.evaluate((el, h) => {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el.querySelector('p'));
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const dt = new DataTransfer();
+    dt.setData('text/html', h);
+    dt.setData('text/plain', '워드 기울임 빨간 기울임 굵은 기울임 클래스 기울임 비스듬 밑줄 노랑 링크\n중첩 굵게');
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, wordHtml);
+  const html = async () => (await dayOf(date)).items.find(i => i.id === target.id).contentHtml;
+  await waitFor(async () => (await html()).includes('중첩 굵게'), '붙여넣기 저장');
+  const pasted = await html();
+  for (const text of ['붙여넣기 자리', '워드 기울임', '빨간 기울임', '굵은 기울임', '클래스 기울임', '비스듬', '밑줄', '노랑', '링크', '중첩 굵게']) {
+    assert.ok(pasted.includes(text), `글자 유지: ${text}`);
+  }
+  assert.doesNotMatch(pasted, /<(i|em)\b|italic|oblique/i, '기울임 없음');
+  assert.match(pasted, /<(b|strong)>(<[^>]+>)*굵은 기울임/, `굵게 유지: ${pasted}`);
+  assert.match(pasted, /<u>(<[^>]+>)*밑줄/, '밑줄 유지');
+  assert.match(pasted, /color:\s*rgb\(239, 68, 68\)/, '글자색 유지');
+  assert.match(pasted, /background-color:\s*rgb\(254, 240, 138\)/, '배경색 유지');
+  assert.match(pasted, /href="https:\/\/example\.com\/doc"/, '링크 유지');
+  assert.equal(await italicCount(editable), 0, '편집기 화면에도 기울임 없음');
+  await page.keyboard.press('Escape');
+  await app.shot('62-italic-paste');
+});
+
+const weekdayNameOf = date => `${['일', '월', '화', '수', '목', '금', '토'][new Date(`${date}T00:00:00Z`).getUTCDay()]}요일`;
+
+step('weekly-recurrence', async () => {
+  let page = app.page;
+  // 원본 날짜 — 앞 단계(login-link)가 오늘을 Mock 서버와 연결하므로 연결되지 않은 같은 요일(10주 뒤)을 쓴다.
+  const S = plusDays(today, 70);
+  const name = weekdayNameOf(S);
+  const tag = `VOC 개선사항 확인 ${Date.now() % 100000}`;
+  const source = await addItem(S, 'pm', `<p>${tag}</p>`);
+  await app.invoke('item_set_completed', { id: source.id, completed: true });
+  const occurrencesOn = async date => (await dayOf(date)).items.filter(i => i.contentHtml.includes(tag));
+  const rowMenu = async id => {
+    await page.locator(`[data-memo-id="${id}"] [aria-label="메모 편집"]`).first().click({ button: 'right' });
+    const menu = page.locator('[data-testid="personal-memo-menu"]');
+    await menu.waitFor();
+    // 메뉴를 연 뒤 읽은 반복 상태가 보일 때까지(읽는 동안은 이유 없이 꺼진 '○요일마다 생성').
+    // 앞 단계가 PLAN-A Work(Mock)와 연결한 날짜면 '연결된 날짜는 쓸 수 없어요' 로 꺼진 상태가 맞는 결과다.
+    await waitFor(
+      async () =>
+        (await menu.locator('[data-testid="memo-menu-repeat-status"]').count()) > 0 ||
+        (await menu.locator('[data-testid="memo-menu-repeat"]:not(.Mui-disabled)').count()) > 0 ||
+        (await menu.locator('[data-testid="memo-menu-repeat"]').filter({ hasText: '연결된 날짜는 쓸 수 없어요' }).count()) > 0,
+      '반복 메뉴 항목',
+    );
+    return menu;
+  };
+
+  // 메모 날짜의 요일로 문구가 정해진다(오늘이 아니라) — 지난 날짜·다른 요일
+  for (const offset of [-6, 2, 3, 4]) {
+    const date = plusDays(today, offset);
+    const item = await addItem(date, 'main', `요일 문구 ${offset}`);
+    await openDate(date);
+    const menu = await rowMenu(item.id);
+    const text = await menu.innerText();
+    assert.ok(text.includes(`${weekdayNameOf(date)}마다 생성`), `${date}: ${weekdayNameOf(date)}마다 생성 (${text.replace(/\n/g, ' / ')})`);
+    // 위치: 텍스트로 바꾸기 다음, 즐겨찾기 앞
+    const labels = text.split('\n').map(s => s.trim()).filter(Boolean);
+    const at = labels.findIndex(l => l.endsWith('마다 생성'));
+    assert.ok(at > labels.indexOf('텍스트로 바꾸기') && at < labels.indexOf('즐겨찾기'), `메뉴 순서 ${labels.join(' / ')}`);
+    await page.keyboard.press('Escape');
+    await app.invoke('item_delete', { id: item.id });
+  }
+
+  // 연결된 날짜(오늘이 연결된 경우)의 메모는 반복을 시작할 수 없다 — 꺼진 항목 + 이유
+  if ((await dayOf(today)).document?.syncEnabled) {
+    const linked = await addItem(today, 'main', '연결된 날짜 메모');
+    await openToday();
+    await page.locator(`[data-memo-id="${linked.id}"] [aria-label="메모 편집"]`).first().click({ button: 'right' });
+    const item = page.locator('[data-testid="personal-memo-menu"] [data-testid="memo-menu-repeat"]');
+    await page.locator('[data-testid="personal-memo-menu"]').filter({ hasText: 'Web 에 연결된 날짜는 쓸 수 없어요' }).waitFor();
+    assert.ok(await item.evaluate(el => el.classList.contains('Mui-disabled')), '연결된 날짜: 반복 시작 꺼짐');
+    await page.keyboard.press('Escape');
+    await app.invoke('item_delete', { id: linked.id });
+  }
+
+  // 원본 메모 → '○요일마다 생성'
+  await openDate(S);
+  let menu = await rowMenu(source.id);
+  await app.shot('63-recurrence-menu');
+  await menu.locator('[data-testid="memo-menu-repeat"]').click();
+  // 시작할 때 한 번 — 지금 내용으로 반복하며 원본을 고쳐도 바뀌지 않는다
+  await page.locator('[data-testid="personal-memo-inline-notice"]').filter({ hasText: `${name}마다 생성합니다` }).filter({ hasText: '원본을 고쳐도 바뀌지 않아요' }).waitFor();
+  const w1 = plusDays(S, 7);
+  const w2 = plusDays(S, 14);
+  // 다음 주·그다음 주 같은 요일 카드에 바로 보인다(그 날짜의 실제 메모)
+  for (const date of [w1, w2]) {
+    await page.locator(`[data-testid="upcoming-card-${date}"]`).filter({ hasText: tag }).waitFor({ timeout: 10000 });
+    const occ = await occurrencesOn(date);
+    assert.equal(occ.length, 1, `${date} 에 하나`);
+    assert.equal(occ[0].completed, false, '원본이 완료여도 새 회차는 미완료');
+    assert.equal(occ[0].section, 'pm', '같은 구역');
+    assert.notEqual(occ[0].id, source.id);
+  }
+  assert.equal((await occurrencesOn(S)).length, 1, '원본 날짜에 중복 없음');
+  assert.equal((await occurrencesOn(plusDays(S, 21))).length, 1, '더 먼 날짜는 그 날짜를 볼 때 만든다');
+  for (let i = 0; i < 4; i++) await app.invoke('memo_week', { monday: plusDays(w1, -weekdayIndex(w1)) });
+  for (const date of [w1, w2, plusDays(S, 21)]) assert.equal((await occurrencesOn(date)).length, 1, `${date} 여러 번 조회해도 하나`);
+  await app.shot('64-recurrence-upcoming');
+
+  // 반복 중 표시 — 원본·회차 모두, '이 항목만 삭제'
+  menu = await rowMenu(source.id);
+  let text = await menu.innerText();
+  assert.ok(text.includes(`${name}마다 생성 중`) && text.includes('반복 중지') && text.includes('이 항목만 삭제'), text);
+  assert.ok(text.includes('시작할 때 내용으로 만들어요'), `반복 내용 기준 안내: ${text}`);
+  await page.keyboard.press('Escape');
+  const [first] = await occurrencesOn(w1);
+  const [second] = await occurrencesOn(w2);
+  menu = await rowMenu(first.id);
+  text = await menu.innerText();
+  assert.ok(text.includes(`${name}마다 생성 중`), `회차 메뉴: ${text}`);
+  await page.keyboard.press('Escape');
+
+  // 그 날짜만 완료·수정
+  await app.invoke('item_set_completed', { id: first.id, completed: true });
+  await app.invoke('item_update_content', { id: first.id, html: `<p>${tag} — 이번 주만 메모</p>` });
+  assert.equal((await occurrencesOn(w2))[0].completed, false, '다른 날짜는 그대로');
+  assert.equal((await occurrencesOn(w2))[0].contentHtml, `<p>${tag}</p>`);
+  assert.equal((await occurrencesOn(S))[0].contentHtml, `<p>${tag}</p>`, '원본 그대로');
+
+  // 강제 종료 후 재실행 — 반복 유지, 중복 없음
+  await app.restart();
+  page = app.page;
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  const info = await app.invoke('recurrence_get', { itemId: source.id });
+  assert.ok(info.rule, '재실행 후에도 반복 중');
+  for (const date of [w1, w2]) assert.equal((await occurrencesOn(date)).length, 1, `재실행 후 ${date} 하나`);
+
+  // 반복 중지 — 정리할 회차가 있으면 확인창. 취소하면 아무것도 바뀌지 않는다
+  await openDate(S);
+  const confirm = page.locator('[data-testid="recurrence-stop-confirm"]');
+  menu = await rowMenu(source.id);
+  await menu.locator('[data-testid="memo-menu-repeat-stop"]').click();
+  await confirm.waitFor();
+  const confirmText = await confirm.innerText();
+  assert.ok(confirmText.includes(`${name} 반복을 중지할까요?`) && confirmText.includes('앞으로 새 메모를 만들지 않습니다'), confirmText);
+  assert.ok(confirmText.includes('손대지 않은 2개를 정리'), `정리 수(w2 · 3주 뒤): ${confirmText}`);
+  assert.ok(confirmText.includes('고치거나 완료한 이후 메모 1개') && confirmText.includes('History'), confirmText);
+  await app.shot('67-recurrence-stop-confirm');
+  await page.click('[data-testid="recurrence-stop-cancel"]');
+  await confirm.waitFor({ state: 'detached' });
+  assert.ok((await app.invoke('recurrence_get', { itemId: source.id })).rule, '취소: 반복 그대로');
+  assert.equal((await occurrencesOn(w2)).length, 1, '취소: 회차 그대로');
+  assert.equal((await occurrencesOn(plusDays(S, 21))).length, 1);
+  // 다시 → [반복 중지] — 손대지 않은 앞으로의 회차(w2·3주 뒤)만 정리, 완료·수정한 w1·원본은 그대로
+  menu = await rowMenu(source.id);
+  await menu.locator('[data-testid="memo-menu-repeat-stop"]').click();
+  await confirm.waitFor();
+  await page.click('[data-testid="recurrence-stop-submit"]');
+  await confirm.waitFor({ state: 'detached' });
+  await page.locator('[data-testid="personal-memo-inline-notice"]').filter({ hasText: '반복을 중지했습니다' }).waitFor();
+  assert.equal((await occurrencesOn(w1)).length, 1, '완료·수정한 회차는 남는다');
+  assert.equal((await occurrencesOn(w2)).length, 0, '손대지 않은 회차는 정리');
+  assert.equal((await occurrencesOn(plusDays(S, 21))).length, 0);
+  assert.equal((await occurrencesOn(plusDays(S, 28))).length, 0, '중지 후 새로 만들지 않는다');
+  assert.equal((await occurrencesOn(S)).length, 1, '원본 그대로');
+  assert.ok(!(await app.invoke('recurrence_get', { itemId: source.id })).rule);
+  menu = await rowMenu(source.id);
+  text = await menu.innerText();
+  assert.ok(text.includes(`${name}마다 생성`) && !text.includes('생성 중') && text.includes('삭제') && !text.includes('이 항목만'), text);
+  await page.keyboard.press('Escape');
+  void second;
+  assert.ok((await app.invoke('history_preserved')).some(v => v.reasonLabel === '반복 중지 전'), '정리 전 내용은 History 에');
+
+  // 정리할 앞으로의 회차가 없으면(모두 완료·수정) 확인창 없이 바로 중지
+  const T = plusDays(S, 35);
+  const tTag = `확인창 없음 ${Date.now() % 100000}`;
+  const tSource = await addItem(T, 'main', `<p>${tTag}</p>`);
+  await app.invoke('recurrence_create', { itemId: tSource.id });
+  for (const date of [plusDays(T, 7), plusDays(T, 14)]) {
+    for (const occ of (await dayOf(date)).items.filter(i => i.contentHtml.includes(tTag))) {
+      await app.invoke('item_set_completed', { id: occ.id, completed: true });
+    }
+  }
+  await openDate(T);
+  menu = await rowMenu(tSource.id);
+  await menu.locator('[data-testid="memo-menu-repeat-stop"]').click();
+  await page.locator('[data-testid="personal-memo-inline-notice"]').filter({ hasText: '이미 만든 메모는 그대로 둡니다' }).waitFor();
+  assert.equal(await confirm.count(), 0, '정리할 것이 없으면 확인창 없음');
+  assert.ok(!(await app.invoke('recurrence_get', { itemId: tSource.id })).rule, '바로 중지');
+  for (const date of [plusDays(T, 7), plusDays(T, 14)]) {
+    assert.equal((await dayOf(date)).items.filter(i => i.contentHtml.includes(tTag)).length, 1, `${date} 완료한 회차 그대로`);
+  }
+
+  // 정리 — 다른 단계에 영향 없게
+  for (const date of [S, w1]) for (const item of await occurrencesOn(date)) await app.invoke('item_delete', { id: item.id });
+  for (const date of [T, plusDays(T, 7), plusDays(T, 14)]) {
+    for (const item of (await dayOf(date)).items.filter(i => i.contentHtml.includes(tTag))) await app.invoke('item_delete', { id: item.id });
+  }
+});
+
+step('voc-button', async () => {
+  const page = app.page;
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  const check = async view => {
+    const order = await page.$$eval('[data-testid="memo-header-tools"] > *', nodes =>
+      nodes.map(n => n.getAttribute('data-testid') || n.querySelector('[data-testid]')?.getAttribute('data-testid')),
+    );
+    assert.equal(order.filter(t => t === 'open-voc').length, 1, `${view}: VOC 하나`);
+    assert.equal(order[order.indexOf('open-settings') - 1], 'open-voc', `${view}: 설정 바로 왼쪽 ${order.join(',')}`);
+    const [voc, settings] = await Promise.all(['open-voc', 'open-settings'].map(t => page.locator(`[data-testid="${t}"]`).boundingBox()));
+    assert.equal(Math.round(voc.height), Math.round(settings.height), `${view}: 같은 높이`);
+    assert.ok(voc.x + voc.width <= settings.x + 0.5, `${view}: 겹치지 않음`);
+  };
+  await check('주간');
+  // 툴팁 · 접근성 이름
+  const voc = page.locator('[data-testid="open-voc"]');
+  assert.equal(await voc.getAttribute('aria-label'), 'VOC 및 FAQ');
+  assert.equal((await voc.innerText()).trim(), 'VOC');
+  await voc.hover();
+  await page.locator('[role="tooltip"]').filter({ hasText: 'VOC 및 FAQ' }).waitFor();
+  await app.shot('65-voc-tooltip');
+  // 개발 빌드(Mock)는 PLAN-A Work 주소가 없다 — 아무 일 없이 끝나지 않고 이유를 알린다(staging·production 은 {서버}/voc 를 기본 브라우저로)
+  await voc.click();
+  await page.locator('[data-testid="personal-memo-inline-notice"]').filter({ hasText: 'VOC 및 FAQ' }).waitFor();
+  // 키보드로도
+  await voc.focus();
+  await page.keyboard.press('Enter');
+  await page.locator('[data-testid="personal-memo-inline-notice"]').filter({ hasText: 'VOC 및 FAQ' }).waitFor();
+  await page.mouse.move(5, 300);
+  // 날짜 상세 · 찾아보기 · 최소 창
+  await openToday();
+  await check('날짜 상세');
+  await page.click('[data-testid="memo-search-open"]');
+  await page.locator('[data-testid="memo-search-input"]').waitFor();
+  await check('찾아보기');
+  await page.click('[data-testid="memo-search-close"]');
+  // 최소 창(850px) — 버튼끼리·제목과 겹침·잘림은 date-labels 단계가 머리 줄의 모든 버튼(VOC 포함)으로 확인한다
+  await page.setViewportSize({ width: 850, height: 620 });
+  await sleep(200);
+  await openToday();
+  await check('최소 창 날짜 상세');
+  // 좁은 창에서는 옆 버튼과 같은 32px 아이콘(이름·툴팁은 그대로) — 제목과 도구가 한 줄에 남는다
+  const [narrow, gear] = await Promise.all(['open-voc', 'open-settings'].map(t => page.locator(`[data-testid="${t}"]`).boundingBox()));
+  assert.equal(Math.round(narrow.width), Math.round(gear.width), '최소 창: 아이콘 크기');
+  assert.equal(await page.locator('[data-testid="open-voc-label"]').isVisible(), false);
+  assert.equal(await page.locator('[data-testid="open-voc"]').getAttribute('aria-label'), 'VOC 및 FAQ');
+  const [toolsBox, headBox] = await Promise.all(['[data-testid="memo-header-tools"]', '[data-testid="memo-header-date"]'].map(s => page.locator(s).boundingBox()));
+  assert.ok(toolsBox.y < headBox.y + headBox.height, '최소 창: 제목과 도구가 한 줄');
+  await app.shot('66-voc-min-window');
+  await page.setViewportSize({ width: 1180, height: 760 });
+});
 
 const only = process.argv.slice(2);
 let failed = 0;

@@ -18,6 +18,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 4, name: "memo_sync_v2", sql: include_str!("../../../migrations/0004_memo_sync_v2.sql") },
     Migration { version: 5, name: "list_trash", sql: include_str!("../../../migrations/0005_list_trash.sql") },
     Migration { version: 6, name: "purged_attachments", sql: include_str!("../../../migrations/0006_purged_attachments.sql") },
+    Migration { version: 7, name: "weekly_recurrence", sql: include_str!("../../../migrations/0007_weekly_recurrence.sql") },
 ];
 
 pub fn latest_version() -> i64 {

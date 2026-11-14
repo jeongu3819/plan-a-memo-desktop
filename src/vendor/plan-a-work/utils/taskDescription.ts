@@ -183,7 +183,11 @@ function copyBlockFormatting(element: HTMLElement, attributes: Map<string, strin
   }
 }
 
-export function sanitizeTaskDescriptionHtml(value?: string | null): TaskDescriptionSanitizeResult {
+/** `dropItalic` — [PLAN-A Memo Desktop] 붙여넣기 입구에서만 켠다(저장된 메모를 다시 저장할 때는 HTML 을 바꾸지 않는다). */
+export function sanitizeTaskDescriptionHtml(
+  value?: string | null,
+  options: { dropItalic?: boolean } = {},
+): TaskDescriptionSanitizeResult {
   const source = value || '';
   if (!source || !/<\s*[a-zA-Z!/][^>]*>/.test(source)) {
     return { html: source, base64ImageCount: 0, removedStyleAttributeCount: 0 };
@@ -208,12 +212,20 @@ export function sanitizeTaskDescriptionHtml(value?: string | null): TaskDescript
       const allowed = ALLOWED_TAGS.has(element.tagName)
         && (element.tagName !== 'SPAN' || isMentionElement(element)
           || isTextSize(element.getAttribute('data-text-size')) || !!normalizeTextColor(element.style.color)
-          || !!normalizeTextColor(element.style.backgroundColor));
+          || !!normalizeTextColor(element.style.backgroundColor))
+        // [PLAN-A Memo Desktop] 붙여넣기 — 기울임(<i>·<em>, normalizeRichText 가 font-style: italic/oblique 와
+        // Word 클래스 규칙에서 만든 <em> 포함)은 글자만 남긴다.
+        && !(options.dropItalic && /^(EM|I)$/.test(element.tagName));
       if (!allowed) {
         element.replaceWith(...Array.from(element.childNodes));
         continue;
       }
       const result = copySafeAttributes(element);
+      if (options.dropItalic && /^(TD|TH)$/.test(element.tagName) && element.style.fontStyle) {
+        // 표 칸 서식(배경·정렬·밑줄 등)은 그대로, 칸 전체 기울임만 뺀다.
+        element.style.removeProperty('font-style');
+        if (!element.getAttribute('style')?.trim()) element.removeAttribute('style');
+      }
       if (result.removedStyle && element.tagName !== 'IMG') removedStyleAttributeCount += 1;
       if (result.base64Image) {
         base64ImageCount += 1;

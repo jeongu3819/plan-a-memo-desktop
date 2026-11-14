@@ -258,6 +258,9 @@ const RichDescriptionEditor: React.FC<Props> = ({
 }) => {
     const ref = useRef<HTMLDivElement>(null);
     const lastEmitted = useRef<string>('');
+    // [PLAN-A Memo Desktop] 본문을 넣은 뒤 사용자가 실제로 바꾼 적이 있는가. 포커스를 잃을 때(onBlur)는 바꾼 적이 있을 때만
+    // 내보낸다 — 열고 닫기만 해도 저장 HTML 이 정리 규칙대로 다시 쓰여(예: style 기울임 → <em>) 저장·Sync 가 생기지 않게.
+    const touched = useRef(false);
     const composing = useRef(false);
     // 업로드가 끝난 뒤 삽입하므로, 그 사이 편집기가 사라졌는지 확인할 근거가 필요하다.
     const mounted = useRef(true);
@@ -335,6 +338,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
         const normalized = html.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/gi, '').trim();
         const out = normalized === '' && !el.querySelector('img,table') ? '' : html;
         lastEmitted.current = out;
+        touched.current = true;
         onChange(out);
     }, [onChange]);
 
@@ -366,6 +370,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
         // 저장된 열 너비/행 최소 높이를 다시 화면 크기로 펼친다(재조회 후 같은 크기 유지).
         applyTableSizing();
         lastEmitted.current = value || '';
+        touched.current = false;
     }, [value, applyTableSizing]);
 
     const insertHtmlAtSelection = useCallback((html: string) => {
@@ -965,7 +970,8 @@ const RichDescriptionEditor: React.FC<Props> = ({
         const plan = buildPastedImagePlan(result, budget);
         // sanitizer 를 지나는 동안 이미지 자리는 텍스트 표식으로 둔다(자리·순서 보존).
         const extracted = extractImagePlaceholders(result.html);
-        const sanitized = sanitizeTaskDescriptionHtml(extracted.html);
+        // [PLAN-A Memo Desktop] 붙여넣은 기울임꼴은 일반 글씨로(다른 서식은 그대로).
+        const sanitized = sanitizeTaskDescriptionHtml(extracted.html, { dropItalic: true });
         const acceptedRefs = new Set(plan.slots.map((slot) => slot.ref));
         const html = restoreImagePlaceholders(
             sanitized.html, extracted.refs, acceptedRefs, PENDING_IMAGE_SRC,
@@ -1837,7 +1843,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
                     emit();
                     mentions.refresh();
                 }}
-                onBlur={() => { emit(); setTextSelectionRect(null); mentions.close(); }}
+                onBlur={() => { if (touched.current) emit(); setTextSelectionRect(null); mentions.close(); }}
                 onCompositionStart={() => { composing.current = true; }}
                 onCompositionEnd={() => { composing.current = false; emit(); mentions.refresh(); }}
                 onPaste={handlePaste}

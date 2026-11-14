@@ -73,6 +73,12 @@ ol[data-list-style="decimal"][data-list-style] { list-style-type: decimal; }
 ol[data-list-style="paren"][data-list-style] { list-style-type: rich-paren; }
 ol[data-list-style="circled"][data-list-style] { list-style-type: rich-circled; }
 ol[data-list-style="circled"][data-list-style] > li:nth-of-type(n+21) { list-style-type: decimal; }
+/* [PLAN-A Memo Desktop] 기울임꼴은 서식으로 쓰지 않는다. 예전에 저장됐거나 Web 에서 받은 <em>/<i>·font-style 도
+   편집기·읽기 화면(History 포함)에서 일반 글씨로 그린다 — 표시만 바꾼다(저장 HTML 을 다시 쓰거나 Sync 를 일으키지 않는다). */
+:is([contenteditable="true"], [data-testid="personal-memo-content"]) :is(em, i, cite, dfn, var, address),
+:is([contenteditable="true"], [data-testid="personal-memo-content"]) :is([style*="italic" i], [style*="oblique" i]) {
+  font-style: normal !important;
+}
 /* 표 자체의 위치(Word 가운데 정렬 표). 셀 안 글자 정렬(td/th data-align)과는 별개다. */
 table[data-align="center"][data-align] { margin-left: auto !important; margin-right: auto !important; }
 table[data-align="right"][data-align] { margin-left: auto !important; margin-right: 0 !important; }

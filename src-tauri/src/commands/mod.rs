@@ -14,7 +14,8 @@ use crate::auth::loopback::{self, LoopbackListener};
 use crate::auth::{AuthProvider, AuthStatus, LoginStart, LogoutResult};
 use crate::error::{AppError, AppResult};
 use crate::memo::{
-    carryover, export, history, repo, search, service, trash, DayMemo, LocatedItem, Location, MemoItem, NextListInfo, NextListMemo, WeekMemo,
+    carryover, export, history, recurrence, repo, search, service, trash, DayMemo, LocatedItem, Location, MemoItem, NextListInfo,
+    NextListMemo, WeekMemo,
 };
 use crate::reminders;
 use crate::state::{AppState, StorageStatus};
@@ -160,14 +161,66 @@ pub async fn backup_list(state: State<'_, AppState>) -> Cmd<Vec<backup::BackupIn
 
 // ── 메모 읽기 ───────────────────────────────────────────────────────────
 
+/// 날짜를 읽기 전에 '요일마다 생성' 회차를 채운다(가까운 2주 + 읽는 날짜). 실패해도 읽기는 계속한다 — 회차는 다음에 다시 만든다.
+fn fill_recurrences(storage: &Storage, dates: &[String]) {
+    if let Err(error) = storage.with_conn(|c| recurrence::materialize(c, &storage.paths, &local_today(), dates)) {
+        log::warn!("recurrence materialize skipped: {}", error.code());
+    }
+}
+
 #[tauri::command]
 pub async fn memo_week(state: State<'_, AppState>, monday: String) -> Cmd<WeekMemo> {
-    state.storage()?.with_conn(|c| service::get_week(c, &monday))
+    let storage = state.storage()?;
+    if let Ok(start) = chrono::NaiveDate::parse_from_str(&monday, "%Y-%m-%d") {
+        let dates: Vec<String> = (0..7).map(|i| (start + chrono::Duration::days(i)).format("%Y-%m-%d").to_string()).collect();
+        fill_recurrences(&storage, &dates);
+    }
+    storage.with_conn(|c| service::get_week(c, &monday))
 }
 
 #[tauri::command]
 pub async fn memo_day(state: State<'_, AppState>, date: String) -> Cmd<DayMemo> {
-    state.storage()?.with_conn(|c| service::get_day(c, &date))
+    let storage = state.storage()?;
+    fill_recurrences(&storage, std::slice::from_ref(&date));
+    storage.with_conn(|c| service::get_day(c, &date))
+}
+
+// ── 요일마다 생성(이 PC 의 반복 — PLAN-A Work 로 보내지 않는다) ─────────────────
+
+#[tauri::command]
+pub async fn recurrence_get(state: State<'_, AppState>, item_id: String) -> Cmd<recurrence::RecurrenceInfo> {
+    state.storage()?.with_conn(|c| recurrence::info(c, &item_id, &local_today()))
+}
+
+#[tauri::command]
+pub async fn recurrence_create(state: State<'_, AppState>, item_id: String) -> Cmd<recurrence::RecurrenceInfo> {
+    let storage = state.storage()?;
+    storage.with_conn(|c| recurrence::create(c, &storage.paths, &item_id, &local_today()))
+}
+
+#[tauri::command]
+pub async fn recurrence_stop(state: State<'_, AppState>, rule_id: String) -> Cmd<recurrence::StopResult> {
+    state.storage()?.with_conn(|c| recurrence::stop(c, &rule_id, &local_today()))
+}
+
+/// 중지 확인창용 — 정리될 회차 수(아무것도 바꾸지 않는다).
+#[tauri::command]
+pub async fn recurrence_stop_preview(state: State<'_, AppState>, rule_id: String) -> Cmd<recurrence::StopResult> {
+    state.storage()?.with_conn(|c| recurrence::stop_preview(c, &rule_id, &local_today()))
+}
+
+// ── VOC 및 FAQ ──────────────────────────────────────────────────────────
+
+/// PLAN-A Work 의 'VOC 및 FAQ'(전역 경로 `/voc`)를 기본 브라우저로 연다. 주소는 이 빌드의 PLAN-A Work origin 에서만
+/// 만든다(화면이 보낸 주소를 열지 않는다). 메모 내용은 보내지 않는다. 개발 빌드(Mock 서버)는 열 곳이 없다.
+#[tauri::command]
+pub async fn open_voc(state: State<'_, AppState>, app: AppHandle) -> Cmd<String> {
+    let Some(origin) = state.env.server_origin.as_deref() else {
+        return Err(AppError::new("voc_unavailable", "개발 빌드에는 PLAN-A Work 주소가 없어 VOC 및 FAQ 를 열 수 없습니다."));
+    };
+    let url = format!("{origin}/voc");
+    app.opener().open_url(&url, None::<&str>).map_err(|_| AppError::new("open_failed", "브라우저를 열지 못했습니다."))?;
+    Ok(url)
 }
 
 #[tauri::command]

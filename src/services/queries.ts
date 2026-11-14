@@ -9,6 +9,7 @@ import {
   dayMemoService,
   dayToolsService,
   historyService,
+  recurrenceService,
   nextListService,
   searchService,
   syncService,
@@ -33,6 +34,7 @@ export const keys = {
   carryover: (date: string) => ['memo', 'carryover', date] as const,
   reminder: (date: string) => ['memo', 'reminder', date] as const,
   management: (date: string) => ['memo', 'management', date] as const,
+  recurrence: (itemId: string) => ['memo', 'recurrence', itemId] as const,
   reminderStatus: ['reminder-status'] as const,
   sync: ['sync'] as const,
   syncOverview: ['sync', 'overview'] as const,
@@ -83,6 +85,10 @@ export const useReminder = (date: string | null) =>
 /** 연결된 날짜의 공통 관리 요약(memo-sync-v2) — 'memo' 아래라 Sync·편집 뒤 함께 다시 읽는다. */
 export const useManagementDay = (date: string | null) =>
   useQuery({ queryKey: keys.management(date ?? ''), queryFn: () => dayToolsService.management(date!), enabled: !!date });
+
+/** 메모 메뉴를 열 때만 읽는다 — 'memo' 아래라 쓰기 뒤 함께 다시 읽는다. */
+export const useRecurrence = (itemId: string, enabled: boolean) =>
+  useQuery({ queryKey: keys.recurrence(itemId), queryFn: () => recurrenceService.get(itemId), enabled, staleTime: 0 });
 
 export const useReminderStatus = (enabled: boolean) =>
   useQuery({ queryKey: keys.reminderStatus, queryFn: dayToolsService.reminderStatus, enabled });

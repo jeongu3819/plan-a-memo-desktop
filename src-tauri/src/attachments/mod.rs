@@ -182,13 +182,18 @@ pub struct CleanupReport {
     pub dry_run: bool,
 }
 
-/// DB 의 모든 참조 — 현재 메모(삭제된 항목 포함), History Snapshot, 비교(Conflict) Snapshot.
+/// DB 의 모든 참조 — 현재 메모(삭제된 항목 포함), History Snapshot, 비교(Conflict) Snapshot,
+/// 진행 중인 '요일마다 생성' 의 본문(앞으로 만들 회차가 복제할 이미지).
 fn referenced_ids(conn: &Connection) -> AppResult<std::collections::HashSet<String>> {
     let mut ids = std::collections::HashSet::new();
+    // 예전 버전의 Backup 에는 반복 표가 없다 — 없으면 건너뛴다(읽지 못한 Backup 으로 보면 정리가 멈춘다).
+    let has_recurrence: bool =
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memo_recurrences')", [], |r| r.get(0))?;
     for sql in [
         "SELECT content_html FROM memo_items",
         "SELECT snapshot_json FROM document_versions",
         "SELECT local_snapshot_json || remote_snapshot_json FROM conflicts",
+        if has_recurrence { "SELECT content_html FROM memo_recurrences WHERE stopped_at IS NULL" } else { "SELECT '' WHERE 0" },
     ] {
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;

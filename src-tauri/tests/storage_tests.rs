@@ -248,7 +248,11 @@ fn upgrade_from_v1_database_keeps_everything_and_backs_up_first() {
         .unwrap();
     }
     let (storage, report) = Storage::open(&root, false).unwrap();
-    assert_eq!(report.applied_migrations, vec![2, 3, 4, 5, 6], "v1 → 최신(v2 memo-sync-v1, v3 날짜 도구, v4 memo-sync-v2, v5 List 휴지통, v6 이미지 정리 대기) 차례로");
+    assert_eq!(
+        report.applied_migrations,
+        vec![2, 3, 4, 5, 6, 7],
+        "v1 → 최신(v2 memo-sync-v1, v3 날짜 도구, v4 memo-sync-v2, v5 List 휴지통, v6 이미지 정리 대기, v7 요일마다 생성) 차례로"
+    );
     assert!(report.backup_before_migration.is_some(), "migration 전 Backup");
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM memo_items WHERE content_html = '<b>회의</b>'"), 1);
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM conflicts WHERE id = 'c1' AND status = 'open'"), 1, "충돌 기록 보존(테이블 교체)");
@@ -289,7 +293,7 @@ fn migration_v5_backs_up_first_and_the_backup_restores_v4_data() {
         tx.commit().unwrap();
     }
     let (storage, report) = Storage::open(&root, false).unwrap();
-    assert_eq!(report.applied_migrations, vec![5, 6]);
+    assert_eq!(report.applied_migrations, vec![5, 6, 7]);
     assert_eq!(count(&storage, "SELECT COUNT(*) FROM memo_items WHERE id = 'i1'"), 1, "기존 메모 그대로");
     let entries = storage.with_conn(|c| plan_a_memo_lib::memo::trash::entries(c)).unwrap();
     assert!(entries.is_empty(), "예전에 지운 List 가 휴지통에 나타나거나 지워지지 않는다");
@@ -310,6 +314,6 @@ fn migration_v5_backs_up_first_and_the_backup_restores_v4_data() {
     restored.ensure_dirs().unwrap();
     std::fs::copy(&backup, restored.db_path()).unwrap();
     let (reopened, report) = Storage::open(&restored_root, false).unwrap();
-    assert_eq!(report.applied_migrations, vec![5, 6], "Backup 으로 되돌린 뒤 다시 열어도 같은 Migration");
+    assert_eq!(report.applied_migrations, vec![5, 6, 7], "Backup 으로 되돌린 뒤 다시 열어도 같은 Migration");
     assert_eq!(count(&reopened, "SELECT COUNT(*) FROM memo_items WHERE id = 'i1'"), 1);
 }

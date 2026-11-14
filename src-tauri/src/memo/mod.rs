@@ -7,6 +7,7 @@
 pub mod carryover;
 pub mod export;
 pub mod history;
+pub mod recurrence;
 pub mod repo;
 pub mod search;
 pub mod service;

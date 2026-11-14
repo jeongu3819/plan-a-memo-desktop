@@ -233,13 +233,14 @@ describe('서식 메뉴', () => {
     return { menu, button, onClose, onFormat, onLink };
   }
 
-  it('영역 순서: 기본 서식 → 크기 → 색상 → 목록·들여쓰기 → 항목 명령', () => {
+  it('영역 순서: 기본 서식 → 크기 → 글자 색상 → 배경색 → 목록·들여쓰기 → 항목 명령', () => {
     const { menu } = renderMenu({}, [{ key: 'move-top', label: '맨 위로 보내기', onSelect: () => undefined }]);
     const labels = Array.from(menu.querySelectorAll('button')).map(b => b.getAttribute('aria-label'));
     expect(labels.slice(0, 4)).toEqual(['굵게', '밑줄', '취소선', '링크']);
     expect(labels.slice(4, 14)).toEqual(['기본 크기', ...['12', '13', '14', '15', '16', '18', '20', '22', '24'].map(s => `글자 크기 ${s}`)]);
     expect(labels.slice(14, 20)).toEqual(['기본 색', '글자 색 #EF4444', '글자 색 #F59E0B', '글자 색 #22C55E', '글자 색 #3B82F6', '글자 색 #8B5CF6']);
-    expect(labels.slice(20)).toEqual(['글머리 기호', '번호 1.', '번호 1)', '원형 숫자 ①', '들여쓰기', '내어쓰기', '맨 위로 보내기']);
+    expect(labels.slice(20, 27)).toEqual([...['연노랑', '연주황', '연분홍', '연초록', '연파랑', '연보라'].map(c => `배경색 ${c}`), '배경색 제거']);
+    expect(labels.slice(27)).toEqual(['글머리 기호', '번호 1.', '번호 1)', '원형 숫자 ①', '들여쓰기', '내어쓰기', '맨 위로 보내기']);
   });
 
   it('지금 서식을 강조한다 — 지정 없으면 기본 크기·기본 색', () => {

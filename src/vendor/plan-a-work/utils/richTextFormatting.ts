@@ -17,6 +17,22 @@ export type PresetTextSize = typeof TEXT_SIZES[number];
 export type NumericTextSize = `${number}`;
 export type TextSize = PresetTextSize | NumericTextSize;
 export const TEXT_COLORS = ['#374151', '#EF4444', '#F59E0B', '#22C55E', '#3B82F6', '#8B5CF6'];
+/**
+ * 배경색(형광펜) — 저장 계약은 붙여넣기와 같은 `span style="background-color"`(normalizeRichText·
+ * sanitizer·백엔드 _is_span_style 이 이미 받는 형식). 글자가 읽히는 옅은 색만 둔다.
+ * [PLAN-A Memo Desktop] Web(HIGHLIGHT_COLORS)과 같은 값을 쓰고, 회색 대신 연보라(#DDD6FE, 같은 200 단계)를 둔다.
+ */
+export const HIGHLIGHT_COLORS: readonly { value: string; label: string }[] = [
+    { value: '#FEF08A', label: '연노랑' },
+    { value: '#FED7AA', label: '연주황' },
+    { value: '#FBCFE8', label: '연분홍' },
+    { value: '#BBF7D0', label: '연초록' },
+    { value: '#BFDBFE', label: '연파랑' },
+    { value: '#DDD6FE', label: '연보라' },
+];
+/** 배경색 제거 값 — 브라우저가 선택 범위의 배경만 걷어 내고(감싼 span 은 쪼갬) 저장 시 흔적이 남지 않는다
+ * (투명은 normalizeTextColor 가 받지 않으므로 저장 HTML 에 background 속성이 남지 않는다 — 흰색을 칠하는 것이 아니다). */
+export const HIGHLIGHT_NONE = 'transparent';
 export const isNumericTextSize = (value: string | null): value is NumericTextSize =>
     !!value && /^\d{1,2}$/.test(value) && Number(value) >= TEXT_SIZE_MIN_PX && Number(value) <= TEXT_SIZE_MAX_PX;
 export const isTextSize = (value: string | null): value is TextSize =>
@@ -323,7 +339,7 @@ export function normalizeTableSpans(root: ParentNode): void {
     });
 }
 
-export type RichTextCommand = 'bold' | 'underline' | 'strikeThrough' | 'fontSize' | 'foreColor';
+export type RichTextCommand = 'bold' | 'underline' | 'strikeThrough' | 'fontSize' | 'foreColor' | 'hiliteColor';
 export function applyRichTextCommand(root: HTMLElement | null, command: RichTextCommand, value?: string): boolean {
     const selection = window.getSelection();
     if (!root || !selection?.rangeCount || !root.contains(selection.getRangeAt(0).commonAncestorContainer)) return false;
@@ -331,8 +347,10 @@ export function applyRichTextCommand(root: HTMLElement | null, command: RichText
     if (anchor?.closest('[data-mention-user-id]')) return false;
     root.focus({ preventScroll: true });
     // Native commands retain undo and collapsed-selection typing semantics.
-    document.execCommand('styleWithCSS', false, 'false');
+    // 배경색은 CSS 로만 표현된다(Chromium 은 늘 span style, Firefox 는 styleWithCSS 가 켜져야 동작).
+    document.execCommand('styleWithCSS', false, command === 'hiliteColor' ? 'true' : 'false');
     document.execCommand(command, false, value);
+    if (command === 'hiliteColor') document.execCommand('styleWithCSS', false, 'false');
     return true;
 }
 
@@ -797,6 +815,16 @@ export function selectionTextColor(root: HTMLElement | null): string | null {
     return null;
 }
 
+/** 선택 시작 위치의 배경색(소문자 hex). 없거나 흰색·투명이면 null. 메뉴 표시용. */
+export function selectionHighlightColor(root: HTMLElement | null): string | null {
+    for (let el = root ? selectionStartElement(root) : null; el && el !== root; el = el.parentElement) {
+        const value = (el as HTMLElement).style?.backgroundColor;
+        const color = value ? highlightColor(value) : null;
+        if (color) return color.toLowerCase();
+    }
+    return null;
+}
+
 /** 선택이 걸친 링크 — 메뉴의 '링크' 가 새로 만들지 고칠지 가른다(링크 안에 링크를 만들지 않게). */
 export function selectionLinkAnchor(root: HTMLElement | null): HTMLAnchorElement | null {
     const selection = window.getSelection();
@@ -815,6 +843,12 @@ export function handleRichTextShortcut(e: {
 }, root: HTMLElement | null): boolean {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return false;
     const key = e.key.toLowerCase();
+    // [PLAN-A Memo Desktop] 기울임꼴은 편집 기능으로 제공하지 않는다 — 브라우저 기본 Ctrl+I(기울임)를 막는다.
+    // 내용이 바뀌지 않았으므로 false(호출자가 저장을 알리지 않는다).
+    if (key === 'i') {
+        e.preventDefault();
+        return false;
+    }
     if (key !== 'b' && key !== 'u') return false;
     e.preventDefault();
     applyRichTextCommand(root, key === 'b' ? 'bold' : 'underline');

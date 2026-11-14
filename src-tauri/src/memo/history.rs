@@ -50,6 +50,7 @@ pub fn reason_label(reason: &str) -> &'static str {
         "list_restore" => "휴지통에서 복구 전",
         "restore" => "복원 전",
         "carryover" => "지난 미완료 가져오기 전",
+        "recurrence_stop" => "반복 중지 전",
         "carry_mapping" | "carry_review" => "지난 미완료 복사본 맞추기 전",
         "remote_apply" => "PLAN-A Work 변경 반영 전",
         "remote_deleted" => "PLAN-A Work 에서 삭제됨",

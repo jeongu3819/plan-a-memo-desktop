@@ -44,7 +44,7 @@ async function setup() {
     );
   });
   const ids = () => client.getQueryData<DayMemo>(keys.day(DATE))!.items.map(i => i.id);
-  return { reorder: actions!.reorder, moveToTop: actions!.moveToTop, ids };
+  return { reorder: actions!.reorder, moveToTop: actions!.moveToTop, moveToBottom: actions!.moveToBottom, ids };
 }
 
 describe('메모 순서 변경', () => {
@@ -125,6 +125,80 @@ describe('메모 순서 변경', () => {
       act(() => moveToTop(item('gone', 3), LOCATION));
       await settle();
       expect(server.reorders).toEqual([]);
+    });
+
+    describe('맨 아래로 보내기', () => {
+      it('같은 구역 안에서만 맨 아래로 — A·B·C·D 에서 B → A·C·D·B, 다른 구역은 그대로', async () => {
+        const pm = { ...item('p', 0), section: 'pm' } as MemoItem;
+        const server = backend([item('a', 0), item('b', 1), item('c', 2), item('d', 3), pm]);
+        const { moveToBottom } = await setup();
+        act(() => moveToBottom(item('b', 1), LOCATION));
+        await settle();
+        expect(server.reorders).toEqual([['a', 'c', 'd', 'b']]);
+        expect(invoke).toHaveBeenCalledWith('items_reorder', { location: LOCATION, section: 'main', ids: ['a', 'c', 'd', 'b'] });
+        expect(server.saved()).toEqual(['a', 'c', 'd', 'b', 'p']);
+      });
+
+      it.each(['am', 'pm'] as const)('%s 구역도 그 구역 안에서만', async section => {
+        const row = (id: string, order: number) => ({ ...item(id, order), section }) as MemoItem;
+        const server = backend([item('m', 0), row('x', 0), row('y', 1), row('z', 2)]);
+        const { moveToBottom } = await setup();
+        act(() => moveToBottom(row('x', 0), LOCATION));
+        await settle();
+        expect(server.reorders).toEqual([['y', 'z', 'x']]);
+        expect(invoke).toHaveBeenCalledWith('items_reorder', { location: LOCATION, section, ids: ['y', 'z', 'x'] });
+      });
+
+      it('완료한 메모도 옮긴다 — 순서 저장만 부르고 완료·본문·id 를 바꾸는 명령은 없다', async () => {
+        const done = { ...item('b', 1), completed: true, contentHtml: '<p><b>끝낸 일</b></p>' } as MemoItem;
+        const server = backend([item('a', 0), done, item('c', 2)]);
+        const { moveToBottom } = await setup();
+        act(() => moveToBottom(done, LOCATION));
+        await settle();
+        expect(server.reorders).toEqual([['a', 'c', 'b']]);
+        const commands = invoke.mock.calls.map(call => call[0]);
+        expect(commands.filter(c => c !== 'memo_day' && c !== 'items_reorder')).toEqual([]);
+      });
+
+      it('이미 맨 아래(한 개뿐인 경우 포함)면 저장하지 않고, Next List 는 그 List 안에서 옮긴다', async () => {
+        const next = (id: string, sortOrder: number) => ({ ...item(id, sortOrder), section: 'next' }) as MemoItem;
+        const list = { kind: 'next', listId: 'L1' } as const;
+        const server = backend([next('x', 0), next('y', 1)]);
+        const { moveToBottom } = await setup();
+        act(() => moveToBottom(next('y', 1), list));
+        await settle();
+        expect(server.reorders).toEqual([]);
+        act(() => moveToBottom(next('x', 0), list));
+        await settle();
+        expect(invoke).toHaveBeenCalledWith('memo_list', { listId: 'L1' });
+        expect(invoke).toHaveBeenCalledWith('items_reorder', { location: list, section: 'next', ids: ['y', 'x'] });
+
+        invoke.mockReset();
+        const single = backend([next('only', 0)]);
+        act(() => moveToBottom(next('only', 0), list));
+        await settle();
+        expect(single.reorders).toEqual([]);
+      });
+
+      it('맨 위 ↔ 맨 아래를 섞어 연달아 눌러도 한 줄로 계산해 항목이 빠지거나 겹치지 않는다', async () => {
+        const server = backend([item('a', 0), item('b', 1), item('c', 2), item('d', 3)]);
+        const { moveToTop, moveToBottom } = await setup();
+        act(() => {
+          moveToBottom(item('a', 0), LOCATION); // b c d a
+          moveToTop(item('d', 3), LOCATION); // d b c a
+          moveToBottom(item('b', 1), LOCATION); // d c a b
+          moveToTop(item('b', 1), LOCATION); // b d c a
+          moveToBottom(item('a', 0), LOCATION); // 이미 맨 아래 — 저장 없음
+        });
+        for (let i = 0; i < 6; i += 1) await settle();
+        expect(server.reorders).toEqual([
+          ['b', 'c', 'd', 'a'],
+          ['d', 'b', 'c', 'a'],
+          ['d', 'c', 'a', 'b'],
+          ['b', 'd', 'c', 'a'],
+        ]);
+        expect(server.saved()).toEqual(['b', 'd', 'c', 'a']);
+      });
     });
   });
 

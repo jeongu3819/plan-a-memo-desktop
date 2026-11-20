@@ -32,7 +32,7 @@ import { useDay, useReminder, useSameWeekdayDates } from '../../services/queries
 import { usePersonalMemo } from './MemoProvider';
 import { SECTION_LABELS } from './MemoMenu';
 import MemoRow from './MemoRow';
-import { isFirstInSection } from '../../domain/memoDrop';
+import { isFirstInSection, isLastInSection } from '../../domain/memoDrop';
 import QuickInput from './QuickInput';
 import ReminderDialog from '../reminders/ReminderDialog';
 
@@ -137,7 +137,7 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
                 {SECTION_LABELS[section]}
               </Typography>
               {(showAll ? rows : rows.slice(0, PREVIEW_ROWS_PER_SECTION)).map(item => (
-                <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} />
+                <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} lastInPlace={isLastInSection(items, item)} />
               ))}
             </Box>
           ))}
@@ -172,7 +172,7 @@ function FutureDayCard({ date, onReminder }: { date: string; onReminder: (date: 
                   {SECTION_LABELS[section]}
                 </Typography>
                 {rows.map(item => (
-                  <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} />
+                  <MemoRow key={item.id} item={item} location={location} variant="compact" comfortable firstInPlace={isFirstInSection(items, item)} lastInPlace={isLastInSection(items, item)} />
                 ))}
                 <Box sx={{ mt: rows.length ? 0.5 : 0.25 }}>
                   <QuickInput location={location} section={section} placeholder={FUTURE_PLACEHOLDER} autoFocus={focusMain && section === 'main'} />

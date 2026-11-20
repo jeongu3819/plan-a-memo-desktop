@@ -1286,6 +1286,256 @@ step('memo-move-top', async () => {
   await app.page.setViewportSize({ width: 1180, height: 760 }).catch(() => undefined);
 });
 
+step('memo-move-bottom', async () => {
+  const page = app.page;
+  const date = plusDays(today, 45);
+  const ids = {};
+  for (const name of ['A', 'B', 'C', 'D']) ids[name] = (await addItem(date, 'main', `맨아래 ${name}`)).id;
+  for (const name of ['M', 'N', 'O']) ids[name] = (await addItem(date, 'am', `맨아래 ${name}`)).id;
+  for (const name of ['X', 'Y', 'Z']) ids[name] = (await addItem(date, 'pm', `맨아래 ${name}`)).id;
+  // B — 완료 + 서식(굵게·글자색). 맨 아래로 보내도 그대로여야 한다.
+  const bHtml = '<p><b>맨아래 B</b> <span style="color: rgb(139, 92, 246);">보라</span></p>';
+  await app.invoke('item_update_content', { id: ids.B, html: bHtml });
+  await app.invoke('item_set_completed', { id: ids.B, completed: true });
+  const bSaved = (await dayOf(date)).items.find(i => i.id === ids.B);
+  const otherDay = plusDays(date, 1);
+  const untouched = (await addItem(otherDay, 'main', '다른 날짜 메모')).id;
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const letter = text => text.replace(/^.*맨아래 ([A-Z]).*$/s, '$1');
+  const order = async section => (await dayOf(date)).items.filter(i => i.section === section).map(i => letter(i.contentHtml)).join('');
+  const shown = async section => (await page.locator(`[data-testid="memo-section-${section}"] [data-testid="personal-memo-row"]`).allInnerTexts()).map(letter).join('');
+  const rowOf = name => page.locator(`[data-testid="personal-memo-row"][data-memo-id="${ids[name]}"]`);
+  const openRowMenu = async name => {
+    await rowOf(name).locator('[aria-label="메모 편집"]').click({ button: 'right' });
+    await page.locator('[data-testid="personal-memo-menu"]').waitFor();
+  };
+  const viaRowMenu = async (name, edge = 'bottom') => {
+    await openRowMenu(name);
+    await page.locator(`[data-testid="memo-menu-move-${edge}"]`).click();
+  };
+
+  // 메뉴 — '맨 위로 보내기' 바로 아래, 대칭 아이콘, 같은 크기(dense)
+  await openRowMenu('B');
+  const menuIds = await page.locator('[data-testid="personal-memo-menu"] [role="menuitem"]').evaluateAll(els => els.map(el => el.getAttribute('data-testid') || el.textContent));
+  const top = menuIds.indexOf('memo-menu-move-top');
+  assert.ok(top >= 0 && menuIds[top + 1] === 'memo-menu-move-bottom', `맨 위로 바로 아래(${menuIds.join(' | ')})`);
+  const bottomItem = page.locator('[data-testid="memo-menu-move-bottom"]');
+  // 아이콘 — 맨 위로(VerticalAlignTop)와 대칭인 VerticalAlignBottom(배포 빌드엔 data-testid 가 없어 SVG 경로로 본다)
+  const iconPath = e => page.locator(`[data-testid="memo-menu-move-${e}"] svg path`).getAttribute('d');
+  assert.equal(await iconPath('top'), 'M8 11h3v10h2V11h3l-4-4zM4 3v2h16V3z', '맨 위로 아이콘');
+  assert.equal(await iconPath('bottom'), 'M16 13h-3V3h-2v10H8l4 4zM4 19v2h16v-2z', '대칭 아이콘(맨 아래로)');
+  assert.equal((await bottomItem.innerText()).trim(), '맨 아래로 보내기');
+  const [topBox, bottomBox] = await Promise.all(['top', 'bottom'].map(e => page.locator(`[data-testid="memo-menu-move-${e}"]`).boundingBox()));
+  assert.ok(Math.abs(topBox.height - bottomBox.height) <= 1 && Math.abs(topBox.x - bottomBox.x) <= 1, '같은 크기·정렬');
+  await app.shot('47b-move-bottom-menu');
+
+  // 행 메뉴 — 완료한 B 를 메인 맨 아래로: A B C D → A C D B, 다른 구역·날짜 그대로, 확인창 없음
+  await bottomItem.click();
+  await waitFor(async () => (await order('main')) === 'ACDB', 'B 맨 아래로');
+  await waitFor(async () => (await shown('main')) === 'ACDB', '화면에도 바로');
+  assert.equal(await page.locator('[role="dialog"]').count(), 0, '확인창 없음');
+  const bAfter = (await dayOf(date)).items.find(i => i.id === ids.B);
+  assert.deepEqual(
+    [bAfter.id, bAfter.contentHtml, bAfter.completed, bAfter.completedAt, bAfter.kind],
+    [bSaved.id, bSaved.contentHtml, true, bSaved.completedAt, bSaved.kind],
+    '같은 id·본문·서식·완료·완료 시각',
+  );
+  assert.ok(await rowOf('B').locator('input[type="checkbox"]').isChecked(), '체크 표시 그대로');
+  assert.match(await rowOf('B').locator('[data-testid="personal-memo-content"]').evaluate(el => getComputedStyle(el).textDecorationLine), /line-through/, '취소선 그대로');
+  assert.equal(await order('am'), 'MNO', '오전 그대로');
+  assert.equal(await order('pm'), 'XYZ', '오후 그대로');
+  await app.shot('47c-move-bottom-after');
+
+  // 이미 맨 아래면 꺼져 있다
+  await openRowMenu('B');
+  assert.equal(await page.getAttribute('[data-testid="memo-menu-move-bottom"]', 'aria-disabled'), 'true', '이미 맨 아래');
+  assert.ok((await page.locator('[data-testid="memo-menu-move-bottom"]').innerText()).includes('이미 맨 아래에 있습니다'));
+  await page.keyboard.press('Escape');
+
+  // 오전 · 오후 각각 그 구역 맨 아래로
+  await viaRowMenu('M');
+  await waitFor(async () => (await order('am')) === 'NOM', '오전');
+  await viaRowMenu('X');
+  await waitFor(async () => (await order('pm')) === 'YZX', '오후');
+  assert.equal(await order('main'), 'ACDB', '메인 그대로');
+
+  // 편집 메뉴에서 — 편집 중인 C 가 맨 아래로, 편집·입력 그대로
+  await rowOf('C').locator('[aria-label="메모 편집"]').click();
+  const editable = rowOf('C').locator('[contenteditable="true"]');
+  await editable.waitFor();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' 고침');
+  await selectText(editable, '맨아래');
+  await openMenu(page, editable);
+  const actionKeys = await menuOf(page).locator('[data-testid^="rich-menu-action-"]').evaluateAll(els => els.map(el => el.getAttribute('data-testid')));
+  assert.deepEqual(actionKeys, ['rich-menu-action-move-top', 'rich-menu-action-move-bottom'], '편집 메뉴도 맨 위로 바로 아래');
+  await menuOf(page).locator('[data-testid="rich-menu-action-move-bottom"]').click();
+  await waitFor(async () => (await order('main')) === 'ADBC', 'C 맨 아래로');
+  await waitFor(async () => (await shown('main')).endsWith('C'), '화면에도');
+  assert.ok(await editable.isVisible(), '편집 상태 유지');
+  assert.ok((await editable.innerText()).includes('고침'), '입력한 글자 유지');
+  await waitFor(async () => (await dayOf(date)).items.find(i => i.id === ids.C).contentHtml.includes('고침'), '입력한 글자 저장');
+  await selectText(editable, '맨아래');
+  await openMenu(page, editable);
+  assert.ok(await menuOf(page).locator('[data-testid="rich-menu-action-move-bottom"]').isDisabled(), '편집 메뉴도 꺼짐');
+  await page.keyboard.press('Escape');
+  await page.locator('[data-testid="memo-header-date"]').click();
+
+  // 스크롤 — 작은 창에서 아래쪽 메모를 보내도 화면이 맨 위로 튀지 않는다
+  await page.setViewportSize({ width: 850, height: 620 });
+  await sleep(300);
+  const scrollerTop = () => rowOf('Z').evaluate(el => {
+    let s = el.parentElement;
+    while (s && !/(auto|scroll)/.test(getComputedStyle(s).overflowY)) s = s.parentElement;
+    return s ? { top: s.scrollTop, max: s.scrollHeight - s.clientHeight } : { top: 0, max: 0 };
+  });
+  await rowOf('Z').scrollIntoViewIfNeeded();
+  const before = await scrollerTop();
+  await viaRowMenu('Y');
+  await waitFor(async () => (await order('pm')) === 'ZXY', '작은 창 오후');
+  await sleep(300);
+  const after = await scrollerTop();
+  if (before.max > 0 && before.top > 40) assert.ok(after.top >= before.top - 40, `스크롤이 맨 위로 튀지 않는다(${before.top} → ${after.top})`);
+  await app.shot('47d-move-bottom-small-window');
+  await page.setViewportSize({ width: 1180, height: 760 });
+
+  // 맨 위 ↔ 맨 아래 — 시드 고정 무작위 20회, 매번 화면·저장이 기대값과 같고 항목이 빠지거나 겹치지 않는다
+  let expected = (await order('main')).split('');
+  let seed = 13;
+  for (let n = 0; n < 20; n++) {
+    seed = (seed * 31 + 11) % 97;
+    const edge = seed % 2 ? 'bottom' : 'top';
+    const pool = edge === 'top' ? expected.slice(1) : expected.slice(0, -1);
+    const name = pool[seed % pool.length];
+    await viaRowMenu(name, edge);
+    expected = edge === 'top' ? [name, ...expected.filter(x => x !== name)] : [...expected.filter(x => x !== name), name];
+    await waitFor(async () => (await order('main')) === expected.join(''), `정렬 ${n}: ${expected.join('')}`);
+    await waitFor(async () => (await shown('main')) === expected.join(''), `화면 ${n}: ${expected.join('')}`);
+  }
+  assert.equal((await dayOf(otherDay)).items.map(i => i.id).join(), untouched, '다른 날짜 그대로');
+  const bLater = (await dayOf(date)).items.find(i => i.id === ids.B);
+  assert.deepEqual([bLater.contentHtml, bLater.completed], [bSaved.contentHtml, true], '여러 번 옮겨도 서식·완료 그대로');
+
+  // 주간 칸에서도(그 날짜의 그 구역 안에서만)
+  await page.click('[data-testid="memo-back-to-week"]');
+  await page.waitForSelector('[data-testid="personal-memo-week"]');
+  const weekRow = name => page.locator(`[data-testid="memo-cell-${date}"] [data-memo-id="${ids[name]}"]`);
+  const more = page.locator(`[data-testid="memo-cell-${date}"] button:has-text("더 보기")`);
+  if (await more.count()) await more.click();
+  const amBefore = await order('am');
+  await weekRow(amBefore[0]).locator('[aria-label="메모 편집"]').click({ button: 'right' });
+  await page.locator('[data-testid="memo-menu-move-bottom"]').click();
+  await waitFor(async () => (await order('am')) === amBefore.slice(1) + amBefore[0], '주간에서 오전 맨 아래로');
+
+  // Next List — 그 List 안에서만, 한 개뿐인 List 는 위·아래 모두 꺼짐
+  const list = await app.invoke('list_create', { name: '맨아래 List', id: null });
+  const single = await app.invoke('list_create', { name: '하나뿐 List', id: null });
+  const addNext = (listId, html) => app.invoke('item_create', { input: { id: crypto.randomUUID(), location: { kind: 'next', listId }, section: 'next', kind: 'checklist', contentHtml: html } });
+  const listItems = {};
+  for (const name of ['P', 'Q', 'R']) listItems[name] = (await addNext(list.id, `리스트 ${name}`)).id;
+  const lonely = (await addNext(single.id, '혼자')).id;
+  await app.invoke('item_set_completed', { id: listItems.P, completed: true });
+  const listOrder = async listId => (await app.invoke('memo_list', { listId })).items.map(i => i.id);
+  const defaultBefore = await listOrder(null);
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.click('[data-testid="memo-cell-next"] button[aria-label$="메모 쓰기"]');
+  await page.waitForSelector('[data-testid="memo-section-next"]');
+  await page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${list.id}"]`).click();
+  const pRow = page.locator(`[data-testid="personal-memo-row"][data-memo-id="${listItems.P}"]`);
+  await pRow.waitFor();
+  await pRow.locator('[aria-label="메모 편집"]').click({ button: 'right' });
+  await page.locator('[data-testid="memo-menu-move-bottom"]').click();
+  await waitFor(async () => (await listOrder(list.id)).join() === [listItems.Q, listItems.R, listItems.P].join(), 'List 맨 아래로');
+  assert.equal((await app.invoke('memo_list', { listId: list.id })).items[2].completed, true, 'List 의 완료 그대로');
+  assert.deepEqual(await listOrder(null), defaultBefore, '기본 Next 는 그대로');
+  assert.deepEqual(await listOrder(single.id), [lonely], '다른 List 그대로');
+  await page.locator(`[data-testid="memo-next-list-tab"][data-list-id="${single.id}"]`).click();
+  const lonelyRow = page.locator(`[data-testid="personal-memo-row"][data-memo-id="${lonely}"]`);
+  await lonelyRow.waitFor();
+  await lonelyRow.locator('[aria-label="메모 편집"]').click({ button: 'right' });
+  await page.locator('[data-testid="personal-memo-menu"]').waitFor();
+  assert.equal(await page.getAttribute('[data-testid="memo-menu-move-top"]', 'aria-disabled'), 'true', '한 개뿐 — 맨 위로 꺼짐');
+  assert.equal(await page.getAttribute('[data-testid="memo-menu-move-bottom"]', 'aria-disabled'), 'true', '한 개뿐 — 맨 아래로 꺼짐');
+  await page.keyboard.press('Escape');
+
+  // 다른 화면에 갔다 와도, 재실행 후에도 그 순서
+  const snapshot = async () => [await order('main'), await order('am'), await order('pm'), (await listOrder(list.id)).join()];
+  const beforeRestart = await snapshot();
+  await page.click('[data-testid="memo-back-to-week"]');
+  await openDate(otherDay);
+  await openDate(date);
+  assert.deepEqual(await snapshot(), beforeRestart, '다른 날짜에 갔다 와도 순서 그대로');
+  await app.restart();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  assert.deepEqual(await snapshot(), beforeRestart, '재실행 후 순서');
+  const bRestarted = (await dayOf(date)).items.find(i => i.id === ids.B);
+  assert.deepEqual([bRestarted.contentHtml, bRestarted.completed], [bSaved.contentHtml, true], '재실행 후 서식·완료 그대로');
+  await app.page.setViewportSize({ width: 1180, height: 760 }).catch(() => undefined);
+});
+
+step(
+  'linked-move-bottom',
+  async () => {
+    // (Mock) 연결된 날짜에서 화면의 '맨 아래로 보내기' → 기존 Push(문서 전체 + sort_order) → Mock Web 도 같은 순서
+    if (!(await app.invoke('auth_status')).loggedIn) {
+      await app.invoke('auth_login_begin', { reconnect: false });
+      await waitFor(async () => (await app.invoke('auth_status')).loggedIn, '로그인');
+    }
+    const page = app.page;
+    const date = plusDays(today, 47);
+    const location = { kind: 'day', date };
+    const ids = {};
+    for (const name of ['A', 'B', 'C', 'D']) ids[name] = (await addItem(date, 'main', `연결아래 ${name}`)).id;
+    await app.invoke('item_set_completed', { id: ids.B, completed: true });
+    await app.invoke('sync_link', { location });
+    await app.invoke('sync_now');
+    const letter = text => text.replace(/^.*연결아래 ([A-Z]).*$/s, '$1');
+    const web = async () => (await app.invoke('mock_v2_web', { input: { action: 'items', date } })).map(i => letter(i.content)).join('');
+    const local = async () => (await dayOf(date)).items.map(i => letter(i.contentHtml)).join('');
+    await waitFor(async () => (await web()) === 'ABCD', 'Web 첫 순서');
+    await openDate(date);
+    const send = async name => {
+      await page.locator(`[data-testid="personal-memo-row"][data-memo-id="${ids[name]}"] [aria-label="메모 편집"]`).click({ button: 'right' });
+      await page.locator('[data-testid="memo-menu-move-bottom"]').click();
+    };
+
+    await send('B');
+    await waitFor(async () => (await local()) === 'ACDB', '이 PC 순서');
+    let report = await app.invoke('sync_now');
+    assert.equal(report.conflicts, 0);
+    await waitFor(async () => (await web()) === 'ACDB', 'Mock Web 도 A → C → D → B');
+    await waitFor(async () => (await dayOf(date)).document.syncStatus === 'synced', '동기화됨');
+    assert.equal((await dayOf(date)).items.find(i => i.id === ids.B).completed, true, '완료 그대로');
+    for (let n = 0; n < 2; n++) assert.equal((await app.invoke('sync_now')).conflicts, 0, '다시 동기화해도 비교 화면 없음');
+    assert.equal(await web(), 'ACDB', '번갈아 바뀌지 않는다');
+    assert.equal(await local(), 'ACDB');
+    await app.shot('47e-linked-move-bottom');
+
+    // 오프라인 — 바로 옮겨지고 '전달 대기', 온라인 복귀 후 한 번 전달
+    await app.invoke('mock_set_online', { online: false });
+    await send('A');
+    await waitFor(async () => (await local()) === 'CDBA', '오프라인에서도 바로');
+    report = await app.invoke('sync_now');
+    assert.ok(report.offline);
+    assert.equal((await dayOf(date)).document.syncStatus, 'pending', '전달 대기 — 성공처럼 보이지 않는다');
+    assert.equal(await web(), 'ACDB', 'Web 은 아직 그대로');
+    await app.invoke('mock_set_online', { online: true });
+    await app.invoke('sync_now');
+    await waitFor(async () => (await web()) === 'CDBA', '온라인 복귀 후 Web 도');
+    await waitFor(async () => (await dayOf(date)).document.syncStatus === 'synced', '동기화됨');
+    assert.equal((await app.invoke('sync_now')).conflicts, 0);
+    assert.equal(await web(), 'CDBA');
+
+    // 뒤 단계에 영향 없게 연결을 푼다(메모는 그대로)
+    await app.invoke('sync_unlink', { location });
+    await app.invoke('sync_now');
+    assert.equal(await local(), 'CDBA');
+  },
+  { mockOnly: true },
+);
+
 step('upcoming-weekday', async () => {
   const page = app.page;
   const d7 = plusDays(today, 7);

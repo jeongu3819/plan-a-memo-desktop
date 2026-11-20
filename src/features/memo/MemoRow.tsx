@@ -13,6 +13,7 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import VerticalAlignTopIcon from '@mui/icons-material/VerticalAlignTop';
+import VerticalAlignBottomIcon from '@mui/icons-material/VerticalAlignBottom';
 import PersonalMemoContentView from '../../vendor/plan-a-work/components/personalMemo/PersonalMemoContentView';
 import { MEMO_TEXT } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { RICH_LIST_INDENT, RICH_LIST_MARKER_GUTTER, RICH_LIST_WIDE_INDENT, richListWideSelector } from '../../vendor/plan-a-work/utils/richListSx';
@@ -78,9 +79,13 @@ export interface MemoRowProps {
   comfortable?: boolean;
   /** 같은 자리(날짜+구역 / List)에서 이미 맨 위인가 — '맨 위로 보내기' 를 끈다. */
   firstInPlace?: boolean;
+  /** 같은 자리에서 이미 맨 아래인가 — '맨 아래로 보내기' 를 끈다. */
+  lastInPlace?: boolean;
 }
 
-export default function MemoRow({ item, location, variant, dragHandleProps, dragging, onOpenEdit, comfortable = false, firstInPlace = false }: MemoRowProps) {
+export default function MemoRow({
+  item, location, variant, dragHandleProps, dragging, onOpenEdit, comfortable = false, firstInPlace = false, lastInPlace = false,
+}: MemoRowProps) {
   const { store, editingId, setEditingId, actions, notify } = usePersonalMemo();
   const draft = store.draft(item.id);
   const editing = editingId === item.id;
@@ -239,15 +244,25 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
               onError={message => notify({ message, variant: 'error' })}
               // 최대 높이 없음 — 긴 메모도 읽기 화면처럼 다 펼친다(편집기 안 스크롤 없이 화면 스크롤 하나).
               maxHeight="none"
-              // 편집 중 우클릭(서식 메뉴)에서도 행 메뉴와 같은 '맨 위로 보내기'. 본문 초안은 그대로 남는다.
-              contextMenuActions={[{
-                key: 'move-top',
-                label: '맨 위로 보내기',
-                icon: <VerticalAlignTopIcon />,
-                onSelect: () => actions.moveToTop(item, location),
-                disabled: firstInPlace,
-                disabledReason: '이미 맨 위에 있습니다',
-              }]}
+              // 편집 중 우클릭(서식 메뉴)에서도 행 메뉴와 같은 '맨 위로/맨 아래로 보내기'. 본문 초안은 그대로 남는다.
+              contextMenuActions={[
+                {
+                  key: 'move-top',
+                  label: '맨 위로 보내기',
+                  icon: <VerticalAlignTopIcon />,
+                  onSelect: () => actions.moveToTop(item, location),
+                  disabled: firstInPlace,
+                  disabledReason: '이미 맨 위에 있습니다',
+                },
+                {
+                  key: 'move-bottom',
+                  label: '맨 아래로 보내기',
+                  icon: <VerticalAlignBottomIcon />,
+                  onSelect: () => actions.moveToBottom(item, location),
+                  disabled: lastInPlace,
+                  disabledReason: '이미 맨 아래에 있습니다',
+                },
+              ]}
             />
           </Box>
         ) : (
@@ -311,7 +326,7 @@ export default function MemoRow({ item, location, variant, dragHandleProps, drag
         <MoreVertIcon sx={{ fontSize: 18 }} />
       </IconButton>
 
-      <MemoMenu item={item} location={location} anchor={menu} firstInPlace={firstInPlace} onClose={() => setMenu(null)} />
+      <MemoMenu item={item} location={location} anchor={menu} firstInPlace={firstInPlace} lastInPlace={lastInPlace} onClose={() => setMenu(null)} />
     </Box>
   );
 }

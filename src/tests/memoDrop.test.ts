@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyReorder, insertIndex, isFirstInSection, planDrop } from '../domain/memoDrop';
+import { applyReorder, insertIndex, isFirstInSection, isLastInSection, planDrop, planEdge } from '../domain/memoDrop';
 import type { MemoItem } from '../domain/types';
 
 const MIDS = [100, 200, 300];
@@ -19,6 +19,39 @@ describe('맨 위로 보내기', () => {
     }
     expect(ids).toEqual(['d', 'a', 'c', 'b']);
     expect(planDrop(ids, 'd', 0)).toBeNull();
+  });
+});
+
+describe('맨 아래로 보내기', () => {
+  const row = (id: string, section: MemoItem['section']) => ({ id, section }) as MemoItem;
+  it('구역마다 맨 아래를 따로 본다 — 한 개뿐이면 맨 위이자 맨 아래', () => {
+    const items = [row('a', 'main'), row('b', 'main'), row('c', 'am'), row('d', 'pm'), row('e', 'pm')];
+    expect(items.filter(item => isLastInSection(items, item)).map(item => item.id)).toEqual(['b', 'c', 'e']);
+    expect(isFirstInSection(items, items[2]) && isLastInSection(items, items[2])).toBe(true);
+  });
+  it('A·B·C·D 에서 B 를 보내면 A·C·D·B', () => {
+    expect(planEdge(['a', 'b', 'c', 'd'], 'b', 'bottom')).toEqual(['a', 'c', 'd', 'b']);
+  });
+  it('이미 맨 아래·한 개뿐·그 구역에 없는 항목은 저장하지 않는다', () => {
+    expect(planEdge(['a', 'b'], 'b', 'bottom')).toBeNull();
+    expect(planEdge(['a'], 'a', 'bottom')).toBeNull();
+    expect(planEdge(['a'], 'a', 'top')).toBeNull();
+    expect(planEdge(['a', 'b'], 'x', 'bottom')).toBeNull();
+    expect(planEdge(['a', 'b'], 'x', 'top')).toBeNull();
+  });
+  it('맨 위 ↔ 맨 아래를 반복해도 항목이 빠지거나 겹치지 않는다', () => {
+    let ids = ['a', 'b', 'c', 'd'];
+    const steps: [string, 'top' | 'bottom'][] = [['a', 'bottom'], ['d', 'top'], ['c', 'bottom'], ['c', 'top'], ['b', 'bottom'], ['b', 'bottom']];
+    for (let round = 0; round < 20; round += 1) {
+      for (const [id, edge] of steps) {
+        ids = planEdge(ids, id, edge) ?? ids;
+        expect(ids[edge === 'top' ? 0 : ids.length - 1]).toBe(id);
+        expect([...ids].sort()).toEqual(['a', 'b', 'c', 'd']);
+      }
+    }
+  });
+  it('맨 위로 보내기는 예전 계산(끌어 놓기 틈 0)과 같다', () => {
+    for (const id of ['a', 'b', 'c', 'd']) expect(planEdge(['a', 'b', 'c', 'd'], id, 'top')).toEqual(planDrop(['a', 'b', 'c', 'd'], id, 0));
   });
 });
 

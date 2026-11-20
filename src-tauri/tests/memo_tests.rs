@@ -741,3 +741,43 @@ fn search_and_months_stay_fast_with_many_memos() {
     timed("월 카드", &|| s.with_conn(|c| service::day_months(c, "2026-11-02")).unwrap().len(), 33);
     timed("한 달 펼치기", &|| s.with_conn(|c| service::days_in_month(c, "2025-03", "2026-11-02")).unwrap().len(), 31);
 }
+
+/// 맨 아래로 보내기(이 PC 에만 있는 메모) — 그 구역·List 안에서만, 완료·서식·id 그대로, 재실행 후에도 순서 유지, 보낼 것 없음.
+#[test]
+fn bottom_move_on_local_only_memos_persists_after_reopen() {
+    let (dir, s) = temp_storage();
+    let date = "2026-10-07";
+    let a = add(&s, day(date), "main", "A 업무");
+    let b = add(&s, day(date), "main", "<p><b>B</b> 완료</p>");
+    let c_item = add(&s, day(date), "main", "C 업무");
+    let am1 = add(&s, day(date), "am", "오전 1");
+    let am2 = add(&s, day(date), "am", "오전 2");
+    add(&s, day(date), "pm", "오후 1");
+    let only = add(&s, next(None), "next", "혼자");
+    s.with_conn(|c| service::set_completed(c, &b.id, true)).unwrap();
+    // 화면과 같은 계산 — 그 항목만 빼서 맨 뒤에
+    s.with_conn(|c| service::reorder(c, &day(date), "main", &[a.id.clone(), c_item.id.clone(), b.id.clone()])).unwrap();
+    s.with_conn(|c| service::reorder(c, &day(date), "am", &[am2.id.clone(), am1.id.clone()])).unwrap();
+    // 한 개뿐인 List — 같은 순서를 저장해도 그대로
+    s.with_conn(|c| service::reorder(c, &next(None), "next", std::slice::from_ref(&only.id))).unwrap();
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM sync_outbox"), 0, "연결하지 않은 메모는 보낼 것이 없다");
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM document_versions"), 0, "순서 변경은 Snapshot 을 남기지 않는다");
+
+    let root = s.paths.root.clone();
+    drop(s);
+    let (s, _) = plan_a_memo_lib::storage::Storage::open(&root, false).unwrap();
+    let items = s.with_conn(|c| service::get_day(c, date)).unwrap().items;
+    let order: Vec<(&str, &str)> = items.iter().map(|i| (i.section.as_str(), i.content_html.as_str())).collect();
+    assert_eq!(
+        order,
+        vec![("main", "A 업무"), ("main", "C 업무"), ("main", "<p><b>B</b> 완료</p>"), ("am", "오전 2"), ("am", "오전 1"), ("pm", "오후 1")],
+        "재실행 후에도 그 구역 안에서만 바뀐 순서 그대로"
+    );
+    let moved = items.iter().find(|i| i.id == b.id).expect("같은 id");
+    assert!(moved.completed && moved.completed_at.is_some(), "완료 상태·완료 시각 그대로");
+    let list = s.with_conn(|c| service::get_list(c, None)).unwrap();
+    assert_eq!(list.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), vec![only.id.as_str()]);
+    drop(s);
+    drop(dir);
+}
+

@@ -1811,3 +1811,251 @@ async fn reordering_a_linked_list_sends_the_new_order_and_survives_a_pull() {
     let memo = e.storage.with_conn(|c| service::get_list(c, Some(&list.id))).unwrap();
     assert_eq!(memo.items.iter().map(|i| i.content_html.as_str()).collect::<Vec<_>>(), vec!["다", "가", "나"], "다시 받아도 순서 그대로");
 }
+
+// ── 맨 아래로 보내기 — 기존 순서 저장(service::reorder)과 같은 Push 경로(문서 전체 + 구역별 sort_order) ──────────────
+
+/// 그 날짜 한 구역의 로컬 (본문, 완료, id) — 순서대로.
+fn local_section(storage: &Storage, date: &str, section: &str) -> Vec<(String, bool, String)> {
+    storage
+        .with_conn(|c| service::get_day(c, date))
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|i| i.section == section)
+        .map(|i| (i.content_html, i.completed, i.id))
+        .collect()
+}
+
+/// 서버(Web) 한 구역의 (서버 id, 본문, 완료) — Web 이 보이는 순서(sort_order)대로.
+fn server_section(e: &Env, unit: &Unit, section: &str) -> Vec<(i64, String, bool)> {
+    e.mock.unit_items(1, unit).into_iter().filter(|(_, m)| m.section == section).map(|(id, m)| (id, m.content, m.completed)).collect()
+}
+
+/// 한 구역의 순서를 화면의 '맨 아래로 보내기' 처럼 바꾼다(planEdge 와 같은 계산: 그 항목만 빼서 맨 뒤에).
+fn send_to_bottom(storage: &Storage, location: &Location, section: &str, id: &str) {
+    storage
+        .with_conn(|c| {
+            let items = match location {
+                Location::Day { date } => service::get_day(c, date)?.items,
+                Location::Next { list_id } => service::get_list(c, list_id.as_deref())?.items,
+            };
+            let mut ids: Vec<String> = items.into_iter().filter(|i| i.section == section && i.id != id).map(|i| i.id).collect();
+            ids.push(id.to_string());
+            service::reorder(c, location, section, &ids).map(|_| ())
+        })
+        .unwrap();
+}
+
+/// Web(또는 다른 기기)에서 그 순서로 정렬했다 — 본문으로 찾은 서버 항목의 sort_order 만 바꾼다.
+fn web_reorder(e: &Env, unit: &Unit, order: &[&str]) {
+    let ids: Vec<(i64, String)> = e.mock.unit_items(1, unit).into_iter().map(|(id, m)| (id, m.content)).collect();
+    for (index, text) in order.iter().enumerate() {
+        let id = ids.iter().find(|(_, t)| t == text).unwrap().0;
+        e.mock.web_edit(id, |m| m.sort_order = index as i64);
+    }
+}
+
+fn main_texts(storage: &Storage, date: &str) -> Vec<String> {
+    local_section(storage, date, "main").into_iter().map(|(t, _, _)| t).collect()
+}
+
+#[tokio::test]
+async fn bottom_move_of_a_completed_item_on_a_linked_day_reaches_web_and_keeps_everything() {
+    let e = env_logged_in().await;
+    let date = "2026-10-07";
+    add(&e.storage, day(date), "main", "A 업무");
+    let b = add(&e.storage, day(date), "main", r#"<p><b>B 업무</b> <span style="color: #d32f2f">빨강</span></p>"#);
+    add(&e.storage, day(date), "main", "C 업무");
+    add(&e.storage, day(date), "main", "D 업무");
+    add(&e.storage, day(date), "am", "오전 그대로");
+    add(&e.storage, day(date), "pm", "오후 그대로");
+    e.storage.with_conn(|c| service::set_completed(c, &b.id, true)).unwrap();
+    e.link(day(date));
+    e.sync().await;
+    let before = server_section(&e, &d7(), "main");
+    let b_server = before.iter().find(|(_, text, _)| text.contains("B 업무")).unwrap().0;
+    let b_server_html = before.iter().find(|(_, text, _)| text.contains("B 업무")).unwrap().1.clone();
+    let version = e.mock.document_of(1, &d7()).unwrap().version;
+    let pushes = e.mock.pushes().len();
+
+    send_to_bottom(&e.storage, &day(date), "main", &b.id);
+    assert_eq!(e.status(&day(date)), "pending", "연결된 날짜의 순서 변경은 전달 대기");
+    assert_eq!(e.outbox(), 1, "문서당 Outbox 1건");
+    let report = e.sync().await;
+    assert_eq!((report.pushed, report.conflicts), (1, 0));
+    assert_eq!(e.status(&day(date)), "synced");
+
+    // Web: A → C → D → B, 다른 구역·항목 수 그대로, B 는 같은 서버 항목(복제 없음)·완료·서식 유지
+    let after = server_section(&e, &d7(), "main");
+    let order: Vec<&str> = after.iter().map(|(_, t, _)| t.as_str()).collect();
+    assert_eq!(order[..3], ["A 업무", "C 업무", "D 업무"]);
+    assert_eq!(after[3].0, b_server, "같은 서버 id — 새 항목으로 만들지 않는다");
+    assert_eq!(after[3].1, b_server_html, "서식 그대로");
+    assert!(after[3].2, "완료 그대로");
+    assert_eq!(e.server(&d7()).len(), 6, "항목 수 그대로");
+    assert_eq!(server_section(&e, &d7(), "am")[0].1, "오전 그대로");
+    assert_eq!(server_section(&e, &d7(), "pm")[0].1, "오후 그대로");
+    assert_eq!(e.mock.document_of(1, &d7()).unwrap().version, version + 1, "Push 한 번");
+    assert_eq!(e.mock.pushes().len(), pushes + 1);
+    let last = e.mock.pushes().last().unwrap().1.clone();
+    let sent: Vec<(Option<i64>, i64, bool)> = last.items.iter().filter(|i| i.section == "main").map(|i| (i.id, i.sort_order, i.completed)).collect();
+    assert_eq!(sent.last().unwrap(), &(Some(b_server), 3, true), "기존 계약 그대로 — 같은 서버 id 에 sort_order(구역 안 0부터)");
+
+    // 다시 동기화해도 순서가 돌아가지 않고, 서로 번갈아 저장하지 않는다
+    for _ in 0..3 {
+        let report = e.sync().await;
+        assert_eq!((report.pushed, report.conflicts), (0, 0));
+    }
+    assert_eq!(e.mock.document_of(1, &d7()).unwrap().version, version + 1, "추가 Push 없음");
+    let local = local_section(&e.storage, date, "main");
+    assert_eq!(main_texts(&e.storage, date)[..3], ["A 업무", "C 업무", "D 업무"]);
+    assert_eq!(local[3], (b.content_html.clone(), true, b.id.clone()), "로컬도 같은 id·완료·서식");
+}
+
+#[tokio::test]
+async fn bottom_move_on_a_linked_next_list_changes_only_that_list() {
+    let e = env_logged_in().await;
+    let list = e.storage.with_conn(|c| service::create_list(c, None, "정리")).unwrap();
+    let other = e.storage.with_conn(|c| service::create_list(c, None, "다른 List")).unwrap();
+    let location = next(Some(&list.id));
+    let a = add(&e.storage, location.clone(), "next", "가");
+    add(&e.storage, location.clone(), "next", "나");
+    add(&e.storage, location.clone(), "next", "다");
+    add(&e.storage, next(Some(&other.id)), "next", "하나");
+    add(&e.storage, next(Some(&other.id)), "next", "둘");
+    e.link(location.clone());
+    e.link(next(Some(&other.id)));
+    e.sync().await;
+    let other_version = e.mock.document_of(1, &Unit::list(&other.id)).unwrap().version;
+
+    send_to_bottom(&e.storage, &location, "next", &a.id);
+    assert_eq!(e.status(&next(Some(&other.id))), "synced", "다른 List 는 건드리지 않는다");
+    e.sync().await;
+    assert_eq!(e.server(&Unit::list(&list.id)), vec!["나", "다", "가"]);
+    assert_eq!(e.server(&Unit::list(&other.id)), vec!["하나", "둘"]);
+    assert_eq!(e.mock.document_of(1, &Unit::list(&other.id)).unwrap().version, other_version, "다른 List 는 Push 하지 않는다");
+    e.sync().await;
+    let memo = e.storage.with_conn(|c| service::get_list(c, Some(&list.id))).unwrap();
+    assert_eq!(memo.items.iter().map(|i| i.content_html.as_str()).collect::<Vec<_>>(), vec!["나", "다", "가"]);
+    assert_eq!(memo.items[2].id, a.id);
+}
+
+#[tokio::test]
+async fn bottom_move_offline_survives_restart_and_is_sent_once() {
+    let e = env_logged_in().await;
+    let date = "2026-10-07";
+    let a = add(&e.storage, day(date), "main", "A");
+    add(&e.storage, day(date), "main", "B");
+    add(&e.storage, day(date), "main", "C");
+    e.link(day(date));
+    e.sync().await;
+    let version = e.mock.document_of(1, &d7()).unwrap().version;
+
+    e.mock.set_online(false);
+    send_to_bottom(&e.storage, &day(date), "main", &a.id);
+    assert!(e.sync().await.offline);
+    assert_eq!(e.status(&day(date)), "pending");
+    assert_eq!(e.server(&d7()), vec!["A", "B", "C"], "오프라인 — 서버는 그대로");
+
+    // 앱 재실행 — 로컬 순서와 Outbox 가 남는다(이전 연결은 닫지 않은 채로 — 테스트가 끝날 때 닫는다)
+    let root = e.storage.paths.root.clone();
+    let _crashed = e.storage;
+    let (storage, _) = Storage::open(&root, false).unwrap();
+    assert_eq!(main_texts(&storage, date), vec!["B", "C", "A"]);
+    assert_eq!(count(&storage, "SELECT COUNT(*) FROM sync_outbox"), 1);
+
+    // 온라인 복귀 — 서버는 저장했는데 응답이 끊김 → 같은 request_id 로 다시 보내도 한 번만 반영
+    e.mock.set_online(true);
+    e.mock.drop_next_push_responses(1);
+    assert!(e.engine.run_once(&storage, true).await.unwrap().offline);
+    assert_eq!(e.mock.document_of(1, &d7()).unwrap().version, version + 1);
+    let report = e.engine.run_once(&storage, true).await.unwrap();
+    assert_eq!(report.conflicts, 0);
+    assert_eq!(e.mock.document_of(1, &d7()).unwrap().version, version + 1, "중복 전송으로 순서가 다시 바뀌지 않는다");
+    assert_eq!(e.mock.unit_texts(1, &d7()), vec!["B", "C", "A"]);
+    assert_eq!(count(&storage, "SELECT COUNT(*) FROM sync_outbox"), 0);
+    for _ in 0..2 {
+        e.engine.run_once(&storage, true).await.unwrap();
+    }
+    assert_eq!(e.mock.document_of(1, &d7()).unwrap().version, version + 1);
+    assert_eq!(main_texts(&storage, date), vec!["B", "C", "A"]);
+}
+
+#[tokio::test]
+async fn bottom_move_against_a_different_web_reorder_uses_the_existing_comparison_and_keeps_both() {
+    let e = env_logged_in().await;
+    let date = "2026-10-07";
+    let a = add(&e.storage, day(date), "main", "A");
+    add(&e.storage, day(date), "main", "B");
+    add(&e.storage, day(date), "main", "C");
+    e.storage.with_conn(|c| service::set_completed(c, &a.id, true)).unwrap();
+    e.link(day(date));
+    e.sync().await;
+    web_reorder(&e, &d7(), &["C", "A", "B"]); // Web(또는 다른 기기)이 C 를 맨 위로
+    send_to_bottom(&e.storage, &day(date), "main", &a.id); // 이 PC 는 A 를 맨 아래로: B → C → A
+    let report = e.sync().await;
+    assert_eq!(report.conflicts, 1, "서로 다른 순서 — 기존 정책대로 비교 화면(어느 쪽도 조용히 덮지 않는다)");
+    let conflict = e.storage.with_conn(|c| list_conflicts(c)).unwrap().remove(0);
+    let local: Vec<&str> = conflict.local.items.iter().map(|i| i.content_html.as_str()).collect();
+    let remote: Vec<&str> = conflict.remote.items.iter().map(|i| i.content_html.as_str()).collect();
+    assert_eq!(local, vec!["B", "C", "A"]);
+    assert_eq!(remote, vec!["C", "A", "B"]);
+    assert!(
+        conflict.local.items.iter().chain(conflict.remote.items.iter()).filter(|i| i.content_html == "A").all(|i| i.completed),
+        "양쪽 모두 완료 유지"
+    );
+    // Desktop 선택 → Web 도 B → C → A, 항목 수·완료 그대로, 이후 번갈아 저장하지 않는다
+    e.resolve(ConflictChoice::Local).await.unwrap();
+    e.sync().await;
+    assert_eq!(e.server(&d7()), vec!["B", "C", "A"]);
+    assert!(server_section(&e, &d7(), "main").iter().find(|(_, t, _)| t == "A").unwrap().2);
+    let version = e.mock.document_of(1, &d7()).unwrap().version;
+    for _ in 0..3 {
+        assert_eq!(e.sync().await.conflicts, 0);
+    }
+    assert_eq!(e.mock.document_of(1, &d7()).unwrap().version, version);
+    assert_eq!(main_texts(&e.storage, date), vec!["B", "C", "A"]);
+    assert_eq!(local_section(&e.storage, date, "main")[2], ("A".into(), true, a.id.clone()), "같은 로컬 id·완료");
+}
+
+#[tokio::test]
+async fn bottom_move_against_a_web_reorder_keeps_desktop_order_in_history_when_web_is_chosen() {
+    let e = env_logged_in().await;
+    let date = "2026-10-07";
+    let a = add(&e.storage, day(date), "main", "A");
+    add(&e.storage, day(date), "main", "B");
+    add(&e.storage, day(date), "main", "C");
+    e.link(day(date));
+    e.sync().await;
+    web_reorder(&e, &d7(), &["C", "A", "B"]);
+    send_to_bottom(&e.storage, &day(date), "main", &a.id);
+    assert_eq!(e.sync().await.conflicts, 1);
+    e.resolve(ConflictChoice::Remote).await.unwrap();
+    e.sync().await;
+    assert_eq!(main_texts(&e.storage, date), vec!["C", "A", "B"], "Web 순서 선택");
+    assert_eq!(e.server(&d7()), vec!["C", "A", "B"]);
+    let versions = e.storage.with_conn(|c| history::list_for_location(c, &day(date))).unwrap();
+    let kept = versions.iter().find(|v| v.reason == "conflict_local").expect("Desktop 순서는 History 에");
+    let detail = e.storage.with_conn(|c| history::get(c, kept.id)).unwrap();
+    assert_eq!(detail.snapshot.items.iter().map(|i| i.content_html.as_str()).collect::<Vec<_>>(), vec!["B", "C", "A"]);
+}
+
+#[tokio::test]
+async fn bottom_move_that_matches_the_web_order_needs_no_comparison() {
+    let e = env_logged_in().await;
+    let date = "2026-10-07";
+    let a = add(&e.storage, day(date), "main", "A");
+    add(&e.storage, day(date), "main", "B");
+    add(&e.storage, day(date), "main", "C");
+    e.link(day(date));
+    e.sync().await;
+    web_reorder(&e, &d7(), &["B", "C", "A"]); // Web 에서도 같은 결과(A 를 맨 아래로)
+    send_to_bottom(&e.storage, &day(date), "main", &a.id);
+    let report = e.sync().await;
+    e.sync().await;
+    assert_eq!(report.conflicts, 0, "같은 순서면 불필요한 비교 화면 없음");
+    assert!(e.storage.with_conn(|c| list_conflicts(c)).unwrap().is_empty());
+    assert_eq!(e.status(&day(date)), "synced");
+    assert_eq!(e.server(&d7()), vec!["B", "C", "A"]);
+    assert_eq!(main_texts(&e.storage, date), vec!["B", "C", "A"]);
+}

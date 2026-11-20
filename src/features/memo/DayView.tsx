@@ -68,7 +68,7 @@ interface DropLine {
   width: number;
 }
 
-function DraggableMemo({ item, location, firstInPlace }: { item: MemoItem; location: Location; firstInPlace: boolean }) {
+function DraggableMemo({ item, location, firstInPlace, lastInPlace }: { item: MemoItem; location: Location; firstInPlace: boolean; lastInPlace: boolean }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `memo:${item.id}`, data: { item } });
   return (
     <Box ref={setNodeRef} data-drop-row={item.id}>
@@ -78,6 +78,7 @@ function DraggableMemo({ item, location, firstInPlace }: { item: MemoItem; locat
         variant="full"
         comfortable
         firstInPlace={firstInPlace}
+        lastInPlace={lastInPlace}
         dragging={isDragging}
         dragHandleProps={{ ...(attributes as object), ...(listeners as object) }}
       />
@@ -152,7 +153,7 @@ const Section = memo(function Section({
       {/* Next List 도 기준 높이는 내용 높이(auto) — 남는 자리만 채우고 내용보다 작아지지 않는다(긴 메모가 카드 밖으로 나오지 않게). */}
       <Box sx={{ flex: grow ? '1 0 auto' : '0 0 auto', minHeight: bodyMinHeight, display: 'flex', flexDirection: 'column' }}>
         {items.map((item, index) => (
-          <DraggableMemo key={item.id} item={item} location={location} firstInPlace={index === 0} />
+          <DraggableMemo key={item.id} item={item} location={location} firstInPlace={index === 0} lastInPlace={index === items.length - 1} />
         ))}
         <Box data-drop-input sx={{ mt: items.length ? 1 : 0, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <QuickInput

@@ -34,6 +34,23 @@ export function isFirstInSection(items: MemoItem[], item: MemoItem): boolean {
   return items.find(other => other.section === item.section)?.id === item.id;
 }
 
+/** 같은 구역에서 맨 아래인가 — '맨 아래로 보내기' 를 끌 때 쓴다(한 개뿐이면 맨 위이자 맨 아래). */
+export function isLastInSection(items: MemoItem[], item: MemoItem): boolean {
+  const same = items.filter(other => other.section === item.section);
+  return same[same.length - 1]?.id === item.id;
+}
+
+export type MoveEdge = 'top' | 'bottom';
+
+/**
+ * '맨 위로/맨 아래로 보내기' 의 새 순서 — 끌어 놓기(`planDrop`)를 맨 앞 틈(0) 또는 맨 뒤 틈(n)에 놓은 것과 같다.
+ * 이미 그 끝이면(또는 그 구역에 없는 항목이면) null(저장하지 않는다).
+ */
+export function planEdge(sectionIds: string[], activeId: string, edge: MoveEdge): string[] | null {
+  if (!sectionIds.includes(activeId)) return null;
+  return planDrop(sectionIds, activeId, edge === 'top' ? 0 : sectionIds.length);
+}
+
 const SECTION_RANK: Record<ItemSection, number> = { main: 0, am: 1, pm: 2, next: 3 };
 
 /** 저장 결과를 기다리지 않고 화면에 먼저 반영할 항목 목록(Rust `reorder` 와 같은 결과). */

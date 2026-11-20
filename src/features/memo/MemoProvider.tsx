@@ -8,7 +8,7 @@ import { DraftStore } from '../../services/draftStore';
 import { keys, patchItemInCaches, refreshMemo } from '../../services/queries';
 import { dayMemoService, errorMessage, memoItemService, nextListService } from '../../tauri/api';
 import type { ItemSection, Location, MemoItem, MemoKind, MovePolicy } from '../../domain/types';
-import { applyReorder, planDrop } from '../../domain/memoDrop';
+import { applyReorder, planEdge, type MoveEdge } from '../../domain/memoDrop';
 import { koreanMonthDay } from '../../domain/location';
 import { movedMessage } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import MemoNotice, { type Notice } from './MemoNotice';
@@ -31,6 +31,8 @@ export interface MemoActions {
   reorder: (location: Location, section: ItemSection, ids: string[]) => void;
   /** 같은 자리(날짜+구역 / 그 List)의 맨 위로 — 끌어 놓기와 같은 순서 저장. 다른 날짜·List 로는 가지 않는다. */
   moveToTop: (item: MemoItem, location: Location) => void;
+  /** 같은 자리의 맨 아래로 — `moveToTop` 과 같은 길(같은 순서 저장·같은 동기화). 완료 상태·본문·id 는 그대로. */
+  moveToBottom: (item: MemoItem, location: Location) => void;
 }
 
 interface MemoContextValue {
@@ -85,8 +87,9 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
     [store],
   );
 
-  // 맨 위로 보내기는 한 번에 하나씩 — 저장된 순서를 읽고 계산하므로 연달아 눌러도 앞의 결과 위에서 계산한다.
-  const moveToTopQueue = useRef<Promise<void>>(Promise.resolve());
+  // 맨 위로·맨 아래로 보내기는 한 번에 하나씩(같은 줄) — 저장된 순서를 읽고 계산하므로 위·아래를 섞어 연달아 눌러도
+  // 앞의 결과 위에서 계산한다.
+  const moveToEdgeQueue = useRef<Promise<void>>(Promise.resolve());
 
   const run = useCallback(
     async <T,>(task: () => Promise<T>, failure: string): Promise<T | null> => {
@@ -142,6 +145,24 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
     [queryClient, run],
   );
 
+  /** 같은 자리(날짜+구역 / 그 List)의 맨 위·맨 아래로. 이미 그 끝이면 저장하지 않는다. */
+  const moveToEdge = useCallback(
+    (item: MemoItem, location: Location, edge: MoveEdge) => {
+      moveToEdgeQueue.current = moveToEdgeQueue.current.then(async () => {
+        // 편집 중인 본문을 먼저 저장한다 — 순서 변경과 함께 동기화되게(본문·편집 상태는 그대로).
+        await store.flush(item.id);
+        await run(async () => {
+          const { items } = location.kind === 'day' ? await dayMemoService.day(location.date) : await nextListService.list(location.listId);
+          const section = items.find(other => other.id === item.id)?.section;
+          if (!section) return;
+          const ids = planEdge(items.filter(other => other.section === section).map(other => other.id), item.id, edge);
+          if (ids) await doReorder(location, section, ids);
+        }, '순서를 바꾸지 못했습니다.');
+      });
+    },
+    [doReorder, run, store],
+  );
+
   const actions: MemoActions = useMemo(
     () => ({
       create: (location, section, kind, html) =>
@@ -173,21 +194,10 @@ export function MemoProvider({ today, children }: { today: string; children: Rea
       },
       move: request => doMove(request, null),
       reorder: (location, section, ids) => void doReorder(location, section, ids),
-      moveToTop: (item, location) => {
-        moveToTopQueue.current = moveToTopQueue.current.then(async () => {
-          // 편집 중인 본문을 먼저 저장한다 — 순서 변경과 함께 동기화되게(본문·편집 상태는 그대로).
-          await store.flush(item.id);
-          await run(async () => {
-            const { items } = location.kind === 'day' ? await dayMemoService.day(location.date) : await nextListService.list(location.listId);
-            const section = items.find(other => other.id === item.id)?.section;
-            if (!section) return;
-            const ids = planDrop(items.filter(other => other.section === section).map(other => other.id), item.id, 0);
-            if (ids) await doReorder(location, section, ids);
-          }, '순서를 바꾸지 못했습니다.');
-        });
-      },
+      moveToTop: (item, location) => moveToEdge(item, location, 'top'),
+      moveToBottom: (item, location) => moveToEdge(item, location, 'bottom'),
     }),
-    [doMove, doReorder, notify, run, setEditingId, store],
+    [doMove, doReorder, moveToEdge, notify, run, setEditingId, store],
   );
 
   // 창을 닫을 때·앱이 숨겨질 때 남은 입력을 저장한다.

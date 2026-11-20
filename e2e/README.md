@@ -8,6 +8,7 @@ npm run e2e            # 전체 단계
 node e2e/section-heights.mjs   # 날짜 상세 메인·오전·오후 높이 — 실제 창 크기(기본·최소·최대화)별 측정·판정
 node e2e/long-memo-edit.mjs    # 긴 메모(1.2만~3.2만 자): 카드가 끝까지 감쌈 · 누른 글자 자리에서 바로 편집(높이·스크롤·커서 그대로, 편집기 안 스크롤 없음) — Next·List·DAY·다가오는 요일 (--baseline: 판정 없이 측정)
 node e2e/editor-edge-clip.mjs  # 편집 중 커서·글자·한글 조합 밑줄이 편집기 경계(첫·마지막 줄 맨 앞/끝, 빈 새 줄, 오른쪽 줄바꿈)에서 잘리지 않음 — overflow auto/visible 픽셀 비교, DAY 메인·오전·오후·Next·작은 창 (--os-ime: 실제 Windows 한국어 IME, 약 30초 키보드 사용)
+node e2e/move-today-ime.mjs    # 메모 메뉴 T(오늘로 이동)를 실제 Windows 한국어 IME(한글 모드)로 — 메뉴·한/영·조합 중 ⋮ 메뉴는 이동, Ctrl+T·편집 중·서식 메뉴·검색창은 글자 입력(약 40초 키보드·앞 창 사용, 처음 입력 모드로 되돌림)
 node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상태가 필요한 단계는 함께 지정)
 ```
 
@@ -55,6 +56,8 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 | italic-paste | 예전 기울임(em·style) 읽기·편집 화면 일반 글씨 + 열고 닫아도 HTML·수정 시각 그대로, Word HTML 붙여넣기(i·em·style·oblique·클래스 규칙·중첩) → 기울임만 빠지고 글자·굵게·밑줄·글자색·배경색·링크 유지 |
 | weekly-recurrence | 메모 날짜의 요일 문구(지난·다른 요일)·메뉴 위치, ○요일마다 생성 → 다음·그다음 주 카드에 바로(미완료·같은 구역·원본 날짜 중복 없음), 먼 날짜는 볼 때만, 여러 번 조회해도 하나, 생성 중·반복 중지·이 항목만 삭제 표시·'시작할 때 내용' 안내, 그 날짜만 완료·수정, 강제 종료 후 유지, 중지 확인창(정리 수·남는 수·취소하면 그대로) → 손대지 않은 이후 회차만 정리·History, 정리할 것이 없으면 확인창 없이 중지, 연결된 날짜는 시작 불가 |
 | voc-button | 설정 바로 왼쪽·같은 높이(주간·날짜 상세·찾아보기·850px), 이름 "VOC 및 FAQ"·툴팁, 클릭·키보드 Enter → 개발 빌드는 열 수 없는 이유 안내(staging·production 은 {PLAN-A Work}/voc 를 기본 브라우저로) |
+| memo-move-today | 다른 날로 이동 날짜순(오늘·내일·모레·그다음 요일 8개, 토·일 제자리, 메모가 있는 날짜 꺼짐, '오늘' 옆 T·같은 높이, List·날짜 선택 유지), 우클릭 → T → 오늘(id·구역·완료·완료 시각·서식·배경색·이미지 그대로) = 메뉴 클릭과 같은 결과, 편집 중·서식 메뉴의 t·닫은 뒤 T·Ctrl+T·Alt+T 는 이동 아님, 연타에도 그 메모 한 번, 이미 오늘이면 저장·revision 없음, 주간·지난 날짜·Next List, 작은 창, 재실행 후 위치 |
+| linked-move-today | (Mock) 연결된 날짜 → 연결된 오늘: T·메뉴 클릭 → 같은 Push → Mock Web 도 원래 날짜에서 빠지고 오늘에, 다시 동기화해도 비교 화면 없음, 오프라인 T 는 바로 + '전달 대기' → 복귀 후 전달, 연결되지 않은 오늘로는 T 로도 기존 확인창(취소하면 그대로) |
 
 * **격리**: `PLANA_CONFIG_DIR`(development 빌드에서만 읽음)로 앱 설정을 임시 폴더에 두고, 저장 위치도 임시 폴더다.
   credential 은 Windows 자격 증명 관리자의 `PLAN-A Memo (development-e2e)` 항목만 쓰고 시작·끝에 지운다.
@@ -74,6 +77,18 @@ node e2e/run.mjs image search   # 이름에 맞는 단계만(앞 단계의 상�
 * 날짜 알림의 **OS 동작**(앱 종료 상태 알림·클릭·최소화·알림 꺼짐·놓친 알림·제거 시 작업 삭제)은 `node e2e/reminder-os.mjs` —
   별도 테스트 앱 'PLAN-A Memo RemindTest' 를 release Installer 로 설치해 실제 작업 스케줄러·Windows 알림으로 확인한다(약 30분, 끝나면 제거·정리).
 * 설치·업데이트·제거 E2E 는 `npm run e2e:installer`(`e2e/installer.mjs` — 별도 테스트 앱 'PLAN-A Memo InstTest').
+
+* **시험 날짜는 단계마다 따로** 쓴다(`today+N`). 같은 날짜를 두 단계가 쓰면 전체 실행에서만 결과가 달라진다(예전 memo-move-top 의 다른 날짜 확인 +45 = memo-move-bottom 의 시험 날짜).
+  memo-move-top(+44·+45)·memo-move-bottom(+56·+57)은 시작할 때 `assertFreshDates` 로 날짜가 비어 있는지 확인하고, 겹치면 "시험 날짜 겹침" 으로 바로 멈춘다.
+  memo-move-today 는 비어 있고 연결되지 않은 날짜를 골라 쓴다(`freeDate`). linked-move-today 는 도착지가 늘 오늘이라, 다시 연결한 오늘이 앞 단계 기록 때문에
+  첫 연결 비교로 가면 그것을 확인하고 이 PC 내용을 골라 끝낸 뒤 판정한다.
+
+## 알려진 E2E 문제(별도 이슈 — 2026-11-20 기록)
+
+| 단계 | 증상 | 재현 | 상태 |
+|---|---|---|---|
+| reminder-setup | `예약 시각 = 아직 오지 않은 알림 시각` 실패 — `reminder_get` 의 pending 알림은 `[오늘T21:30, d7-2일T21:30]` 인데 `reminder_status().task.triggers` 가 `[]` | `node e2e/run.mjs first-run memo-create reminder-setup` — 2026-11-20 저녁 단독 실행 3회 모두 실패(메모 메뉴 T 작업 이전 코드 main 8fbac14 빌드 포함), 그 뒤 전체 실행에서는 통과 — 시각에 따라 달라지거나 불안정 | 원인 미조사(작업 스케줄러 등록 쪽). 전체 실행은 첫 실패에서 멈추므로 그 뒤 단계는 이름을 지정해 따로 실행 |
+| memo-drag-scroll-long | 여러 단계를 이어 실행할 때 한 번 `Cannot read properties of undefined (reading 'id')`(시험 데이터 만들기 중), 콘솔에 새로고침 중 IPC `ERR_ABORTED` | 2026-11-20 `node e2e/run.mjs first-run memo-create linked-move-bottom upcoming … memo-drag …` 에서 1회. 단독 실행은 통과 | 불안정(타이밍 추정), 원인 미조사 |
 
 ## 실제 PLAN-A Work 서버로(통합 E2E)
 

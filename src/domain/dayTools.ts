@@ -24,6 +24,35 @@ export function upcomingCardTitle(date: string, today: string): string {
   return `다음 ${weekdayName(date)} · ${dateWithYear(date, today)}`;
 }
 
+/** '다른 날로 이동' 에 바로 보이는 날짜 수 — 오늘 + 앞으로 7일(그 밖은 '날짜 선택…'). */
+export const MOVE_MENU_DAYS_AHEAD = 7;
+const MOVE_MENU_RELATIVE = ['오늘', '내일', '모레'] as const;
+
+export interface MoveMenuDay {
+  date: string;
+  /** 0 = 오늘 */
+  offset: number;
+  /** '오늘' · '내일' · '모레' · '월요일' … */
+  label: string;
+  /** '금 · 11/20'(오늘·내일·모레) · '11/23'(요일 이름) — 연도가 다르면 '2027. 1/1' */
+  detail: string;
+}
+
+/**
+ * '다른 날로 이동' 의 날짜 목록 — **오늘부터 날짜순**(오늘·내일·모레·그다음 요일들, 토·일 포함 8개).
+ * 'YYYY-MM-DD' UTC 산술이라 월말·연말·윤년을 그대로 넘고, 브라우저 타임존 때문에 하루가 어긋나지 않는다.
+ */
+export function moveMenuDays(today: string): MoveMenuDay[] {
+  return Array.from({ length: MOVE_MENU_DAYS_AHEAD + 1 }, (_, offset) => {
+    const date = addDays(today, offset);
+    const when = dateWithYear(date, today);
+    const relative = MOVE_MENU_RELATIVE[offset];
+    return relative
+      ? { date, offset, label: relative, detail: `${WEEKDAY_LABELS[weekdayOf(date)]} · ${when}` }
+      : { date, offset, label: weekdayName(date), detail: when };
+  });
+}
+
 export function daysBetween(from: string, to: string): number {
   const toUtc = (d: string) => {
     const [y, m, dd] = d.split('-').map(Number);

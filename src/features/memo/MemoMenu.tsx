@@ -3,9 +3,9 @@
  * Web 의 '오늘 업무에 추가'·'작업노트에 보내기' 는 서버 기능이라 Desktop 에는 없다.
  * '○요일마다 생성' 은 Desktop 판(이 PC 의 반복 — memo/recurrence.rs). 반복 규칙은 Sync Contract 에 없어 Web 과 공유하지 않는다.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Divider, ListItemIcon, ListItemText, Menu, MenuItem, Typography } from '@mui/material';
+import { Box, Divider, ListItemIcon, ListItemText, Menu, MenuItem, Typography } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import CheckIcon from '@mui/icons-material/Check';
@@ -22,17 +22,35 @@ import RepeatIcon from '@mui/icons-material/Repeat';
 import RepeatOnIcon from '@mui/icons-material/RepeatOn';
 import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined';
 import type { Location, MemoItem, MemoSection } from '../../domain/types';
-import { quickMoveDate, shortDate, WEEKDAY_LABELS } from '../../vendor/plan-a-work/utils/personalMemoDates';
+import { localDayString, shortDate } from '../../vendor/plan-a-work/utils/personalMemoDates';
 import { NEXT_LABEL } from '../../vendor/plan-a-work/components/personalMemo/personalMemoTheme';
 import { refreshMemo, useLists, useRecurrence } from '../../services/queries';
 import { errorMessage, recurrenceService } from '../../tauri/api';
-import { weekdayName } from '../../domain/dayTools';
+import { moveMenuDays, weekdayName } from '../../domain/dayTools';
 import { usePersonalMemo } from './MemoProvider';
 import RecurrenceStopDialog, { type RecurrenceStopRequest } from './RecurrenceStopDialog';
+import { isMoveTodayKey } from './menuShortcut';
 
 export type MenuAnchor = { kind: 'element'; el: HTMLElement } | { kind: 'point'; top: number; left: number };
 
 type Page = 'main' | 'move' | 'section';
+
+/** 메뉴 항목 옆 단축키 표시 — 작게, 메뉴 글자와 같은 글꼴. */
+const shortcutHintSx = {
+  ml: 0.75,
+  px: 0.5,
+  minWidth: 16,
+  display: 'inline-block',
+  textAlign: 'center',
+  fontFamily: 'inherit',
+  fontSize: 11,
+  lineHeight: '15px',
+  color: 'text.secondary',
+  border: 1,
+  borderColor: 'divider',
+  borderRadius: 0.5,
+  verticalAlign: 1,
+} as const;
 
 export const SECTION_LABELS: Record<MemoSection, string> = {
   main: '메인 할 일',
@@ -77,6 +95,38 @@ export default function MemoMenu({
     fn();
   };
   const dated = location.kind === 'day';
+  // 날짜 목록의 기준 '오늘' — 메뉴를 연 순간의 이 PC 날짜. 앱의 오늘(30초마다 갱신)보다 앞서 있으면 그것을 쓴다
+  // (자정 직후 연 메뉴도 새 날짜부터). 둘 다 같은 로컬 날짜 문자열이라 UTC 로 하루 어긋나지 않는다.
+  const menuToday = useMemo(() => {
+    if (!anchor) return today;
+    const now = localDayString();
+    return now > today ? now : today;
+  }, [anchor, today]);
+  const moveDays = useMemo(() => moveMenuDays(menuToday), [menuToday]);
+  /** 메모가 이미 그 날짜에 있다 — 그 날짜로는 옮기지 않는다(같은 자리 저장·Sync 를 만들지 않게). */
+  const isHere = (date: string) => location.kind === 'day' && location.date === date;
+  /** 날짜로 이동 — 메뉴 클릭과 T 단축키가 같은 명령(기존 이동·연결 확인·Sync 경로)을 쓴다. */
+  const moveToDay = (date: string) => run(() => void actions.move({ item, target: { kind: 'day', date } }));
+
+  // T — 메뉴가 열려 있는 동안만 듣는다. 캡처 단계에서 받아 막으므로 편집기가 포커스를 갖고 있어도 't' 가 글자로 들어가지 않고,
+  // 메뉴의 첫 글자 찾기로도 가지 않는다. 한 번 연 메뉴에서 한 번만(빠른 연타·키 반복에도 두 번 옮기지 않는다).
+  const moveTodayShortcut = useRef<(() => void) | null>(null);
+  moveTodayShortcut.current = isHere(menuToday) ? null : () => moveToDay(menuToday);
+  useEffect(() => {
+    if (!anchor) return undefined;
+    let fired = false;
+    const onKey = (event: KeyboardEvent) => {
+      if (!isMoveTodayKey(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const go = moveTodayShortcut.current;
+      if (fired || event.repeat || !go) return;
+      fired = true;
+      go();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [anchor]);
   /** 메모가 속한 날짜의 요일(오늘이 아니라) — '토요일' */
   const dayName = location.kind === 'day' ? weekdayName(location.date) : '';
   const recurrenceInfo = recurrence.data && recurrence.dataUpdatedAt >= openedAt ? recurrence.data : null;
@@ -212,18 +262,28 @@ export default function MemoMenu({
     );
   } else if (page === 'move') {
     items.push(back, <Divider key="d" />);
-    items.push(
-      <MenuItem key="today" dense onClick={() => run(() => void actions.move({ item, target: { kind: 'day', date: today } }))}>
-        <ListItemText primary="오늘" />
-        <Typography variant="caption" color="text.secondary">{shortDate(today)}</Typography>
-      </MenuItem>,
-    );
-    WEEKDAY_LABELS.forEach((label, weekday) => {
-      const date = quickMoveDate(today, weekday);
+    // 오늘부터 날짜순(오늘·내일·모레·그다음 요일) — 토·일도 제자리. 메모가 이미 있는 날짜는 꺼 둔다(List 와 같은 규칙).
+    moveDays.forEach(({ date, offset, label, detail }) => {
       items.push(
-        <MenuItem key={`w${weekday}`} dense onClick={() => run(() => void actions.move({ item, target: { kind: 'day', date } }))}>
-          <ListItemText primary={label} />
-          <Typography variant="caption" color="text.secondary">{shortDate(date)}</Typography>
+        <MenuItem
+          key={`d${offset}`}
+          dense
+          disabled={isHere(date)}
+          data-testid="memo-move-day"
+          data-date={date}
+          onClick={() => moveToDay(date)}
+        >
+          <ListItemText
+            primary={
+              offset === 0 ? (
+                <>
+                  {label}
+                  <Box component="kbd" data-testid="memo-move-today-key" sx={shortcutHintSx}>T</Box>
+                </>
+              ) : label
+            }
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ ml: 2 }}>{detail}</Typography>
         </MenuItem>,
       );
     });

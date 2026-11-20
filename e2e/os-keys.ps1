@@ -1,8 +1,11 @@
-# 실제 Windows 키 입력(OS → IME → WebView2) — e2e/editor-edge-clip.mjs --os-ime 전용.
+# 실제 Windows 키 입력(OS → IME → WebView2) — e2e/editor-edge-clip.mjs --os-ime · e2e/move-today-ime.mjs 전용.
 #   -Keys 15,44   가상 키 코드(16진수)를 차례로 누른다(15 = 한/영, 44 = D → 2벌식 'ㅇ').
+#   -Keys 11+54   '+' 로 묶은 키는 함께 누른다(앞에서부터 누르고 거꾸로 뗀다 — 11+54 = Ctrl+T).
+#   -Scan         실제 키보드처럼 스캔 코드도 보낸다(KeyboardEvent.code 가 채워진다). 없으면 예전처럼 0.
 # 안전: 테스트 창을 앞으로 가져온 뒤, 누를 때마다 앞 창이 테스트 앱인지 확인하고 아니면 멈춘다(종료 코드 2).
-param([Parameter(Mandatory = $true)][int]$AppPid, [string]$Keys = '')
+param([Parameter(Mandatory = $true)][int]$AppPid, [string]$Keys = '', [switch]$Scan)
 Add-Type -Namespace PlanaE2e -Name Keys -MemberDefinition @'
+[DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
 [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
@@ -30,10 +33,10 @@ foreach ($key in ($Keys -split ',')) {
   if (-not $key) { continue }
   $fg = ForegroundPid
   if ($fg -ne $AppPid) { Write-Output "NOT_FOREGROUND $fg"; exit 2 }
-  $vk = [Convert]::ToByte($key, 16)
-  [PlanaE2e.Keys]::keybd_event($vk, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 40
-  [PlanaE2e.Keys]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)
+  $vks = @($key -split '\+' |ForEach-Object { [Convert]::ToByte($_, 16) })
+  $scans = @($vks | ForEach-Object { if ($Scan) { [byte][PlanaE2e.Keys]::MapVirtualKey($_, 0) } else { [byte]0 } })
+  for ($k = 0; $k -lt $vks.Count; $k++) { [PlanaE2e.Keys]::keybd_event($vks[$k], $scans[$k], 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40 }
+  for ($k = $vks.Count - 1; $k -ge 0; $k--) { [PlanaE2e.Keys]::keybd_event($vks[$k], $scans[$k], 2, [UIntPtr]::Zero) }
   Start-Sleep -Milliseconds 120
 }
 if ((ForegroundPid) -ne $AppPid) { Write-Output 'NOT_FOREGROUND'; exit 2 }

@@ -410,6 +410,16 @@ const plusDays = (date, n) => {
   const [y, m, d] = date.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 };
+/**
+ * 단계 전용 시험 날짜가 비어 있는가 — 다른 단계와 날짜를 나눠 쓰면 실행 순서에 따라 결과가 달라지므로 시작 전에 확인한다.
+ * 겹치면 그 단계의 판정이 아니라 '시험 날짜 겹침' 으로 바로 멈춘다.
+ */
+async function assertFreshDates(stepName, dates) {
+  for (const date of dates) {
+    const memo = await app.invoke('memo_day', { date });
+    assert.ok(!memo.document && memo.items.length === 0, `${stepName}: 시험 날짜 ${date} 를 다른 단계가 이미 썼다(메모 ${memo.items.length}개) — 단계마다 다른 날짜를 쓴다`);
+  }
+}
 const weekdayIndex = date => (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7; // 0 = 월
 const dayOf = date => app.invoke('memo_day', { date });
 const addItem = (date, section, html, kind = 'checklist') =>
@@ -1169,7 +1179,9 @@ step('rich-menu-placement', async () => {
 
 step('memo-move-top', async () => {
   const page = app.page;
+  // 전용 날짜: today+44(시험) · +45(다른 날짜 그대로 확인) — memo-move-bottom 은 +56·+57 을 쓴다
   const date = plusDays(today, 44);
+  await assertFreshDates('memo-move-top', [date, plusDays(date, 1)]);
   const location = { kind: 'day', date };
   const ids = {};
   for (const name of ['A', 'B', 'C']) ids[name] = (await addItem(date, 'main', `맨위 ${name}`)).id;
@@ -1288,7 +1300,10 @@ step('memo-move-top', async () => {
 
 step('memo-move-bottom', async () => {
   const page = app.page;
-  const date = plusDays(today, 45);
+  // 전용 날짜: today+56(시험) · +57(다른 날짜 그대로 확인). 예전 +45 는 memo-move-top 의 '다른 날짜'(+44 의 다음 날)와
+  // 겹쳐, 전체 실행에서 그 메모가 메인 맨 위에 끼어 순서 판정이 틀렸다(단독 실행만 통과).
+  const date = plusDays(today, 56);
+  await assertFreshDates('memo-move-bottom', [date, plusDays(date, 1)]);
   const ids = {};
   for (const name of ['A', 'B', 'C', 'D']) ids[name] = (await addItem(date, 'main', `맨아래 ${name}`)).id;
   for (const name of ['M', 'N', 'O']) ids[name] = (await addItem(date, 'am', `맨아래 ${name}`)).id;
@@ -2924,6 +2939,311 @@ step('voc-button', async () => {
   await app.shot('66-voc-min-window');
   await page.setViewportSize({ width: 1180, height: 760 });
 });
+
+// ── 메모 메뉴: 우클릭 → T = 오늘로 이동 · '다른 날로 이동' 날짜순(오늘·내일·모레·그다음 요일) ──────────────
+
+const TINY_PNG = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+const WEEKDAY_KO = ['월', '화', '수', '목', '금', '토', '일'];
+/** 메모가 지금 있는 날짜(dates 중) + 항목 */
+async function whereIs(id, dates) {
+  for (const date of dates) {
+    const found = (await dayOf(date)).items.find(i => i.id === id);
+    if (found) return { date, ...found };
+  }
+  return null;
+}
+/** 앞 단계가 쓰지 않은(연결 안 됨·메모 없음) 날짜 — 연결된 날짜면 이동이 확인창(기존 보호)으로 가므로 피한다. */
+async function freeDate(candidates) {
+  for (const date of candidates) {
+    const memo = await dayOf(date);
+    if (!memo.document?.syncEnabled && memo.items.length === 0) return date;
+  }
+  throw new Error(`비어 있는 날짜 없음: ${candidates.join(', ')}`);
+}
+const memoRowOf = id => app.page.locator(`[data-testid="personal-memo-row"][data-memo-id="${id}"]`);
+const rowMenu = () => app.page.locator('[data-testid="personal-memo-menu"]');
+async function openRowMenu(id, scope = app.page) {
+  await scope.locator(`[data-memo-id="${id}"] [aria-label="메모 편집"]`).first().click({ button: 'right' });
+  await rowMenu().waitFor();
+}
+async function moveTodayByClick(id) {
+  await openRowMenu(id);
+  await rowMenu().getByText('다른 날로 이동').click();
+  await app.page.locator(`[data-testid="memo-move-day"][data-date="${today}"]`).click();
+}
+
+step('memo-move-today', async () => {
+  const page = app.page;
+  // 메뉴에 보이는 날짜(오늘+1~7) 중 앞 단계가 쓰지 않은 날 — 그 날짜가 메뉴에서 꺼지는 것도 본다
+  const date = await freeDate([5, 6, 4, 7, 3, 2, 1].map(n => plusDays(today, n)));
+  const image = await page.evaluate(bytes => window.__TAURI_INTERNALS__.invoke('attachment_import', new Uint8Array(bytes)), TINY_PNG);
+  const rich =
+    `<p><b>오늘로 B</b> <span style="color: rgb(139, 92, 246);">보라</span> <span style="background-color: rgb(255, 245, 157);">배경</span></p>` +
+    `<div><img src="${image.url}" alt="붙여넣은 이미지" style="width: 40px; height: auto;"><br></div>`;
+  const ids = {};
+  ids.A = (await addItem(date, 'main', '오늘로 A')).id;
+  ids.B = (await addItem(date, 'am', rich)).id;
+  ids.C = (await addItem(date, 'pm', '오늘로 C')).id;
+  ids.D = (await addItem(date, 'main', '오늘로 D')).id;
+  await app.invoke('item_set_completed', { id: ids.B, completed: true });
+  const origin = {}; // 끝나면 원래 자리로 돌려 뒤 단계에 영향이 없게
+  const where = id => whereIs(id, [date, today]);
+  for (const name of Object.keys(ids)) origin[name] = { location: { kind: 'day', date }, section: (await where(ids[name])).section };
+  const bBefore = await where(ids.B);
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+
+  // 1) 날짜 목록 — 오늘부터 날짜순 8개, '오늘' 옆 T, 메모가 있는 날짜는 꺼짐, 그 뒤 List · 날짜 선택 그대로
+  await openRowMenu(ids.A);
+  await rowMenu().getByText('다른 날로 이동').click();
+  const days = await page.locator('[data-testid="memo-move-day"]').evaluateAll(els =>
+    els.map(el => ({
+      date: el.getAttribute('data-date'),
+      label: el.querySelector('.MuiListItemText-root').textContent,
+      detail: el.querySelector('.MuiTypography-caption').textContent,
+      disabled: el.getAttribute('aria-disabled') === 'true',
+    })),
+  );
+  assert.deepEqual(days.map(d => d.date), Array.from({ length: 8 }, (_, n) => plusDays(today, n)), '오늘부터 날짜순 8개');
+  assert.deepEqual(days.slice(0, 3).map(d => d.label), ['오늘T', '내일', '모레']);
+  days.slice(0, 3).forEach(d => assert.ok(d.detail.startsWith(`${WEEKDAY_KO[weekdayIndex(d.date)]} · `), `요일 표시 ${d.detail}`));
+  days.slice(3).forEach(d => assert.equal(d.label, `${WEEKDAY_KO[weekdayIndex(d.date)]}요일`));
+  assert.deepEqual(days.filter(d => d.disabled).map(d => d.date), [date], '메모가 있는 날짜만 꺼짐');
+  const after = await rowMenu().locator('[role="menuitem"]').allInnerTexts();
+  assert.ok(after.at(-1).includes('날짜 선택'), '날짜 선택… 유지');
+  assert.ok(after.some(t => t.includes('날짜 미정')), 'Next 이동 유지');
+  const [todayBox, tomorrowBox] = await Promise.all([0, 1].map(n => page.locator('[data-testid="memo-move-day"]').nth(n).boundingBox()));
+  assert.ok(Math.abs(todayBox.height - tomorrowBox.height) <= 1, 'T 표시가 있어도 같은 높이');
+  assert.ok(await page.locator('[data-testid="memo-move-today-key"]').isVisible(), 'T 표시');
+  await app.shot('68-move-today-menu');
+  await page.keyboard.press('Escape');
+  await rowMenu().waitFor({ state: 'detached' });
+
+  // 2) 우클릭 → T → 오늘로(같은 id·구역·완료·완료 시각·서식·이미지)
+  await openRowMenu(ids.B);
+  await page.keyboard.press('t');
+  await waitFor(async () => (await where(ids.B))?.date === today, 'T → B 오늘로');
+  await rowMenu().waitFor({ state: 'detached' });
+  const bAfter = await where(ids.B);
+  assert.deepEqual(
+    [bAfter.id, bAfter.section, bAfter.kind, bAfter.completed, bAfter.completedAt, bAfter.contentHtml],
+    [bBefore.id, 'am', bBefore.kind, true, bBefore.completedAt, bBefore.contentHtml],
+    'T 이동 — 내용·서식·이미지·완료 그대로',
+  );
+
+  // 3) 메뉴 클릭(다른 날로 이동 → 오늘) — T 와 같은 결과(구역 유지, 오늘 그 구역 맨 뒤)
+  const cBefore = await where(ids.C);
+  await moveTodayByClick(ids.C);
+  await waitFor(async () => (await where(ids.C))?.date === today, '클릭 → C 오늘로');
+  const cAfter = await where(ids.C);
+  assert.deepEqual([cAfter.id, cAfter.section, cAfter.contentHtml], [cBefore.id, 'pm', cBefore.contentHtml]);
+  const todayItems = (await dayOf(today)).items;
+  const lastOf = section => todayItems.filter(i => i.section === section).at(-1)?.id;
+  assert.equal(lastOf('am'), ids.B, 'T: 오늘 그 구역 맨 뒤');
+  assert.equal(lastOf('pm'), ids.C, '클릭: 오늘 그 구역 맨 뒤');
+  assert.equal(todayItems.find(i => i.id === ids.B).documentId, todayItems.find(i => i.id === ids.C).documentId, '같은 오늘 문서');
+
+  // 4) 편집 중의 t 는 글자 · 서식 메뉴에서의 t 도 이동이 아니다
+  await memoRowOf(ids.A).locator('[aria-label="메모 편집"]').click();
+  const editable = memoRowOf(ids.A).locator('[contenteditable="true"]');
+  await editable.waitFor();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' tT');
+  await selectText(editable, '오늘로');
+  await openMenu(page, editable);
+  await page.keyboard.press('t');
+  await sleep(400);
+  if (await menuOf(page).count()) await page.keyboard.press('Escape');
+  await page.locator('[data-testid="memo-header-date"]').click();
+  await waitFor(async () => /tT/.test((await where(ids.A)).contentHtml), '편집 중 t 는 글자로 저장');
+  assert.equal((await where(ids.A)).date, date, '편집·서식 메뉴의 t — 이동 없음');
+
+  // 5) 메뉴를 닫은 뒤의 T · 메뉴가 열린 채 Ctrl+T / Alt+T — 이동 없음
+  await openRowMenu(ids.A);
+  await page.keyboard.press('Escape');
+  await rowMenu().waitFor({ state: 'detached' });
+  await page.keyboard.press('t');
+  await openRowMenu(ids.A);
+  await page.keyboard.press('Control+t');
+  await page.keyboard.press('Alt+t');
+  await sleep(500);
+  assert.equal((await where(ids.A)).date, date, '닫은 뒤 T · Ctrl+T · Alt+T 는 이동 아님');
+  if (await rowMenu().count()) await page.keyboard.press('Escape');
+
+  // 6) 빠른 연타 — 우클릭한 메모 하나만 한 번
+  const aSnapshot = await where(ids.A);
+  await openRowMenu(ids.D);
+  await page.keyboard.press('t');
+  await page.keyboard.press('t');
+  await page.keyboard.press('T');
+  await waitFor(async () => (await where(ids.D))?.date === today, '연타 → D 오늘로');
+  await sleep(500);
+  const aNow = await where(ids.A);
+  assert.deepEqual([aNow.date, aNow.updatedAt], [aSnapshot.date, aSnapshot.updatedAt], '다른 메모(A)는 그대로');
+  assert.equal((await dayOf(today)).items.filter(i => i.id === ids.D).length, 1);
+
+  // 7) 이미 오늘인 메모 — T 는 저장도 Sync 도 만들지 않는다
+  await openToday();
+  const docBefore = (await dayOf(today)).document;
+  const bToday = await where(ids.B);
+  await openRowMenu(ids.B);
+  await page.keyboard.press('t');
+  await sleep(700);
+  const docAfter = (await dayOf(today)).document;
+  const bStill = await where(ids.B);
+  assert.deepEqual([bStill.updatedAt, bStill.sortOrder], [bToday.updatedAt, bToday.sortOrder], '이미 오늘 — 항목 그대로');
+  assert.deepEqual([docAfter.localRevision, docAfter.updatedAt], [docBefore.localRevision, docBefore.updatedAt], '이미 오늘 — 문서 revision 그대로');
+  assert.equal(await rowMenu().count(), 1, '메뉴는 열린 채(할 일 없음)');
+  await rowMenu().getByText('다른 날로 이동').click();
+  assert.equal(await page.getAttribute(`[data-testid="memo-move-day"][data-date="${today}"]`, 'aria-disabled'), 'true', '메뉴의 오늘도 꺼짐');
+  await page.keyboard.press('Escape');
+
+  // 8) 주간 화면 · 지난 날짜 — 이번 주의 다른 날(오늘이 월요일이면 화요일)
+  const monday = plusDays(today, -weekdayIndex(today));
+  const weekDate = await freeDate(Array.from({ length: 7 }, (_, n) => plusDays(monday, n)).filter(d => d !== today));
+  ids.W = (await addItem(weekDate, 'main', '오늘로 W')).id;
+  origin.W = { location: { kind: 'day', date: weekDate }, section: 'main' };
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  const cell = page.locator(`[data-testid="memo-cell-${weekDate}"]`);
+  const more = cell.locator('button:has-text("더 보기")');
+  if (await more.count()) await more.click();
+  await openRowMenu(ids.W, cell);
+  await page.keyboard.press('t');
+  await waitFor(async () => (await whereIs(ids.W, [weekDate, today]))?.date === today, '주간 → W 오늘로');
+
+  // 9) Next List — 날짜 미정에서 T → 오늘(메인)
+  const next = await app.invoke('item_create', { input: { id: crypto.randomUUID(), location: { kind: 'next', listId: null }, section: 'next', kind: 'checklist', contentHtml: '오늘로 N' } });
+  ids.N = next.id;
+  origin.N = { location: { kind: 'next', listId: null }, section: null };
+  await page.reload();
+  await page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  await page.click('[data-testid="memo-cell-next"] button[aria-label$="메모 쓰기"]');
+  await page.waitForSelector('[data-testid="memo-section-next"]');
+  await openRowMenu(ids.N);
+  await page.keyboard.press('t');
+  await waitFor(async () => (await dayOf(today)).items.some(i => i.id === ids.N), 'Next → N 오늘로');
+  assert.equal((await dayOf(today)).items.find(i => i.id === ids.N).section, 'main', 'Next 에서 오면 메인');
+  assert.ok(!(await app.invoke('memo_list', { listId: null })).items.some(i => i.id === ids.N), 'Next 에서 빠짐');
+
+  // 10) 작은 창 — 하위 메뉴가 창 안에(잘림 없음)
+  await page.setViewportSize({ width: 850, height: 620 });
+  await openDate(date);
+  await openRowMenu(ids.A);
+  await rowMenu().getByText('다른 날로 이동').click();
+  await sleep(300);
+  const paper = await rowMenu().boundingBox();
+  assert.ok(paper.y >= 0 && paper.x >= 0 && paper.x + paper.width <= 850 + 0.5 && paper.y + paper.height <= 620 + 0.5, `작은 창: 메뉴가 창 안 ${JSON.stringify(paper)}`);
+  await app.shot('68b-move-today-small-window');
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 1180, height: 760 });
+
+  // 11) 재실행 후에도 오늘에
+  await app.restart();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  const todayIds = (await dayOf(today)).items.map(i => i.id);
+  for (const name of ['B', 'C', 'D', 'W', 'N']) assert.ok(todayIds.includes(ids[name]), `재실행 후 ${name} 오늘에`);
+  assert.equal((await where(ids.B)).contentHtml, bBefore.contentHtml, '재실행 후 서식·이미지 그대로');
+
+  // 뒤 단계를 위해 원래 자리로(기존 이동 명령)
+  for (const name of ['B', 'C', 'D', 'W', 'N']) {
+    const { location, section } = origin[name];
+    await app.invoke('item_move', { input: { id: ids[name], target: location, section, index: null, policy: 'local_only' } });
+  }
+});
+
+step(
+  'linked-move-today',
+  async () => {
+    // (Mock) 연결된 날짜 → 연결된 오늘: T 와 메뉴 클릭이 같은 Push 로 Mock Web 에도 같게. 연결 → 미연결은 단축키로도 확인창.
+    if (!(await app.invoke('auth_status')).loggedIn) {
+      await app.invoke('auth_login_begin', { reconnect: false });
+      await waitFor(async () => (await app.invoke('auth_status')).loggedIn, '로그인');
+    }
+    const page = app.page;
+    const date = plusDays(today, 49);
+    const source = { kind: 'day', date };
+    const target = { kind: 'day', date: today };
+    const todayWasLinked = !!(await dayOf(today)).document?.syncEnabled;
+    const ids = {};
+    for (const name of ['A', 'B', 'C', 'D']) ids[name] = (await addItem(date, 'main', `연결오늘 ${name}`)).id;
+    await app.invoke('item_set_completed', { id: ids.B, completed: true });
+    await app.invoke('sync_link', { location: source });
+    if (!todayWasLinked) await app.invoke('sync_link', { location: target });
+    await app.invoke('sync_now');
+    // T 의 도착지는 언제나 '오늘' 이라 앞 단계들이 남긴 오늘의 이 PC·Mock Web 기록과 만난다. 다시 연결한 오늘의 내용이 양쪽에서
+    // 다르면 기존 첫 연결 비교(덮지 않음)가 뜬다 — 이 단계의 판정 전에 이 PC 내용을 골라 끝낸다(Mock 시험 데이터만).
+    const todayCompare = (await app.invoke('conflicts_list')).find(c => c.location.kind === 'day' && c.location.date === today);
+    if (todayCompare) {
+      console.log('  · 오늘: 앞 단계의 기록과 달라 첫 연결 비교 → 이 PC 내용 선택 후 진행');
+      assert.ok((await dayOf(today)).document.hasConflict, '오늘: 덮지 않고 비교 대기(기존 보호)');
+      await app.invoke('conflict_resolve', { id: todayCompare.id, choice: 'local' });
+      await waitFor(async () => (await dayOf(today)).document.syncStatus === 'synced', '오늘: 비교 선택 반영');
+    }
+    const letters = list => list.map(t => t.replace(/^.*연결오늘 ([A-Z]).*$/s, '$1')).filter(t => t.length === 1).sort().join('');
+    const web = async d => letters((await app.invoke('mock_v2_web', { input: { action: 'items', date: d } })).map(i => i.content));
+    const local = async d => letters((await dayOf(d)).items.map(i => i.contentHtml));
+    await waitFor(async () => (await web(date)) === 'ABCD', 'Web 첫 상태');
+    await openDate(date);
+
+    // T(A) · 메뉴 클릭(B) — 같은 이동 → 같은 Push
+    await openRowMenu(ids.A);
+    await page.keyboard.press('t');
+    await waitFor(async () => (await local(today)).includes('A'), 'T → A 오늘로');
+    await moveTodayByClick(ids.B);
+    await waitFor(async () => (await local(today)).includes('B'), '클릭 → B 오늘로');
+    assert.equal(await page.locator('[data-testid="move-decision-dialog"]').count(), 0, '연결 → 연결: 확인창 없음');
+    let report = await app.invoke('sync_now');
+    assert.equal(report.conflicts, 0);
+    await waitFor(async () => (await web(date)) === 'CD' && (await web(today)).includes('AB'), 'Mock Web: 원래 날짜에서 빠지고 오늘에');
+    await waitFor(async () => (await dayOf(date)).document.syncStatus === 'synced' && (await dayOf(today)).document.syncStatus === 'synced', '동기화됨');
+    assert.equal((await dayOf(today)).items.find(i => i.id === ids.B).completed, true, '완료 그대로');
+    for (let n = 0; n < 2; n++) assert.equal((await app.invoke('sync_now')).conflicts, 0, '다시 동기화해도 비교 화면 없음');
+    await app.shot('68c-linked-move-today');
+
+    // 오프라인 — 바로 옮겨지고 '전달 대기', 온라인 복귀 후 전달
+    await app.invoke('mock_set_online', { online: false });
+    await openRowMenu(ids.C);
+    await page.keyboard.press('t');
+    await waitFor(async () => (await local(today)).includes('C'), '오프라인에서도 바로');
+    report = await app.invoke('sync_now');
+    assert.ok(report.offline);
+    assert.equal((await dayOf(date)).document.syncStatus, 'pending', '전달 대기');
+    assert.equal(await web(date), 'CD', 'Web 은 아직 그대로');
+    await app.invoke('mock_set_online', { online: true });
+    await app.invoke('sync_now');
+    await waitFor(async () => (await web(date)) === 'D' && (await web(today)).includes('ABC'), '온라인 복귀 후 Web 도');
+    assert.equal((await app.invoke('sync_now')).conflicts, 0);
+
+    // 연결된 날짜 → 연결되지 않은 오늘 — T 로도 기존 확인창(몰래 연결·이동하지 않음). 취소하면 그대로.
+    await app.invoke('sync_unlink', { location: target });
+    await app.invoke('sync_now');
+    await openDate(date);
+    for (const via of ['T', '클릭']) {
+      if (via === 'T') {
+        await openRowMenu(ids.D);
+        await page.keyboard.press('t');
+      } else {
+        await moveTodayByClick(ids.D);
+      }
+      await page.locator('[data-testid="move-decision-dialog"]').waitFor();
+      await page.locator('[data-testid="move-decision-dialog"]').getByRole('button', { name: '취소' }).click();
+      await page.locator('[data-testid="move-decision-dialog"]').waitFor({ state: 'detached' });
+      assert.equal(await local(date), 'D', `${via}: 취소하면 그대로`);
+    }
+    assert.equal((await app.invoke('sync_now')).conflicts, 0);
+    assert.equal(await web(date), 'D', 'Web 도 그대로');
+
+    // 정리 — 연결 상태를 되돌리고 옮긴 메모는 원래 날짜로
+    await app.invoke('sync_unlink', { location: source });
+    if (todayWasLinked) await app.invoke('sync_link', { location: target });
+    for (const name of ['A', 'B', 'C']) {
+      await app.invoke('item_move', { input: { id: ids[name], target: source, section: null, index: null, policy: 'local_only' } });
+    }
+    await app.invoke('sync_now');
+  },
+  { mockOnly: true },
+);
 
 const only = process.argv.slice(2);
 let failed = 0;

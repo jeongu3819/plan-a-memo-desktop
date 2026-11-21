@@ -142,6 +142,7 @@ export function LargeEditorDialog({ item, onClose }: { item: MemoItem | null; on
             onChange={onChange}
             onUploadingChange={onUploading}
             onError={message => notify({ message, variant: 'error' })}
+            onNotice={message => notify({ message, variant: 'default' })}
             fill
             minHeight={120}
             maxHeight="none"

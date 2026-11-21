@@ -30,6 +30,8 @@ export interface MemoEditorProps {
   showImageButton?: boolean;
   /** 우클릭 메뉴 맨 아래의 항목 명령(맨 위로 보내기). */
   contextMenuActions?: RichTextMenuAction[];
+  /** 오류가 아닌 안내(예: 표의 마지막 행은 삭제할 수 없음) — 중립 스타일로. */
+  onNotice?: (message: string) => void;
 }
 
 export default function MemoEditor({
@@ -44,6 +46,7 @@ export default function MemoEditor({
   placeholder = '메모 (이미지는 Ctrl+V · Enter 는 줄바꿈)',
   showImageButton = true,
   contextMenuActions,
+  onNotice,
 }: MemoEditorProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
@@ -109,6 +112,7 @@ export default function MemoEditor({
         onWarning={onError}
         formatMenu="contextMenu"
         contextMenuActions={contextMenuActions}
+        onTableNotice={onNotice}
         imageSelectionStyle="subtle"
         showImageZoomHint
         borderless={!fill}

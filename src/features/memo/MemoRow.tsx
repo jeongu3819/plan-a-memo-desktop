@@ -242,6 +242,7 @@ export default function MemoRow({
               onChange={onChange}
               onUploadingChange={onUploading}
               onError={message => notify({ message, variant: 'error' })}
+              onNotice={message => notify({ message, variant: 'default' })}
               // 최대 높이 없음 — 긴 메모도 읽기 화면처럼 다 펼친다(편집기 안 스크롤 없이 화면 스크롤 하나).
               maxHeight="none"
               // 편집 중 우클릭(서식 메뉴)에서도 행 메뉴와 같은 '맨 위로/맨 아래로 보내기'. 본문 초안은 그대로 남는다.

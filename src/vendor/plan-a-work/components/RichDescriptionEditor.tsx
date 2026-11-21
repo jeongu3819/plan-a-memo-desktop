@@ -107,6 +107,11 @@ import {
 import { useRichTableResize } from '../hooks/useDescriptionTableResize';
 import { richTableSx } from '../utils/richTableSx';
 import RichTableResizeOverlay from './richTable/RichTableResizeOverlay';
+// [PLAN-A Memo Desktop] 표 행·열 선택·삭제(핸들·우클릭 '표 편집'·Delete) — Desktop 추가.
+import RichTableStructureOverlay from './richTable/RichTableStructureOverlay';
+import { useRichTableStructure } from '../hooks/useRichTableStructure';
+import TableRowsOutlinedIcon from '@mui/icons-material/TableRowsOutlined';
+import ViewColumnOutlinedIcon from '@mui/icons-material/ViewColumnOutlined';
 import {
     insertHtmlAsSingleTransaction,
     insertHtmlAtSelection as insertHtmlAtSelectionDom,
@@ -208,6 +213,8 @@ interface Props {
     showImageZoomHint?: boolean;
     /** 우클릭 메뉴 맨 아래 항목 명령(메모의 '맨 위로 보내기'). formatMenu="contextMenu" 일 때만 보인다. */
     contextMenuActions?: RichTextMenuAction[];
+    /** [PLAN-A Memo Desktop] 표 행·열 삭제의 정상적인 제한 안내(마지막 행 등) — 오류가 아닌 중립 안내. 없으면 경고. */
+    onTableNotice?: (message: string) => void;
 }
 
 /**
@@ -255,6 +262,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
     imageSelectionStyle = 'accent',
     showImageZoomHint = false,
     contextMenuActions,
+    onTableNotice,
 }) => {
     const ref = useRef<HTMLDivElement>(null);
     const lastEmitted = useRef<string>('');
@@ -353,6 +361,23 @@ const RichDescriptionEditor: React.FC<Props> = ({
     const table = useRichTableResize({ editorRef: ref, disabled, onCommit: emit });
     const { applyStoredSizing: applyTableSizing } = table;
 
+    // [PLAN-A Memo Desktop] 표 행·열 선택·삭제. DOM 만 바꾸고 저장은 emit(기존 저장·Sync 경로).
+    // 구조가 바뀌면 크기 조절 이력은 버린다(지운 행을 가리킬 수 있다) — Undo 순서가 섞이지 않게.
+    const { notifyContentChanged: clearSizingHistory, activeTable: activeSizingTable, syncActiveTable } = table;
+    const structure = useRichTableStructure({
+        editorRef: ref,
+        disabled,
+        onCommit: emit,
+        onStructureChanged: useCallback((changed: HTMLTableElement) => {
+            // 따로 가로채는 Undo 이력(표 크기·번호 표기)은 구조 변경 앞의 것이라 순서가 섞이지 않게 버린다.
+            clearSizingHistory();
+            clearRichListStyleHistory(ref.current);
+            if (activeSizingTable?.el === changed) syncActiveTable(changed);
+        }, [clearSizingHistory, activeSizingTable, syncActiveTable]),
+        onWarning: onTableNotice ?? warn,
+    });
+    const { reset: resetTableStructure } = structure;
+
     // 외부 value 가 바뀌었고 현재 DOM 과 다를 때만 innerHTML 동기화(편집 중에는 안 건드림 → IME 안전)
     // layout effect — 편집기가 막 열렸을 때 빈 칸(placeholder)이 한 프레임 그려졌다가 본문으로
     // 바뀌는 깜빡임을 없앤다(그리기 전에 채운다). 동작은 이전과 같다.
@@ -369,9 +394,11 @@ const RichDescriptionEditor: React.FC<Props> = ({
         markMentionTokensAtomic(el);
         // 저장된 열 너비/행 최소 높이를 다시 화면 크기로 펼친다(재조회 후 같은 크기 유지).
         applyTableSizing();
+        // [PLAN-A Memo Desktop] 이전 본문의 표를 가리키는 행·열 선택·이력을 버린다.
+        resetTableStructure();
         lastEmitted.current = value || '';
         touched.current = false;
-    }, [value, applyTableSizing]);
+    }, [value, applyTableSizing, resetTableStructure]);
 
     const insertHtmlAtSelection = useCallback((html: string) => {
         const root = ref.current;
@@ -562,6 +589,8 @@ const RichDescriptionEditor: React.FC<Props> = ({
             e.preventDefault();
             return;
         }
+        // [PLAN-A Memo Desktop] 행·열이 선택된 동안에만: Delete = 구조 삭제, Esc = 선택 해제. 그 밖의 키는 선택을 풀고 그대로.
+        if (!disabled && structure.handleKeyDown(e)) return;
         // 이미지에 포커스를 둔 채 Enter — 읽기 모드에서도 확대할 수 있어야 한다.
         if (e.key === 'Enter' || e.key === ' ') {
             const focused = document.activeElement;
@@ -588,7 +617,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
         // 번호 표기(1. / 1) / ①) 변경의 Ctrl+Z / Ctrl+Y — 그 이력이 남아 있는 동안에만 가로챈다.
         if (handleRichListStyleUndoKey(e, ref.current)) { emit(); return; }
         if (e.key === ' ' || e.key === 'Enter') autoLinkBeforeCaret();
-    }, [disabled, openLinkDialog, autoLinkBeforeCaret, table, openImageViewer, mentions, emit, formatMenu]);
+    }, [disabled, openLinkDialog, autoLinkBeforeCaret, table, structure, openImageViewer, mentions, emit, formatMenu]);
 
     /** URL 하나만 붙여넣은 경우 — 선택 텍스트가 있으면 그 텍스트에 링크를 건다. */
     const pasteAsLink = useCallback((url: string) => {
@@ -651,6 +680,16 @@ const RichDescriptionEditor: React.FC<Props> = ({
         // 선택이 링크에 걸쳐 있으면 그 링크를 고친다(Dialog 의 '링크 제거' 로 해제).
         onLink: () => openLinkDialog(selectionLinkAnchor(ref.current)),
         actions: contextMenuActions,
+        // [PLAN-A Memo Desktop] 표 안 우클릭 → '표 편집'(현재 행·열 삭제 / 선택한 행·열 삭제).
+        tableActionsAt: useCallback((target: EventTarget | null, x: number, y: number) => {
+            const found = structure.tableActionsAt(target, x, y);
+            return found?.map(action => ({
+                ...action,
+                icon: action.key.endsWith('-row')
+                    ? <TableRowsOutlinedIcon />
+                    : <ViewColumnOutlinedIcon />,
+            })) ?? null;
+        }, [structure]),
     });
     const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
         // 메뉴가 뜨면 선택 위 링크 버튼은 숨긴다(메뉴에 링크가 있다).
@@ -1839,6 +1878,7 @@ const RichDescriptionEditor: React.FC<Props> = ({
                 onInput={() => {
                     // 내용이 바뀌면 표 크기 Undo 이력을 버린다 → Ctrl+Z 는 다시 타이핑 취소로.
                     table.notifyContentChanged();
+                    structure.notifyContentChanged();
                     clearRichListStyleHistory(ref.current);
                     emit();
                     mentions.refresh();
@@ -1869,9 +1909,9 @@ const RichDescriptionEditor: React.FC<Props> = ({
                 onMouseOut={showImageZoomHint ? (e) => {
                     if (e.target instanceof HTMLImageElement) scheduleHoverClear();
                 } : undefined}
-                onPointerMove={table.handlePointerMove}
-                onPointerDown={table.handlePointerDown}
-                onPointerLeave={table.handlePointerLeave}
+                onPointerMove={(e) => { table.handlePointerMove(e); structure.handleEditorPointerMove(e); }}
+                onPointerDown={(e) => { structure.handleEditorPointerDown(e); table.handlePointerDown(e); }}
+                onPointerLeave={() => { table.handlePointerLeave(); structure.handleEditorPointerLeave(); }}
                 // 한 번 클릭 = 선택·크기 조절 / 두 번 클릭 = 크게 보기.
                 // (표 경계 더블클릭은 pointerdown 단계에서 처리되므로 여기까지 오지 않는다)
                 onDoubleClick={(e) => {
@@ -2034,6 +2074,26 @@ const RichDescriptionEditor: React.FC<Props> = ({
 
             {/* 표 열/행 경계 안내선 + 표 선택 메뉴 — 작업노트·메모와 같은 컴포넌트. */}
             <RichTableResizeOverlay table={table} disabled={disabled} />
+            {/* [PLAN-A Memo Desktop] 표 구조 변경을 브라우저 기본 Undo 이력에 잇는 보이지 않는 편집 칸(useRichTableStructure).
+                편집 영역 밖이라 저장되지 않는다. 화면 안 1px(fixed)이라 잠깐 포커스가 가도 스크롤이 움직이지 않는다. */}
+            <Box
+                ref={structure.sentinelRef}
+                aria-hidden="true"
+                tabIndex={-1}
+                data-table-structure-sentinel="1"
+                onFocus={structure.handleSentinelFocus}
+                sx={{
+                    position: 'fixed', left: 0, top: 0, width: '1px', height: '1px',
+                    overflow: 'hidden', opacity: 0, pointerEvents: 'none', whiteSpace: 'nowrap',
+                    clipPath: 'inset(50%)', outline: 'none',
+                }}
+            />
+            {/* [PLAN-A Memo Desktop] 표 행·열 선택 핸들 + 선택 강조(덧그림 — 저장 HTML 에 들어가지 않는다). */}
+            <RichTableStructureOverlay
+                structure={structure}
+                disabled={disabled}
+                onHandleContextMenu={handleContextMenu as unknown as (event: React.MouseEvent<HTMLElement>) => void}
+            />
 
             {!disabled && selectedImg && (
                 <>

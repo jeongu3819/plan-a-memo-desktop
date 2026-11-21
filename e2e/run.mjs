@@ -3245,6 +3245,670 @@ step(
   { mockOnly: true },
 );
 
+// ── 표 행·열 선택·삭제 ──────────────────────────────────────────────
+
+/** r{행}c{열} 표 — 셀 하나는 배경색·굵게, 하나는 가운데 정렬·링크. */
+function tableHtml(rows, cols, prefix = '') {
+  const cell = (r, c) => {
+    if (r === 1 && c === 1) return `<td style="background-color: rgb(254, 240, 138)"><b>${prefix}r1c1</b></td>`;
+    if (r === 1 && c === 2) return `<td data-align="center"><a href="https://example.com/t">${prefix}r1c2</a></td>`;
+    return `<td>${prefix}r${r}c${c}</td>`;
+  };
+  const body = Array.from({ length: rows }, (_, r) => `<tr>${Array.from({ length: cols }, (_, c) => cell(r, c)).join('')}</tr>`).join('');
+  return `<p>${prefix}표 위 문단</p><table><tbody>${body}</tbody></table><p>${prefix}표 아래 문단</p>`;
+}
+/** 표 모양을 글자로: 'r0c0|r0c1/r1c0|r1c1' (셀 글자에서 rNcN 만) */
+const tableShapeOf = scope =>
+  scope.evaluate(el => Array.from(el.querySelectorAll('tr'))
+    .map(tr => Array.from(tr.children).map(td => td.textContent.replace(/^.*?(r\d+c\d+).*$/s, '$1')).join('|')).join('/'));
+const shapeOfHtml = html => [...html.matchAll(/<tr[^>]*>(.*?)<\/tr>/gs)]
+  .map(m => [...m[1].matchAll(/<t[dh][^>]*>(.*?)<\/t[dh]>/gs)]
+    .map(c => c[1].replace(/<[^>]+>/g, '').replace(/^.*?(r\d+c\d+).*$/s, '$1')).join('|'))
+  .join('/');
+const cellCenter = async (editable, text) => {
+  const box = await editable.locator('td, th', { hasText: text }).first().boundingBox();
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+};
+const rightClickCell = async (page, editable, text) => {
+  await menuOf(page).waitFor({ state: 'detached' });
+  const p = await cellCenter(editable, text);
+  await page.mouse.click(p.x, p.y, { button: 'right' });
+  await menuOf(page).waitFor();
+  return menuOf(page);
+};
+/** 셀 위에 손을 올리고 그 행/열 핸들(선택되지 않은 것)을 찾는다. */
+const handleFor = async (page, editable, text, kind) => {
+  const p = await cellCenter(editable, text);
+  await page.mouse.move(p.x, p.y, { steps: 2 });
+  const handle = page.locator(`[data-testid="table-${kind}-handle"][aria-pressed="false"]`).first();
+  await handle.waitFor();
+  return handle;
+};
+const centerOf = async locator => {
+  const b = await locator.boundingBox();
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+};
+const structureSelection = page => page.locator('[data-testid="table-structure-selection"]');
+const countOf = (html, re) => (html.match(re) || []).length;
+
+step('table-structure', async () => {
+  const page = app.page;
+  const date = plusDays(today, 95);
+  await assertFreshDates('table-structure', [date]);
+  const created = await addItem(date, 'main', tableHtml(5, 4), 'text');
+  const other = await addItem(date, 'am', tableHtml(3, 3, 'x'), 'text');
+  const merged = await addItem(date, 'pm',
+    '<table><tbody><tr><td rowspan="3">mA</td><td>m0</td><td rowspan="2">mC</td></tr><tr><td>m1</td></tr><tr><td>m2</td><td>mc2</td></tr></tbody></table>', 'text');
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const itemHtml = async id => (await dayOf(date)).items.find(i => i.id === id).contentHtml;
+  const saved = (id, test, message) => waitFor(async () => test(await itemHtml(id)), message);
+  const open = async id => {
+    const row = page.locator(`[data-memo-id="${id}"]`);
+    await row.locator('[aria-label="메모 편집"]').click();
+    const editable = row.locator('[contenteditable="true"]');
+    await editable.waitFor();
+    return { row, editable };
+  };
+
+  // ① 우클릭 → 현재 행 삭제 (r2c1 = 셋째 행). 서식 메뉴는 그대로, '표 편집' 그룹이 더해진다
+  const { row, editable } = await open(created.id);
+  let menu = await rightClickCell(page, editable, 'r2c1');
+  const text = await menu.innerText();
+  for (const w of ['글자 크기', '글자 색상', '배경색', '목록 · 들여쓰기', '표 편집', '현재 행 삭제', '현재 열 삭제', '맨 위로 보내기']) {
+    assert.ok(text.includes(w), `메뉴에 ${w}`);
+  }
+  const menuBox = await menu.boundingBox();
+  assert.ok(menuBox.y >= 0 && menuBox.y + menuBox.height <= 760 && menuBox.x + menuBox.width <= 1180, `메뉴가 창 안 ${JSON.stringify(menuBox)}`);
+  await app.shot('70-table-menu');
+  await menu.locator('[data-testid="rich-menu-action-table-delete-row"]').click();
+  const R5 = ['r0c0|r0c1|r0c2|r0c3', 'r1c0|r1c1|r1c2|r1c3', 'r3c0|r3c1|r3c2|r3c3', 'r4c0|r4c1|r4c2|r4c3'].join('/');
+  await saved(created.id, h => shapeOfHtml(h) === R5, '현재 행 삭제 → 자동 저장');
+  assert.equal(await tableShapeOf(editable), R5);
+  const html = await itemHtml(created.id);
+  assert.match(html, /background-color: rgb\(254, ?240, ?138\)/, '셀 배경 유지');
+  assert.match(html, /<b>r1c1<\/b>/, '굵게 유지');
+  assert.match(html, /data-align="center"><a href="https:\/\/example.com\/t">r1c2<\/a>/, '정렬·링크 유지');
+  assert.ok(html.includes('표 위 문단') && html.includes('표 아래 문단'), '표 밖 문단 유지');
+  assert.doesNotMatch(html, /table-structure|outline|data-kind|aria-pressed/, '선택 강조가 저장 HTML 에 없다');
+
+  // ② Undo → Redo (편집기 포커스 그대로)
+  assert.ok(await editable.evaluate(el => el === document.activeElement), '삭제 후 편집기 포커스');
+  await page.keyboard.press('Control+z');
+  await saved(created.id, h => shapeOfHtml(h).split('/').length === 5 && h.includes('r2c1'), 'Undo 로 행 복원');
+  await page.keyboard.press('Control+y');
+  await saved(created.id, h => shapeOfHtml(h) === R5, 'Redo 로 다시 삭제');
+
+  // ③ 우클릭 → 현재 열 삭제 (r0c3 = 넷째 열)
+  menu = await rightClickCell(page, editable, 'r0c3');
+  await menu.locator('[data-testid="rich-menu-action-table-delete-col"]').click();
+  const C3 = 'r0c0|r0c1|r0c2/r1c0|r1c1|r1c2/r3c0|r3c1|r3c2/r4c0|r4c1|r4c2';
+  await saved(created.id, h => shapeOfHtml(h) === C3, '현재 열 삭제');
+
+  // ④ 행 핸들 클릭 → 선택 표시 → Delete
+  let handle = await handleFor(page, editable, 'r4c1', 'row');
+  assert.equal(await handle.getAttribute('data-index'), '3');
+  await app.shot('71-table-row-handle');
+  let p = await centerOf(handle);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  assert.equal(await structureSelection(page).getAttribute('data-kind'), 'row');
+  assert.equal(await structureSelection(page).getAttribute('data-count'), '1');
+  assert.equal(await page.evaluate(() => window.getSelection().isCollapsed), true, '구조 선택 중에는 글자 선택이 없다');
+  await app.shot('72-table-row-selected');
+  await page.keyboard.press('Delete');
+  const D4 = 'r0c0|r0c1|r0c2/r1c0|r1c1|r1c2/r3c0|r3c1|r3c2';
+  await saved(created.id, h => shapeOfHtml(h) === D4, 'Delete 로 선택한 행 삭제');
+  await structureSelection(page).waitFor({ state: 'detached' });
+  await page.keyboard.press('Control+z');
+  await saved(created.id, h => shapeOfHtml(h) === C3, 'Delete 삭제도 Undo');
+  await page.keyboard.press('Control+y');
+  await saved(created.id, h => shapeOfHtml(h) === D4, 'Redo');
+
+  // ⑤ 행 핸들 끌기(첫째~둘째 행) → 우클릭 '선택한 행 삭제 (2개)'
+  handle = await handleFor(page, editable, 'r0c1', 'row');
+  p = await centerOf(handle);
+  const to = await cellCenter(editable, 'r1c1');
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.down();
+  await page.mouse.move(p.x, to.y, { steps: 6 });
+  await page.mouse.up();
+  await waitFor(async () => (await structureSelection(page).getAttribute('data-count')) === '2', '두 행 선택');
+  menu = await rightClickCell(page, editable, 'r1c0');
+  assert.ok((await menu.innerText()).includes('선택한 행 삭제 (2개)'), '여러 행 문구');
+  assert.equal(await structureSelection(page).getAttribute('data-count'), '2', '선택 안 우클릭은 선택 유지');
+  await app.shot('73-table-rows-menu');
+  await menu.locator('[data-testid="rich-menu-action-table-delete-row"]').click();
+  await saved(created.id, h => shapeOfHtml(h) === 'r3c0|r3c1|r3c2', '여러 행 삭제');
+
+  // ⑥ 마지막 남은 행 — 메뉴는 꺼짐, Delete 도 바꾸지 않음(표가 사라지지 않음)
+  menu = await rightClickCell(page, editable, 'r3c0');
+  assert.equal(await menu.locator('[data-testid="rich-menu-action-table-delete-row"]').isDisabled(), true, '마지막 행 삭제 꺼짐');
+  await page.keyboard.press('Escape');
+  await menuOf(page).waitFor({ state: 'detached' });
+  handle = await handleFor(page, editable, 'r3c0', 'row');
+  p = await centerOf(handle);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  await page.keyboard.press('Delete');
+  await sleep(500);
+  assert.equal(shapeOfHtml(await itemHtml(created.id)), 'r3c0|r3c1|r3c2', '마지막 행은 지워지지 않는다');
+  assert.equal(await editable.locator('table').count(), 1, '표가 사라지지 않는다');
+  // 정상적인 제한 — 오류(빨강)가 아닌 중립 안내
+  const notice = page.locator('[data-testid="personal-memo-inline-notice"]');
+  await waitFor(async () => (await notice.count()) > 0 && (await notice.innerText()).includes('표의 마지막 행은 삭제할 수 없습니다.'), '마지막 행 안내');
+  const noticeBg = await notice.locator('.MuiSnackbarContent-root').evaluate(el => getComputedStyle(el).backgroundColor);
+  const [nr, ng, nb] = noticeBg.match(/\d+/g).map(Number);
+  assert.ok(Math.abs(nr - ng) < 20 && Math.abs(nr - nb) < 20, `중립(회색) 안내 — 빨간 오류가 아님 ${noticeBg}`);
+  await app.shot('74c-table-last-row-notice');
+  await page.keyboard.press('Escape');
+  await structureSelection(page).waitFor({ state: 'detached' });
+
+  // ⑦ 열 핸들 끌기(첫째~둘째 열) → Delete
+  handle = await handleFor(page, editable, 'r3c0', 'col');
+  p = await centerOf(handle);
+  const toCol = await cellCenter(editable, 'r3c1');
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.down();
+  await page.mouse.move(toCol.x, p.y, { steps: 6 });
+  await page.mouse.up();
+  await waitFor(async () => (await structureSelection(page).getAttribute('data-kind')) === 'col'
+    && (await structureSelection(page).getAttribute('data-count')) === '2', '두 열 선택');
+  await app.shot('74-table-cols-selected');
+  await page.keyboard.press('Delete');
+  await saved(created.id, h => shapeOfHtml(h) === 'r3c2', '여러 열 삭제');
+
+  // ⑧ 읽기 화면 · 열고 닫기만 하면 저장 없음
+  await page.keyboard.press('Escape'); // 구조 선택 없음 → 편집 끝
+  const content = row.locator('[data-testid="personal-memo-content"]');
+  await content.waitFor();
+  assert.equal(await tableShapeOf(content), 'r3c2', '읽기 화면도 같은 표');
+  const before = (await dayOf(date)).items.find(i => i.id === created.id);
+  await open(created.id);
+  await sleep(300);
+  await page.keyboard.press('Escape');
+  await sleep(1200);
+  const unchanged = (await dayOf(date)).items.find(i => i.id === created.id);
+  assert.equal(unchanged.updatedAt, before.updatedAt, '열고 닫기만 하면 저장하지 않는다');
+  assert.equal(unchanged.contentHtml, before.contentHtml);
+
+  // ⑨ 입력 충돌 — 다른 표(x 접두어)
+  const ed = (await open(other.id)).editable;
+  // 여러 셀 글자 드래그 + Delete → 글자만 지워지고 행·열 수 그대로
+  const a = await cellCenter(ed, 'xr0c0');
+  const b = await cellCenter(ed, 'xr0c2');
+  await page.mouse.move(a.x - 10, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x + 10, b.y, { steps: 8 });
+  await page.mouse.up();
+  assert.equal(await structureSelection(page).count(), 0, '글자 드래그는 구조 선택이 아니다');
+  await page.keyboard.press('Delete');
+  await saved(other.id, h => countOf(h, /<tr/g) === 3 && countOf(h, /<td/g) === 9 && !h.includes('xr0c1'), '글자만 삭제 — 행·열 수 그대로');
+  // 커서만 둔 Backspace — 한 글자
+  await ed.locator('td', { hasText: 'xr2c2' }).click();
+  await page.keyboard.press('End');
+  await page.keyboard.press('Backspace');
+  await saved(other.id, h => h.includes('xr2c</td>') && countOf(h, /<tr/g) === 3, 'Backspace 한 글자');
+  // 행 선택 중 Esc → 선택만 해제, 편집 계속
+  handle = await handleFor(page, ed, 'xr1c0', 'row');
+  p = await centerOf(handle);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  await page.keyboard.press('Escape');
+  await structureSelection(page).waitFor({ state: 'detached' });
+  assert.equal(await ed.count(), 1, 'Esc 는 선택만 풀고 편집기는 그대로');
+  // 행 선택 중 Backspace → 아무것도 지우지 않고 선택 해제
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  const beforeBs = await itemHtml(other.id);
+  await page.keyboard.press('Backspace');
+  await structureSelection(page).waitFor({ state: 'detached' });
+  await sleep(400);
+  assert.equal(await itemHtml(other.id), beforeBs, '구조 선택 중 Backspace 는 지우지 않는다');
+  // 행 선택 중 글자 입력 → 선택 해제, 글자는 원래 캐럿 자리에(행 그대로)
+  await ed.locator('td', { hasText: 'xr1c1' }).click();
+  await page.keyboard.press('End');
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  await page.keyboard.type('Z');
+  await structureSelection(page).waitFor({ state: 'detached' });
+  await saved(other.id, h => h.includes('xr1c1Z') && countOf(h, /<tr/g) === 3, '글자 입력은 그대로');
+  // 한글 IME 조합 — 구조 선택 중 조합 시작 → 선택 해제, 조합 글자 그대로
+  const cdp = await page.context().newCDPSession(page);
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  await cdp.send('Input.imeSetComposition', { text: 'ㅎ', selectionStart: 1, selectionEnd: 1 });
+  await cdp.send('Input.imeSetComposition', { text: '한', selectionStart: 1, selectionEnd: 1 });
+  await cdp.send('Input.insertText', { text: '한' });
+  await saved(other.id, h => h.includes('xr1c1Z한') && countOf(h, /<tr/g) === 3, 'IME 조합 글자');
+  assert.equal(await structureSelection(page).count(), 0, '조합하면 구조 선택이 풀린다');
+  // Ctrl+A — 구조 선택을 풀고 전체 글자 선택
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  await page.keyboard.press('Control+a');
+  await structureSelection(page).waitFor({ state: 'detached' });
+  const all = await page.evaluate(() => window.getSelection().toString());
+  assert.ok(all.includes('x표 위 문단') && all.includes('x표 아래 문단'), 'Ctrl+A = 전체 글자 선택');
+  // 표 밖 우클릭 — '표 편집' 없음(기존 메뉴 그대로). (표 위 문단은 표 크기 도구가 덮고 있어 아래 문단으로)
+  await selectText(ed, 'x표 아래 문단');
+  await openMenu(page, ed);
+  assert.ok(!(await menuOf(page).innerText()).includes('표 편집'), '표 밖에서는 표 편집 없음');
+  await page.keyboard.press('Escape');
+  await menuOf(page).waitFor({ state: 'detached' });
+  await page.keyboard.press('Escape');
+
+  // ⑩ 병합 셀 — 시작 행을 지우면 rowspan 셀이 다음 행으로
+  const third = await open(merged.id);
+  menu = await rightClickCell(page, third.editable, 'm0');
+  await menu.locator('[data-testid="rich-menu-action-table-delete-row"]').click();
+  await saved(merged.id, h => /<tr><td rowspan="2">mA<\/td><td>m1<\/td><td>mC<\/td><\/tr><tr><td>m2<\/td><td>mc2<\/td><\/tr>/.test(h), '병합 셀 이동·rowspan 조정');
+  await page.keyboard.press('Escape');
+
+  // ⑩-2 크게 편집 창 위에서도 — 핸들이 창 위에 뜨고 열 선택 → Delete → 창의 초안 저장
+  await page.locator(`[data-memo-id="${merged.id}"] [aria-label="메모 편집"]`).click({ button: 'right' });
+  await page.locator('[data-testid="personal-memo-menu"] >> text=크게 편집').click();
+  const large = page.locator('[data-testid="personal-memo-large-editor"] [contenteditable="true"]');
+  await large.waitFor();
+  handle = await handleFor(page, large, 'm2', 'col');
+  p = await centerOf(handle);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  await app.shot('74b-table-large-editor');
+  await page.keyboard.press('Delete');
+  await saved(merged.id, h => /<tr><td rowspan="2">mA<\/td><td>mC<\/td><\/tr><tr><td>mc2<\/td><\/tr>/.test(h), '크게 편집에서 열 삭제');
+  await page.locator('[data-testid="personal-memo-large-editor"] button:has-text("닫기")').click();
+  await page.locator('[data-testid="personal-memo-large-editor"]').waitFor({ state: 'detached' });
+
+  // ⑪ 강제 종료 후 재실행 — 그대로
+  const finals = Object.fromEntries(await Promise.all([created, other, merged].map(async m => [m.id, await itemHtml(m.id)])));
+  await app.restart();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  for (const [id, h] of Object.entries(finals)) assert.equal(await itemHtml(id), h, '재실행 후 같은 HTML');
+  await openDate(date);
+  assert.equal(await tableShapeOf(app.page.locator(`[data-memo-id="${created.id}"] [data-testid="personal-memo-content"]`)), 'r3c2');
+  await app.shot('75-table-after-restart');
+});
+
+step('table-undo-history', async () => {
+  // 표 구조 삭제가 브라우저 기본 편집 이력 하나로 이어진다 — 입력·서식과 섞여도 Ctrl+Z / Ctrl+Y 순서 그대로
+  const page = app.page;
+  const date = plusDays(today, 96);
+  await assertFreshDates('table-undo-history', [date]);
+  const created = await addItem(date, 'main', tableHtml(6, 4), 'text');
+  const merged = await addItem(date, 'pm',
+    '<table><tbody><tr><td rowspan="3">mA</td><td>m0</td><td rowspan="2">mC</td></tr><tr><td>m1</td></tr><tr><td>m2</td><td>mc2</td></tr></tbody></table>', 'text');
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const itemHtml = async id => (await dayOf(date)).items.find(i => i.id === id).contentHtml;
+  const open = async id => {
+    const row = page.locator(`[data-memo-id="${id}"]`);
+    await row.locator('[aria-label="메모 편집"]').click();
+    const editable = row.locator('[contenteditable="true"]').first();
+    await editable.waitFor();
+    return editable;
+  };
+  const editable = await open(created.id);
+  const html = () => itemHtml(created.id);
+  const until = (test, message) => waitFor(async () => test(await html()), message);
+  const exactly = (expected, message) => waitFor(async () => (await html()) === expected, message);
+  const rows = h => shapeOfHtml(h).split('/').length;
+  const focusIsEditor = () => editable.evaluate(el => el === document.activeElement);
+  const typeAtEnd = async (cellText, text) => {
+    await editable.locator('td', { hasText: cellText }).first().click();
+    await page.keyboard.press('End');
+    // 한 번의 입력 = Undo 한 단계(실제 타이핑처럼). CDP 의 글자별 키 입력은 글자마다 단계가 나뉜다.
+    await page.keyboard.insertText(text);
+  };
+  const undo = () => page.keyboard.press('Control+z');
+  const redo = () => page.keyboard.press('Control+y');
+  const deleteVia = async (cellText, kind) => {
+    const menu = await rightClickCell(page, editable, cellText);
+    await menu.locator(`[data-testid="rich-menu-action-table-delete-${kind}"]`).click();
+  };
+  const s0 = await html();
+
+  // ① 행 삭제 → 다른 셀 입력 → Ctrl+Z(입력) → Ctrl+Z(행 복원) → Ctrl+Y(행 삭제) → Ctrl+Y(입력)
+  await deleteVia('r2c1', 'row');
+  await until(h => rows(h) === 5 && !h.includes('r2c1'), '행 삭제');
+  const s1 = await html();
+  assert.ok(await focusIsEditor(), '삭제 후 편집기 포커스(보이지 않는 칸에 머물지 않음)');
+  await typeAtEnd('r0c0', 'XY');
+  await until(h => h.includes('r0c0XY'), '입력');
+  const s2 = await html();
+  await undo();
+  await exactly(s1, 'Ctrl+Z → 입력만 취소(행은 지워진 채)');
+  await undo();
+  await until(h => rows(h) === 6 && h.includes('r2c1') && !h.includes('XY'), 'Ctrl+Z → 삭제했던 행 복원');
+  // 저장값의 rgb 표기(공백)는 편집기 정리 규칙이 처음 저장할 때 맞춘다 — 그 차이만 빼고 같다.
+  const rgbTight = h => h.replace(/rgb\([^)]*\)/g, m => m.replace(/ /g, ''));
+  assert.equal(rgbTight(await html()), rgbTight(s0), '행 복원 = 처음 HTML 그대로');
+  assert.ok(await focusIsEditor(), 'Undo 후 편집기 포커스');
+  await redo();
+  await exactly(s1, 'Ctrl+Y → 행 삭제 다시');
+  await redo();
+  await exactly(s2, 'Ctrl+Y → 입력 다시');
+  await app.shot('77-table-undo-row');
+
+  // ② 열 삭제 → 입력 → Undo 2번 → Redo 2번
+  await deleteVia('r0c3', 'col');
+  await until(h => !h.includes('r0c3'), '열 삭제');
+  const c1 = await html();
+  await typeAtEnd('r1c0', 'Q');
+  await until(h => h.includes('r1c0Q'), '열 삭제 뒤 입력');
+  const c2 = await html();
+  await undo();
+  await exactly(c1, '입력 취소');
+  await undo();
+  await exactly(s2, '열 복원');
+  await redo();
+  await exactly(c1, '열 삭제 다시');
+  await redo();
+  await exactly(c2, '입력 다시');
+
+  // ③ 연속 구조 변경(여러 행 끌어 선택 → Delete, 열 핸들 → Delete, 우클릭 행 삭제) + 입력 → 모두 되돌리고 모두 다시
+  const before3 = await html();
+  let handle = await handleFor(page, editable, 'r0c1', 'row');
+  let p = await centerOf(handle);
+  const to = await cellCenter(editable, 'r1c1');
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.down();
+  await page.mouse.move(p.x, to.y, { steps: 6 });
+  await page.mouse.up();
+  await waitFor(async () => (await structureSelection(page).getAttribute('data-count')) === '2', '두 행 선택');
+  await page.keyboard.press('Delete');
+  await until(h => !h.includes('r0c0') && !h.includes('r1c1'), '여러 행 삭제');
+  const m1 = await html();
+  handle = await handleFor(page, editable, 'r3c0', 'col');
+  p = await centerOf(handle);
+  await page.mouse.click(p.x, p.y);
+  await structureSelection(page).waitFor();
+  await page.keyboard.press('Delete');
+  await until(h => !h.includes('r3c0'), '열 삭제');
+  const m2 = await html();
+  await deleteVia('r4c1', 'row');
+  await until(h => !h.includes('r4c1'), '행 삭제');
+  const m3 = await html();
+  await typeAtEnd('r5c2', 'W');
+  await until(h => h.includes('r5c2W'), '입력');
+  const m4 = await html();
+  for (const [expected, label] of [[m3, '입력'], [m2, '행 삭제'], [m1, '열 삭제'], [before3, '여러 행 삭제']]) {
+    await undo();
+    await exactly(expected, `Ctrl+Z → ${label} 취소`);
+  }
+  for (const [expected, label] of [[m1, '여러 행 삭제'], [m2, '열 삭제'], [m3, '행 삭제'], [m4, '입력']]) {
+    await redo();
+    await exactly(expected, `Ctrl+Y → ${label} 다시`);
+  }
+
+  // ④ 서식과 섞기: 굵게 → 행 삭제 → 글자색 → Ctrl+Z 3번(역순) → Ctrl+Y 3번
+  const f0 = await html();
+  await selectText(editable, 'r3c2');
+  await openMenu(page, editable);
+  await menuOf(page).locator('[aria-label="굵게"]').click();
+  await until(h => /<(b|strong)>r3c2<\/(b|strong)>/.test(h), '굵게');
+  const f1 = await html();
+  await deleteVia('r5c1', 'row');
+  await until(h => !h.includes('r5c1'), '행 삭제');
+  const f2 = await html();
+  await selectText(editable, 'r3c1');
+  await openMenu(page, editable);
+  await menuOf(page).locator('[aria-label="글자 색 #EF4444"]').click();
+  await until(h => /color:\s*rgb\(239, ?68, ?68\)/.test(h), '글자색');
+  const f3 = await html();
+  await page.keyboard.press('ArrowRight'); // 선택을 접고 Undo
+  await undo();
+  await exactly(f2, '글자색 취소');
+  await undo();
+  await exactly(f1, '행 복원(굵게는 그대로)');
+  await undo();
+  await exactly(f0, '굵게 취소');
+  await redo();
+  await exactly(f1, '굵게 다시');
+  await redo();
+  await exactly(f2, '행 삭제 다시');
+  await redo();
+  await exactly(f3, '글자색 다시');
+
+  // ⑤ Undo 뒤 새 편집 → Redo 는 더 이상 행을 지우지 않는다(브라우저 이력과 같이 버려짐)
+  await deleteVia('r3c1', 'col'); // 이때 표는 한 행(r3c1 | r3c2)만 남아 있다 — 열로
+  await until(h => !h.includes('r3c1'), '열 삭제');
+  await undo();
+  await exactly(f3, '열 복원');
+  await typeAtEnd('r3c2', 'N');
+  await until(h => h.includes('r3c2N'), '새 편집');
+  const n1 = await html();
+  await redo();
+  await sleep(700);
+  assert.equal(await html(), n1, '새 편집 뒤 Redo 는 아무것도 하지 않는다');
+  assert.ok((await html()).includes('r3c1'), '열이 다시 지워지지 않는다');
+  assert.doesNotMatch(await html(), /#\d+;/, '보이지 않는 칸의 표식이 저장 HTML 에 없다');
+  await app.shot('78-table-undo-mixed');
+  await page.keyboard.press('Escape');
+
+  // ⑥ 병합 셀 — rowspan 시작 행 삭제 → 입력 → Undo 2번(처음 HTML) → Redo 2번
+  const ed = await open(merged.id);
+  const mh = () => itemHtml(merged.id);
+  const mExactly = (expected, message) => waitFor(async () => (await mh()) === expected, message);
+  const g0 = await mh();
+  const menu = await rightClickCell(page, ed, 'm0');
+  await menu.locator('[data-testid="rich-menu-action-table-delete-row"]').click();
+  await waitFor(async () => /<td rowspan="2">mA<\/td><td>m1<\/td><td>mC<\/td>/.test(await mh()), '병합 셀 행 삭제');
+  const g1 = await mh();
+  await ed.locator('td', { hasText: 'mc2' }).click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('K');
+  await waitFor(async () => (await mh()).includes('mc2K'), '입력');
+  const g2 = await mh();
+  await undo();
+  await mExactly(g1, '입력 취소');
+  await undo();
+  await mExactly(g0, '병합 구조 복원 = 처음 HTML');
+  await redo();
+  await mExactly(g1, '병합 행 삭제 다시');
+  await redo();
+  await mExactly(g2, '입력 다시');
+  await page.keyboard.press('Escape');
+
+  // 강제 종료 후 재실행 — 마지막 상태 그대로
+  const finalA = await html();
+  const finalB = await mh();
+  await app.restart();
+  await app.page.waitForSelector('[data-testid="personal-memo-week"]', { timeout: 20000 });
+  assert.equal(await itemHtml(created.id), finalA, '재실행 후 같은 HTML');
+  assert.equal(await itemHtml(merged.id), finalB);
+});
+
+step('table-toolbar-placement', async () => {
+  // 표 크기 도구('열 맞춤·균등·행 맞춤')가 표 밖 글자를 가리지 않는다 · 창 안 · 열 핸들과 겹치지 않음 · 스크롤 그대로
+  const page = app.page;
+  const date = plusDays(today, 98);
+  await assertFreshDates('table-toolbar-placement', [date]);
+  const filler = n => Array.from({ length: n }, (_, i) => `<p>채움 줄 ${i + 1}</p>`).join('');
+  const longLine = '표 바로 위 긴 문단 '.repeat(14);
+  const long = await addItem(date, 'main',
+    `${filler(30)}<p>${longLine}</p><table><tbody><tr><td>t0c0</td><td>t0c1</td><td>t0c2</td></tr><tr><td>t1c0</td><td>t1c1</td><td>t1c2</td></tr></tbody></table><p>${'표 바로 아래 긴 문단 '.repeat(14)}</p>${filler(30)}`, 'text');
+  const short = await addItem(date, 'main', `<p>짧은 위 문단</p><table><tbody><tr><td>s0c0</td><td>s0c1</td></tr><tr><td>s1c0</td><td>s1c1</td></tr></tbody></table>`, 'text');
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const toolbar = page.locator('[data-table-toolbar="1"]');
+  const overlaps = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+  /** 그 글자(문단)의 줄 상자들 */
+  const lineRects = (scope, text) => scope.evaluate((el, t) => {
+    const p = Array.from(el.querySelectorAll('p')).find(n => n.textContent.includes(t));
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    return Array.from(range.getClientRects()).map(r => ({ x: r.left, y: r.top, width: r.width, height: r.height }));
+  }, text);
+  const scrollerTop = scope => scope.evaluate(el => {
+    let n = el.parentElement;
+    while (n && !/(auto|scroll)/.test(getComputedStyle(n).overflowY)) n = n.parentElement;
+    return n ? n.scrollTop : window.scrollY;
+  });
+  const visibleToolbar = async () => {
+    await waitFor(async () => (await toolbar.count()) === 1
+      && (await toolbar.evaluate(el => getComputedStyle(el).visibility)) === 'visible', '표 도구 표시');
+    return toolbar.boundingBox();
+  };
+  const assertClear = async (scope, box, texts, label) => {
+    for (const t of texts) {
+      for (const r of await lineRects(scope, t)) assert.ok(!overlaps(box, r), `${label}: 도구가 '${t}' 글자를 가리지 않는다 ${JSON.stringify({ box, r })}`);
+    }
+    assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 1180 && box.y + box.height <= 760, `${label}: 창 안 ${JSON.stringify(box)}`);
+  };
+
+  // 짧은 위 문단 — 위 오른쪽 자리(예전처럼 표 위, 글자만 피해서)
+  let row = page.locator(`[data-memo-id="${short.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  let ed = row.locator('[contenteditable="true"]').first();
+  await ed.waitFor();
+  await ed.locator('td', { hasText: 's1c1' }).click();
+  let box = await visibleToolbar();
+  await assertClear(ed, box, ['짧은 위 문단'], '짧은 문단');
+  const tableBox = await ed.locator('table').boundingBox();
+  assert.ok(box.y + box.height <= tableBox.y - 8, '열 선택 핸들(위 테두리) 자리와 겹치지 않는다');
+  assert.equal(await toolbar.getAttribute('data-side'), 'above-right');
+  await app.shot('79-table-toolbar-short');
+  await page.keyboard.press('Escape');
+
+  // 긴 메모 — 위·아래 모두 꽉 찬 문단: 표 밖 글자를 가리지 않고, 스크롤이 움직이지 않는다
+  row = page.locator(`[data-memo-id="${long.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  ed = row.locator('[contenteditable="true"]').first();
+  await ed.waitFor();
+  await ed.locator('table').scrollIntoViewIfNeeded();
+  await sleep(300);
+  const before = await scrollerTop(ed);
+  await ed.locator('td', { hasText: 't1c1' }).click();
+  box = await visibleToolbar();
+  await sleep(300);
+  assert.equal(await scrollerTop(ed), before, '도구가 나타나도 스크롤 그대로');
+  await assertClear(ed, box, ['표 바로 위 긴 문단', '표 바로 아래 긴 문단'], '긴 메모');
+  await app.shot('80-table-toolbar-long');
+  // 도구 버튼(균등) — 동작하고 편집·스크롤 그대로
+  await toolbar.locator('button', { hasText: '균등' }).click();
+  await waitFor(async () => (await dayOf(date)).items.find(i => i.id === long.id).contentHtml.includes('data-col-width'), '균등 저장');
+  box = await visibleToolbar();
+  await assertClear(ed, box, ['표 바로 위 긴 문단', '표 바로 아래 긴 문단'], '균등 뒤');
+  assert.ok(await toolbar.evaluate(el => el.scrollWidth <= el.clientWidth + 1
+    && Array.from(el.querySelectorAll('button')).every((b, i, all) => i === 0 || all[i - 1].getBoundingClientRect().right <= b.getBoundingClientRect().left + 0.5)),
+  '도구가 오른쪽 가장자리 근처에서도 줄어들거나 글자가 겹치지 않는다');
+  await app.shot('80b-table-toolbar-after-even');
+  assert.equal(await scrollerTop(ed), before, '도구를 눌러도 스크롤 그대로');
+  assert.equal(await ed.count(), 1, '편집 계속');
+  // 표가 스크롤 영역 밖으로 나가면 도구도 숨는다(머리말 위에 떠 있지 않음)
+  await ed.locator('p').last().scrollIntoViewIfNeeded();
+  await sleep(300);
+  await waitFor(async () => (await toolbar.count()) === 0
+    || (await toolbar.evaluate(el => getComputedStyle(el).visibility)) === 'hidden', '표가 화면 밖이면 도구 숨김');
+  await page.keyboard.press('Escape');
+});
+
+step('table-paste-undo', async () => {
+  // Excel 형식 표 붙여넣기(기존 경로) → 행 삭제 → Ctrl+Z 로 행 → 붙여넣기 순서대로 되돌리고 Ctrl+Y 로 다시
+  const page = app.page;
+  const date = plusDays(today, 99);
+  await assertFreshDates('table-paste-undo', [date]);
+  const target = await addItem(date, 'main', '<p>붙여넣기 자리 </p>', 'text');
+  await openDate(date);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  const row = page.locator(`[data-memo-id="${target.id}"]`);
+  await row.locator('[aria-label="메모 편집"]').click();
+  const ed = row.locator('[contenteditable="true"]');
+  await ed.waitFor();
+  const html = async () => (await dayOf(date)).items.find(i => i.id === target.id).contentHtml;
+  const exactly = (expected, message) => waitFor(async () => (await html()) === expected, message);
+  const excel = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><body><!--StartFragment--><table border=0>'
+    + '<tr><td colspan=2 style="background:#FEF08A;font-weight:700">e머리</td><td>e머리2</td></tr>'
+    + '<tr><td>e1a</td><td>e1b</td><td>e1c</td></tr>'
+    + '<tr><td>e2a</td><td>e2b</td><td>e2c</td></tr>'
+    + '<tr><td>e3a</td><td>e3b</td><td>e3c</td></tr></table><!--EndFragment--></body></html>';
+  await ed.evaluate((el, h) => {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el.querySelector('p'));
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const dt = new DataTransfer();
+    dt.setData('text/html', h);
+    dt.setData('text/plain', 'e머리\t\te머리2\ne1a\te1b\te1c\ne2a\te2b\te2c\ne3a\te3b\te3c');
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, excel);
+  await waitFor(async () => (await html()).includes('e3c'), '표 붙여넣기 저장');
+  const pasted = await html();
+  assert.equal((pasted.match(/<tr/g) || []).length, 4, '붙여넣은 표 4행');
+  assert.match(pasted, /colspan="2"/, '병합 셀 유지');
+  const menu = await rightClickCell(page, ed, 'e2b');
+  await menu.locator('[data-testid="rich-menu-action-table-delete-row"]').click();
+  await waitFor(async () => !(await html()).includes('e2b'), '붙여넣은 표 행 삭제');
+  const deleted = await html();
+  await page.keyboard.press('Control+z');
+  await exactly(pasted, 'Ctrl+Z → 행 복원');
+  await page.keyboard.press('Control+z');
+  await waitFor(async () => !(await html()).includes('<table'), 'Ctrl+Z → 붙여넣기 취소');
+  assert.ok((await html()).includes('붙여넣기 자리'), '원래 글자 유지');
+  await page.keyboard.press('Control+y');
+  await exactly(pasted, 'Ctrl+Y → 붙여넣기 다시');
+  await page.keyboard.press('Control+y');
+  await exactly(deleted, 'Ctrl+Y → 행 삭제 다시');
+  await page.keyboard.press('Escape');
+});
+
+step(
+  'linked-table-structure',
+  async () => {
+    // (Mock) 연결된 날짜의 표 행·열 삭제 → 기존 저장·Push → Mock Web 도 같은 표, 다시 동기화해도 되살아나지 않음
+    if (!(await app.invoke('auth_status')).loggedIn) {
+      await app.invoke('auth_login_begin', { reconnect: false });
+      await waitFor(async () => (await app.invoke('auth_status')).loggedIn, '로그인');
+    }
+    const page = app.page;
+    const date = plusDays(today, 97);
+    await assertFreshDates('linked-table-structure', [date]);
+    const created = await addItem(date, 'main',
+      '<table><tbody><tr><th colspan="2">머리</th><th>h2</th></tr><tr><td>r1c0</td><td style="background-color: rgb(187, 247, 208)">r1c1</td><td>r1c2</td></tr><tr><td>r2c0</td><td>r2c1</td><td>r2c2</td></tr></tbody></table>', 'text');
+    await app.invoke('sync_link', { location: { kind: 'day', date } });
+    await app.invoke('sync_now');
+    const web = async () => (await app.invoke('mock_v2_web', { input: { action: 'items', date } }))[0]?.content ?? '';
+    const local = async () => (await dayOf(date)).items[0].contentHtml;
+    await waitFor(async () => (await web()).includes('r2c2'), 'Web 첫 전달');
+    await openDate(date);
+    const row = page.locator(`[data-memo-id="${created.id}"]`);
+    await row.locator('[aria-label="메모 편집"]').click();
+    const editable = row.locator('[contenteditable="true"]');
+    await editable.waitFor();
+    let menu = await rightClickCell(page, editable, 'r2c1');
+    await menu.locator('[data-testid="rich-menu-action-table-delete-row"]').click();
+    await waitFor(async () => !(await local()).includes('r2c1'), '행 삭제 저장');
+    menu = await rightClickCell(page, editable, 'r1c0');
+    await menu.locator('[data-testid="rich-menu-action-table-delete-col"]').click();
+    await waitFor(async () => !(await local()).includes('r1c0'), '열 삭제 저장');
+    await page.keyboard.press('Escape');
+    const expected = await local();
+    assert.match(expected, /<th>머리<\/th><th>h2<\/th>/, '병합 머리 colspan 2 → 1(속성 제거)');
+    assert.match(expected, /background-color: rgb\(187, ?247, ?208\)/, '셀 배경 유지');
+    let report = await app.invoke('sync_now');
+    assert.equal(report.conflicts, 0);
+    await waitFor(async () => {
+      const w = await web();
+      return !w.includes('r2c') && !w.includes('r1c0') && w.includes('r1c1') && /187, ?247, ?208/.test(w);
+    }, 'Mock Web 도 같은 표');
+    await waitFor(async () => (await dayOf(date)).document.syncStatus === 'synced', '동기화됨');
+    for (let n = 0; n < 2; n++) {
+      report = await app.invoke('sync_now');
+      assert.equal(report.conflicts, 0, '다시 동기화해도 비교 화면 없음');
+    }
+    assert.equal(await local(), expected, '행·열이 되살아나지 않는다');
+    assert.ok(!(await web()).includes('r2c1'), 'Web 에도 되살아나지 않는다');
+    await app.shot('76-linked-table');
+  },
+  { mockOnly: true },
+);
+
 const only = process.argv.slice(2);
 let failed = 0;
 clearE2eCredential();

@@ -12,7 +12,7 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 |---|---|
 | `components/RichDescriptionEditor.tsx` (한 줄 수정 — 아래) | 개인 메모 Rich Editor(굵게/기울임/밑줄/취소선·글자 크기/색·목록·링크·표·열 너비·Office/웹 붙여넣기·이미지 붙여넣기/끌어 놓기·이미지 크기 조절·확대·Undo/Redo) |
 | `RichTextToolbar.tsx`, `LinkEditDialog.tsx`, `RichLinkHoverHint.tsx`, `MentionSuggestionPopper.tsx` | 우클릭 서식 메뉴·링크 |
-| `components/common/ImageZoomViewer.tsx`, `components/richTable/RichTableResizeOverlay.tsx` | 이미지 확대·표 크기 조절 |
+| `components/common/ImageZoomViewer.tsx`, `components/richTable/RichTableResizeOverlay.tsx` (도구 자리 수정 — 아래) | 이미지 확대·표 크기 조절 |
 | `components/personalMemo/PersonalMemoContentView.tsx` | 저장된 메모 읽기 화면 |
 | `components/personalMemo/personalMemoPreview.ts` (+test) | 주간 칸 구역별 미리보기 개수 |
 | `components/personalMemo/memoSearchHighlight.ts` (+test) | 검색어 강조(CSS Highlight) |
@@ -37,6 +37,18 @@ ESLint 는 이 폴더를 검사하지 않는다(원본 규칙 유지). 원본이
 | `utils/richListSx.ts`, `components/personalMemo/PersonalMemoContentView.tsx`, `utils/taskDescription.ts`, `components/RichDescriptionEditor.tsx` | 같은 커밋의 목록 규칙만 옮김(`data-list-style` 통과, Tab·표기 Undo 처리, `contextMenuActions`). 편집기의 메뉴 '링크' 는 선택이 걸친 링크를 찾아 편집으로 연다(`onLink`) |
 | `components/personalMemo/personalMemoTheme.tsx` | Desktop 표면 톤: 창 바탕 `#F7F6F3`, 칸 경계를 반투명 선(`rgba(28,25,23,.07)`)으로, `MEMO_CARD_SHADOW`·`MEMO_CARD_SHADOW_HOVER` 추가, `MEMO_RADIUS` 18px → 14px, Today 배지 굵기 800 → 700. 다시 복사하면 이 값들만 다시 적용 |
 | `api/personalMemos.ts` | 원본 API 클라이언트 대신 **타입만**(`MemoSection`, `MemoKind`) |
+| `components/RichTextContextMenu.tsx` (표 편집) | `useRichTextContextMenu` 에 선택 인자 `tableActionsAt` — 표 안 우클릭이면 연 순간의 표 명령을 `state.tableActions` 로 붙잡아 목록·들여쓰기 아래, 항목 명령 위에 '표 편집' 그룹으로 그린다(표 밖이면 메뉴 그대로). 명령 줄 렌더링은 항목 명령과 같은 `MenuActionList` 로 묶음 |
+| `components/RichDescriptionEditor.tsx` (표 편집) | `useRichTableStructure` 연결: 키(행·열 선택 중 Delete·Esc), `onInput` 때 선택 해제·외부 value 동기화 때 이력 정리, 포인터 이벤트를 표 크기 조절과 함께 전달, 덧그림 `RichTableStructureOverlay`, 보이지 않는 sentinel 편집 칸(`data-table-structure-sentinel`, `contenteditable=""`). Ctrl+Z 를 가로채지 않는다. 구조가 바뀌면 따로 가로채는 표 크기·번호 표기 이력을 버린다. 선택 인자 `onTableNotice` — 마지막 행·열 같은 정상 제한 안내(없으면 경고) |
+| `components/richTable/RichTableResizeOverlay.tsx` (도구 자리) | '열 맞춤·균등·행 맞춤' 도구가 늘 표 위 30px(왼쪽)이라 표 바로 위 문단 글자를 가렸다. `utils/tableToolbarPlacement` 로 표 위·아래 왼쪽/오른쪽 중 글자·버튼·이미지가 없는 첫 자리(편집기를 둘러싼 스크롤 영역 안, 열 핸들과 10px 간격), 없으면 표 안 오른쪽 위. 같은 표·같은 배치(스크롤만)면 고른 자리를 유지, 표가 화면 밖이면 숨김. 폭은 `max-content`(가장자리에서 줄지 않음), 구분선 `width: '1px'`(sx 의 `1` 은 100%) |
+
+## Desktop 에서 새로 더한 것(같은 폴더)
+
+| 파일 | 내용 |
+|---|---|
+| `utils/tableStructure.ts` | 표 행·열 삭제(순수 DOM). 행 묶음 경계에서 자른 rowspan 격자, 병합 셀 rowspan/colspan 조정(시작 행이 지워지면 다음 행으로 이동, 1 이면 속성 제거 — 서버 `_normalize_table_spans` 와 같은 모양), 비워진 thead/tbody/tfoot 정리, `<col data-col-width>` 같은 자리 제거와 런타임 폭 갱신. 마지막 행·열·겹친 병합은 바꾸지 않고 이유. 변경은 `DomEdit` 에 기록 — Undo 는 **같은 노드**를 제자리로 |
+| `hooks/useRichTableStructure.ts` | 행·열 선택(핸들 클릭·끌기·Shift)·Delete·Esc·우클릭 표 명령. **Undo/Redo 는 브라우저 기본 이력 하나**: 구조를 지울 때 sentinel 에 표식을 `insertHTML`(기본 명령 1단계)로 넣어 기본 이력에 자리를 남기고, Ctrl+Z/Y 가 그 표식을 지우거나 되돌리면 MutationObserver 가 같은 `DomEdit` 를 되돌리거나 다시 적용한다(같은 노드 — HTML 덮어쓰기 없음). 입력·서식·붙여넣기와 섞여도 순서 그대로, Undo 뒤 새 편집이면 브라우저가 Redo 를 버린다. 기본 이력에 자리를 남기지 못하면 삭제하지 않는다 |
+| `utils/tableToolbarPlacement.ts` | 표 도구 자리 고르기(순수 함수 + 글자 유무를 점으로 찍어 보는 `areaHasContent`), 표·핸들 덧그림이 함께 쓰는 `visibleClip` |
+| `components/richTable/RichTableStructureOverlay.tsx` | 핸들과 선택 강조 — `position: fixed` 덧그림(편집 DOM·저장 HTML 에 아무것도 넣지 않음), 스크롤 영역 밖은 잘라 그림 |
 
 ## 참고만 하고 Desktop 코드로 새로 쓴 것
 

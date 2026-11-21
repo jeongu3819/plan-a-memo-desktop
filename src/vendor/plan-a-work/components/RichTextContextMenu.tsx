@@ -43,6 +43,8 @@ export interface RichTextContextMenuState {
     strike?: boolean;
     link?: boolean;
     listKind?: RichListKind | null;
+    /** [PLAN-A Memo Desktop] 표 안을 우클릭했을 때의 표 명령(행·열 삭제). 표 밖이면 없음. */
+    tableActions?: RichTextMenuAction[] | null;
 }
 
 /**
@@ -92,13 +94,15 @@ function captureState(root: HTMLElement, range: Range, top: number, left: number
  *   · `onContextMenu` 는 메뉴를 열었으면 true 를 돌려준다(편집기 쪽 정리용).
  *   · `actions` — 항목 명령(맨 위로 보내기 등). 주는 화면에만 생긴다.
  */
-export function useRichTextContextMenu({ editorRef, enabled, onFormat, onLink, actions }: {
+export function useRichTextContextMenu({ editorRef, enabled, onFormat, onLink, actions, tableActionsAt }: {
     editorRef: RefObject<HTMLElement>;
     enabled: boolean;
     onFormat: () => void;
     /** 주면 메뉴에 '링크' 가 생긴다(선택을 되살린 뒤 부른다). */
     onLink?: () => void;
     actions?: RichTextMenuAction[];
+    /** [PLAN-A Memo Desktop] 우클릭 자리의 표 명령. 표 밖이면 null. */
+    tableActionsAt?: (target: EventTarget | null, clientX: number, clientY: number) => RichTextMenuAction[] | null;
 }) {
     const [state, setState] = useState<RichTextContextMenuState | null>(null);
     const close = useCallback(() => setState(null), []);
@@ -111,19 +115,51 @@ export function useRichTextContextMenu({ editorRef, enabled, onFormat, onLink, a
         if (target instanceof HTMLImageElement || target?.closest?.('[data-mention-user-id]')) return false;
         const range = selection.getRangeAt(0);
         if (!root.contains(range.commonAncestorContainer)) return false;
-        // 공백만 고른 것은 서식을 줄 글자가 없다 — 기본 메뉴.
-        if (!range.collapsed && !range.toString().trim() && !range.cloneContents().querySelector?.('img')) return false;
+        const tableActions = tableActionsAt?.(e.target, e.clientX, e.clientY) ?? null;
+        // 공백만 고른 것은 서식을 줄 글자가 없다 — 기본 메뉴. (표 안이면 표 명령이 있으니 이 메뉴)
+        if (!tableActions && !range.collapsed && !range.toString().trim() && !range.cloneContents().querySelector?.('img')) return false;
         e.preventDefault();
         e.stopPropagation();
-        setState(captureState(root, range, e.clientY, e.clientX));
+        setState({ ...captureState(root, range, e.clientY, e.clientX), tableActions });
         return true;
-    }, [enabled, editorRef]);
+    }, [enabled, editorRef, tableActionsAt]);
     useEffect(() => { if (!enabled) setState(null); }, [enabled]);
     const menu = (
         <RichTextContextMenu editorRef={editorRef} state={state} onClose={close} onFormat={onFormat} onLink={onLink}
             actions={actions} />
     );
     return { onContextMenu, menu, isOpen: !!state };
+}
+
+/** 메뉴 아래쪽 명령 줄(표 편집 · 항목 명령) — 아이콘 + 이름, 꺼지면 이유를 툴팁으로. */
+function MenuActionList({ label, items, onClose }: { label: string; items: RichTextMenuAction[]; onClose: () => void }) {
+    return (
+        <Box role="group" aria-label={label} sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+            {items.map(action => (
+                <Tooltip key={action.key} title={action.disabled ? action.disabledReason ?? '' : ''} placement="right">
+                    {/* 꺼진 명령에도 안내가 뜨도록 span 으로 감싼다. */}
+                    <span>
+                        <ButtonBase
+                            aria-label={action.label}
+                            disabled={action.disabled}
+                            data-testid={`rich-menu-action-${action.key}`}
+                            onClick={() => { onClose(); action.onSelect(); }}
+                            sx={{
+                                width: '100%', justifyContent: 'flex-start', gap: 1, px: 1, py: 0.75,
+                                borderRadius: 1, fontSize: '0.8rem', fontWeight: 600,
+                                color: action.disabled ? 'text.disabled' : 'text.primary',
+                                '&:hover': { bgcolor: action.disabled ? undefined : 'action.hover' },
+                                '& .MuiSvgIcon-root': { fontSize: 17, color: action.disabled ? 'text.disabled' : 'text.secondary' },
+                            }}
+                        >
+                            {action.icon}
+                            {action.label}
+                        </ButtonBase>
+                    </span>
+                </Tooltip>
+            ))}
+        </Box>
+    );
 }
 
 /** 드래그하거나 커서를 둔 뒤 우클릭하면 뜨는 서식 메뉴. 상시 도구모음 대신 쓰인다. */
@@ -330,34 +366,17 @@ export default function RichTextContextMenu({
                     );
                 })}
             </Box>
+            {!!state?.tableActions?.length && (
+                <>
+                    <Divider sx={{ my: 1 }} />
+                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 700, color: 'text.secondary', mb: 0.25 }}>표 편집</Typography>
+                    <MenuActionList label="표 편집" items={state.tableActions} onClose={onClose} />
+                </>
+            )}
             {!!actions?.length && (
                 <>
                     <Divider sx={{ my: 1 }} />
-                    <Box role="group" aria-label="항목" sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
-                        {actions.map(action => (
-                            <Tooltip key={action.key} title={action.disabled ? action.disabledReason ?? '' : ''} placement="right">
-                                {/* 꺼진 명령에도 안내가 뜨도록 span 으로 감싼다. */}
-                                <span>
-                                    <ButtonBase
-                                        aria-label={action.label}
-                                        disabled={action.disabled}
-                                        data-testid={`rich-menu-action-${action.key}`}
-                                        onClick={() => { onClose(); action.onSelect(); }}
-                                        sx={{
-                                            width: '100%', justifyContent: 'flex-start', gap: 1, px: 1, py: 0.75,
-                                            borderRadius: 1, fontSize: '0.8rem', fontWeight: 600,
-                                            color: action.disabled ? 'text.disabled' : 'text.primary',
-                                            '&:hover': { bgcolor: action.disabled ? undefined : 'action.hover' },
-                                            '& .MuiSvgIcon-root': { fontSize: 17, color: action.disabled ? 'text.disabled' : 'text.secondary' },
-                                        }}
-                                    >
-                                        {action.icon}
-                                        {action.label}
-                                    </ButtonBase>
-                                </span>
-                            </Tooltip>
-                        ))}
-                    </Box>
+                    <MenuActionList label="항목" items={actions} onClose={onClose} />
                 </>
             )}
         </Popover>
